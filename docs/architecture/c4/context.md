@@ -6,7 +6,23 @@ Este documento descreve o **C4 System Context (Nível 1)** da Virtual Employee P
 
 O objetivo deste nível é mostrar o sistema como uma única unidade, as pessoas que interagem com ele e os sistemas externos dos quais depende. Detalhes internos como módulos, API, banco de dados, workers e infraestrutura pertencem aos níveis seguintes do C4.
 
-> O diagrama visual será mantido no workspace oficial do Eraser. Enquanto a geração visual estiver indisponível, este documento é a especificação textual oficial do C4 System Context.
+## Visão Circular da Arquitetura
+
+A visão circular complementa os diagramas C4 e apresenta a arquitetura em camadas, do núcleo operacional ao ecossistema externo.
+
+![Virtual Employee Platform — Visão Circular da Arquitetura](../../diagrams/virtual-employee-platform-circular-architecture.jpg)
+
+**Do centro para fora:**
+
+1. **Domínio do Negócio** — Scheduling Engine / Funcionário Virtual, Services, Professionals, Customers, Appointments, Availability e regras de negócio.
+2. **Capacidades da Plataforma** — Conversation, AI Gateway, Messaging, Payments, Refunds, Billing, Analytics, Usage Metering e Audit.
+3. **Plataforma & Infraestrutura** — ASP.NET Core, PostgreSQL, Workers/Functions, Blob Storage, observabilidade, segurança e Multi-Tenancy.
+4. **Canais & Experiência** — WhatsApp-first, PWA/Web e experiência do Cliente Final e do Estabelecimento.
+5. **Ecossistema & Integrações Externas** — Meta/WhatsApp Business Platform, OpenAI/LLM, Mercado Pago/Gateway e SaaS Billing Provider.
+
+> **Regra arquitetural:** IA interpreta → Backend valida → Domínio executa → Gateway processa → Webhook confirma.
+
+> **Regra financeira:** Customer Payments e SaaS Billing são fluxos independentes. A plataforma não custodia os valores dos serviços e não cobra taxa própria por agendamento.
 
 ## 2. Sistema principal
 
@@ -41,19 +57,7 @@ Responsabilidades de alto nível:
 
 Pessoa que contrata os serviços oferecidos pelo estabelecimento.
 
-Interage principalmente através do WhatsApp para:
-
-- consultar serviços;
-- consultar preços;
-- consultar horários disponíveis;
-- selecionar profissional quando aplicável;
-- agendar;
-- reagendar;
-- cancelar;
-- acessar checkout seguro;
-- receber confirmação;
-- receber lembretes;
-- responder a propostas de reagendamento em caso de indisponibilidade do estabelecimento.
+Interage principalmente através do WhatsApp para consultar serviços, preços e horários disponíveis, selecionar profissional quando aplicável, agendar, reagendar, cancelar, acessar checkout seguro e receber confirmações e lembretes.
 
 O cliente final não precisa instalar aplicativo nem criar conta para utilizar o fluxo principal.
 
@@ -63,121 +67,35 @@ O cliente final não precisa instalar aplicativo nem criar conta para utilizar o
 
 Pequeno negócio ou profissional prestador de serviços que contrata a Virtual Employee Platform.
 
-Utiliza a plataforma para:
+Utiliza a plataforma para realizar onboarding, configurar o estabelecimento, cadastrar serviços, preços e profissionais, definir horários e regras, administrar a agenda, consultar clientes, bloquear períodos, tratar indisponibilidades, consultar indicadores financeiros e administrar sua assinatura SaaS.
 
-- realizar onboarding;
-- configurar o estabelecimento;
-- cadastrar serviços e preços;
-- cadastrar profissionais;
-- definir horários e regras;
-- acompanhar e administrar agenda;
-- consultar clientes;
-- bloquear períodos;
-- tratar indisponibilidades;
-- consultar indicadores financeiros;
-- administrar sua assinatura SaaS.
-
-Os principais canais do assinante são:
-
-- PWA/Web mobile-first;
-- WhatsApp para comandos administrativos selecionados.
+Os principais canais do assinante são PWA/Web mobile-first e WhatsApp para comandos administrativos selecionados.
 
 ## 4. Sistemas externos
 
 ### 4.1 Meta / WhatsApp Business Platform
 
-**Tipo:** External Software System
-
-Canal oficial de comunicação utilizado entre clientes, estabelecimentos e a Virtual Employee Platform.
-
-Responsabilidades externas relevantes:
-
-- entrega e recebimento de mensagens;
-- mensagens interativas;
-- templates;
-- eventos e webhooks;
-- status de entrega quando disponível.
-
-A Virtual Employee Platform abstrai essa integração através da capacidade de Messaging.
+Canal oficial de comunicação utilizado entre clientes, estabelecimentos e a Virtual Employee Platform, incluindo mensagens, templates, eventos e webhooks.
 
 ### 4.2 Provedor de IA / LLM
 
-**Tipo:** External Software System
-
-Exemplo inicial: OpenAI ou provedor equivalente.
-
-Utilizado para interpretação de linguagem natural e experiência conversacional.
-
-O provedor de IA não é autoridade de negócio.
-
-Regra arquitetural:
-
-> **IA interpreta → Backend valida → Domínio executa.**
-
-A IA não acessa diretamente o banco de dados, não define preços, não inventa disponibilidade, não confirma pagamentos e não executa estornos.
+Exemplo inicial: OpenAI ou provedor equivalente. Utilizado para interpretação de linguagem natural e experiência conversacional. O provedor de IA não é autoridade de negócio e não acessa diretamente o banco de dados, define preços, inventa disponibilidade, confirma pagamentos ou executa estornos.
 
 ### 4.3 Gateway de Pagamento de Serviços
 
-**Tipo:** External Software System
-
-Exemplo candidato: Mercado Pago ou provedor equivalente.
-
-Responsável por:
-
-- checkout seguro;
-- Pix;
-- cartão de crédito;
-- cartão de débito quando suportado;
-- processamento da transação;
-- status de pagamento;
-- webhooks;
-- processamento de estornos.
-
-O gateway processa pagamentos realizados pelo cliente final em favor do estabelecimento.
-
-A Virtual Employee Platform não deve receber dados brutos de cartão e não considera redirect de frontend como confirmação financeira.
+Exemplo candidato: Mercado Pago ou provedor equivalente. Responsável pelo checkout seguro, Pix, cartões, processamento da transação, status, webhooks e estornos. O gateway processa pagamentos realizados pelo cliente final em favor do estabelecimento.
 
 ### 4.4 Conta/Saldo do Estabelecimento no Provedor
 
-**Tipo:** External Financial Destination
-
-Representa a conta, carteira ou saldo do estabelecimento no provedor de pagamento, conforme o modelo do gateway escolhido.
-
-É o destino econômico dos valores pagos pelos clientes pelos serviços.
-
-Regra:
-
-> A Virtual Employee Platform não custodia os valores dos serviços prestados pelo estabelecimento.
+Representa a conta, carteira ou saldo do estabelecimento no provedor de pagamento, conforme o modelo do gateway escolhido. É o destino econômico dos valores pagos pelos clientes pelos serviços.
 
 ### 4.5 SaaS Billing Provider
 
-**Tipo:** External Software System
-
-Responsável pelo processamento da assinatura paga pelo estabelecimento à Virtual Employee Platform.
-
-Modelo comercial inicial:
-
-- mensal: cartão recorrente ou Pix;
-- anual com compromisso de 12 meses: cartão recorrente;
-- sem boleto.
-
-Responsabilidades externas:
-
-- cobrança;
-- recorrência;
-- status da assinatura;
-- retries quando aplicável;
-- webhooks financeiros.
-
-Esse fluxo é independente do pagamento de serviços.
+Responsável pelo processamento da assinatura paga pelo estabelecimento à Virtual Employee Platform. O modelo inicial prevê mensal por cartão recorrente ou Pix e anual com compromisso de 12 meses por cartão recorrente, sem boleto.
 
 ### 4.6 Conta Bancária PJ da Plataforma
 
-**Tipo:** External Financial Destination
-
-Conta empresarial da Virtual Employee Platform que recebe a receita proveniente das assinaturas SaaS após processamento pelo provedor de Billing.
-
-Não recebe automaticamente os valores pagos pelos clientes aos estabelecimentos pelos serviços.
+Conta empresarial da Virtual Employee Platform que recebe a receita proveniente das assinaturas SaaS após processamento pelo provedor de Billing. Não recebe automaticamente os valores pagos pelos clientes aos estabelecimentos pelos serviços.
 
 ## 5. Relacionamentos do System Context
 
@@ -199,8 +117,6 @@ Não recebe automaticamente os valores pagos pelos clientes aos estabelecimentos
 | SaaS Billing Provider | Conta Bancária PJ da Plataforma | Liquida a receita da assinatura SaaS conforme regras do provedor |
 
 ## 6. Fluxos financeiros separados
-
-O contexto possui dois fluxos financeiros independentes.
 
 ### Customer Payments
 
@@ -264,31 +180,11 @@ Webhook confirma
 
 ### Dentro da Virtual Employee Platform
 
-Em alto nível, pertencem ao nosso sistema:
-
-- experiência conversacional;
-- regras de negócio;
-- agenda;
-- catálogo de serviços;
-- gestão de profissionais e clientes;
-- orquestração de pagamentos;
-- regras de refund;
-- analytics;
-- assinatura SaaS;
-- metering;
-- auditoria;
-- PWA/Web do assinante.
+Pertencem ao sistema a experiência conversacional, regras de negócio, agenda, catálogo de serviços, gestão de profissionais e clientes, orquestração de pagamentos, regras de refund, analytics, assinatura SaaS, metering, auditoria e PWA/Web do assinante.
 
 ### Fora da Virtual Employee Platform
 
-São dependências externas:
-
-- infraestrutura/canal WhatsApp da Meta;
-- modelos/provedores de IA;
-- gateway financeiro dos serviços;
-- provedor de cobrança SaaS;
-- contas/saldos financeiros dos estabelecimentos;
-- conta bancária PJ da plataforma.
+São dependências externas a infraestrutura/canal WhatsApp da Meta, modelos/provedores de IA, gateway financeiro dos serviços, provedor de cobrança SaaS, contas/saldos financeiros dos estabelecimentos e conta bancária PJ da plataforma.
 
 ## 9. Restrições arquiteturais visíveis neste nível
 
@@ -304,10 +200,10 @@ São dependências externas:
 
 ## 10. Relação com os demais diagramas
 
-A documentação C4 deve ser lida nesta ordem:
-
 ```text
-C4 System Context (este documento)
+Visão Circular da Arquitetura
+        ↓
+C4 System Context
         ↓
 C4 Container
         ↓
@@ -316,9 +212,7 @@ Module Architecture
 Domain / Component Diagrams
 ```
 
-O **System Context** explica quem usa o sistema e de quais sistemas externos ele depende.
-
-O **C4 Container** detalha as grandes unidades executáveis e de armazenamento da Virtual Employee Platform, como PWA, Backend API, Workers e PostgreSQL.
+A **Visão Circular** fornece uma leitura executiva das camadas da solução. O **System Context** explica quem usa o sistema e de quais sistemas externos ele depende. O **C4 Container** detalha as grandes unidades executáveis e de armazenamento, como PWA, Backend API, Workers e PostgreSQL.
 
 Os diagramas **Macro Architecture** e **High-Level Architecture** existentes no Eraser continuam válidos como visões complementares e não são substituídos pelo C4.
 
@@ -328,10 +222,4 @@ Os diagramas oficiais da arquitetura são mantidos no mesmo workspace do Eraser:
 
 https://app.eraser.io/workspace/UcBRZVFG8H5U6A3qDZwZ
 
-Diagramas já existentes incluem:
-
-- Macro Architecture;
-- High-Level Architecture;
-- C4 Container.
-
-O C4 System Context visual deverá ser adicionado ao mesmo workspace quando a geração de diagramas estiver novamente disponível.
+Diagramas já existentes incluem Macro Architecture, High-Level Architecture, C4 Container e Visão Circular da Arquitetura.
