@@ -54,15 +54,89 @@ IX_tenants_status(status)
 
 ---
 
-## 2. businesses
+## 2. business_types
+
+Catálogo de tipos de negócio usado no onboarding pelo componente **Creatable Select / Combobox**.
+
+Tipos de sistema são disponibilizados pela plataforma. Quando o assinante não encontrar uma opção adequada, pode criar uma nova.
+
+```text
+business_types
+--------------
+id uuid PK
+name varchar(80) NOT NULL
+normalized_name varchar(100) NOT NULL
+slug varchar(100) NOT NULL
+is_system boolean NOT NULL DEFAULT false
+is_active boolean NOT NULL DEFAULT true
+created_by_tenant_id uuid NULL FK -> tenants.id
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+```
+
+Constraints:
+
+```text
+UNIQUE(normalized_name)
+UNIQUE(slug)
+```
+
+Índices:
+
+```text
+IX_business_types_active_name(is_active, name)
+IX_business_types_created_by_tenant(created_by_tenant_id)
+```
+
+Regras:
+
+- `is_system = true`: tipo mantido pela plataforma, por exemplo `Barbearia`, `Salão de beleza`, `Manicure / Nail designer`, `Estética`, `Massagem` e `Personal trainer`.
+- `is_system = false`: tipo criado por um assinante através do Creatable Select.
+- `created_by_tenant_id` é nulo para tipos de sistema.
+- Antes de criar um novo tipo, o backend normaliza o texto e verifica duplicidade por `normalized_name`.
+- Um tipo criado pelo usuário não vira automaticamente um novo tipo oficial/global curado pela plataforma; ele pode ser revisado/normalizado posteriormente.
+
+### UX esperada
+
+```text
+Qual é o seu tipo de negócio?
+
+[ 🔍 Busque ou digite seu negócio... ]
+
+Barbearia
+Salão de beleza
+Manicure / Nail designer
+Estética
+...
+
+Se não existir:
++ Adicionar "Studio de sobrancelhas"
+```
+
+Fluxo conceitual:
+
+```text
+GET /business-types?search=bar
+    -> retorna tipos existentes
+
+POST /business-types
+    -> cria tipo quando não existir
+
+Business.business_type_id
+    -> referencia BusinessType
+```
+
+---
+
+## 3. businesses
 
 ```text
 businesses
 ----------
 id uuid PK
 tenant_id uuid NOT NULL FK -> tenants.id
+business_type_id uuid NOT NULL FK -> business_types.id
 name varchar(160) NOT NULL
-business_type varchar(80) NOT NULL
 timezone varchar(80) NOT NULL
 phone varchar(30) NULL
 address_line varchar(240) NULL
@@ -84,9 +158,19 @@ CHECK(slot_interval_minutes > 0)
 CHECK(refund_deadline_hours_before_appointment IS NULL OR refund_deadline_hours_before_appointment >= 0)
 ```
 
+Índices:
+
+```text
+IX_businesses_business_type(business_type_id)
+```
+
+Observação:
+
+`business_type` deixa de ser texto livre em `businesses`. O estabelecimento referencia `business_types.id`, preservando flexibilidade de UX sem perder consistência analítica e semântica.
+
 ---
 
-## 3. users
+## 4. users
 
 ```text
 users
@@ -111,7 +195,7 @@ status IN ('ACTIVE','INVITED','DISABLED')
 
 ---
 
-## 4. services
+## 5. services
 
 ```text
 services
@@ -146,7 +230,7 @@ IX_services_business(tenant_id, business_id)
 
 ---
 
-## 5. professionals
+## 6. professionals
 
 ```text
 professionals
@@ -169,7 +253,7 @@ IX_professionals_business(tenant_id, business_id)
 
 ---
 
-## 6. professional_services
+## 7. professional_services
 
 ```text
 professional_services
@@ -192,7 +276,7 @@ CHECK(custom_duration_minutes IS NULL OR custom_duration_minutes > 0)
 
 ---
 
-## 7. availability_rules
+## 8. availability_rules
 
 ```text
 availability_rules
@@ -223,7 +307,7 @@ IX_availability_rules_professional_day(tenant_id, professional_id, day_of_week, 
 
 ---
 
-## 8. schedule_blocks
+## 9. schedule_blocks
 
 ```text
 schedule_blocks
@@ -257,7 +341,7 @@ IX_schedule_blocks_tenant_period(tenant_id, starts_at, ends_at)
 
 ---
 
-## 9. customers
+## 10. customers
 
 ```text
 customers
@@ -286,7 +370,7 @@ IX_customers_business(tenant_id, business_id)
 
 ---
 
-## 10. appointments
+## 11. appointments
 
 ```text
 appointments
@@ -391,7 +475,7 @@ IX_appointments_business_start(tenant_id, business_id, starts_at)
 
 ---
 
-## 11. appointment_history
+## 12. appointment_history
 
 ```text
 appointment_history
@@ -420,7 +504,7 @@ IX_appointment_history_appointment(tenant_id, appointment_id, changed_at)
 
 ---
 
-## 12. payments
+## 13. payments
 
 ```text
 payments
@@ -466,7 +550,7 @@ Payment.amount == Appointment.service_price_snapshot
 
 ---
 
-## 13. refunds
+## 14. refunds
 
 ```text
 refunds
@@ -512,7 +596,7 @@ Refund.amount == Payment.amount
 
 ---
 
-## 14. conversations
+## 15. conversations
 
 ```text
 conversations
@@ -543,7 +627,7 @@ IX_conversations_participant(tenant_id, participant_type, participant_id, last_i
 
 ---
 
-## 15. subscriptions
+## 16. subscriptions
 
 ```text
 subscriptions
@@ -582,7 +666,7 @@ IX_subscriptions_provider(provider, provider_subscription_id)
 
 ---
 
-## 16. usage_records
+## 17. usage_records
 
 ```text
 usage_records
@@ -609,7 +693,7 @@ IX_usage_records_type_period(tenant_id, usage_type, occurred_at)
 
 ---
 
-## 17. webhook_inbox
+## 18. webhook_inbox
 
 ```text
 webhook_inbox
@@ -652,7 +736,7 @@ Objetivo:
 
 ---
 
-## 18. outbox_messages
+## 19. outbox_messages
 
 ```text
 outbox_messages
@@ -689,6 +773,7 @@ Objetivo:
 
 ```text
 Tenant 1 ─── 1 Business
+BusinessType 1 ─── N Business
 Tenant 1 ─── N Users
 Business 1 ─── N Services
 Business 1 ─── N Professionals
@@ -714,9 +799,13 @@ Observação: fisicamente `Payment` pode permitir histórico técnico de tentati
 ## Diagrama textual simplificado
 
 ```text
-TENANTS
-  │
-  ├── BUSINESSES
+BUSINESS_TYPES
+      │
+      └──────────────┐
+                     │
+TENANTS              │
+  │                  │
+  ├── BUSINESSES ◄───┘
   │     ├── SERVICES ───────────────┐
   │     ├── PROFESSIONALS           │
   │     │      ├── AVAILABILITY     │
@@ -767,6 +856,7 @@ Evolução futura possível: Row-Level Security no PostgreSQL, se justificar com
 5. Interceptor/auditoria de `CreatedAt`/`UpdatedAt`.
 6. Migration manual para `btree_gist` e `EXCLUDE CONSTRAINT`, se o provider EF Core não expressar toda a constraint de forma conveniente.
 7. Tratamento de SQLSTATE da exclusion violation para converter em `SLOT_UNAVAILABLE`.
+8. Normalização determinística de `business_types.normalized_name` e geração de `slug`.
 
 ---
 
@@ -780,7 +870,8 @@ Antes de gerar a migration inicial, revisar:
 - se `ProfessionalService.custom_duration_minutes` entra no MVP;
 - retenção de conversations e payloads de webhook;
 - política de PII e LGPD para dados de cliente;
-- estratégia exata de roles/permissões.
+- estratégia exata de roles/permissões;
+- quais `business_types` serão pré-carregados como seed oficial do MVP.
 
 ---
 
