@@ -300,16 +300,38 @@ não são considerados conflitantes.
 
 ### Resultado esperado sob corrida
 
-Cliente A e Cliente B tentam 10:00 simultaneamente:
+Cliente A e Cliente B visualizam o mesmo horário de 10:00 e tentam reservá-lo quase simultaneamente.
+
+```text
+Cliente A -> CreateAppointment
+          -> validação OK
+          -> commit OK
+          -> horário passa a estar ocupado
+
+Cliente B -> CreateAppointment alguns milissegundos depois
+          -> sistema revalida o slot
+          -> detecta que o horário já foi ocupado
+          -> cancela/rejeita a tentativa de criação
+          -> retorna SLOT_UNAVAILABLE
+          -> informa ao cliente: "Desculpe, este horário acabou de ser preenchido."
+          -> oferece novos horários disponíveis
+```
+
+Se as duas requisições passarem pela validação de aplicação antes de qualquer commit, a `EXCLUDE CONSTRAINT` do PostgreSQL decide o vencedor:
 
 ```text
 A -> commit OK
 B -> constraint violation
-B -> aplicação converte para SlotUnavailable
-B -> novos slots são oferecidos
+B -> aplicação converte a violação para SLOT_UNAVAILABLE
+B -> nenhuma reserva duplicada é criada
+B -> cliente recebe a mesma mensagem amigável e novos horários
 ```
 
-Não expor erro SQL cru ao consumidor.
+A experiência do usuário deve ser a mesma independentemente de o conflito ter sido detectado na validação de aplicação ou pela constraint do PostgreSQL. O consumidor nunca deve receber erro SQL, HTTP 500 ou detalhes de concorrência.
+
+Mensagem padrão do MVP:
+
+> **Desculpe, este horário acabou de ser preenchido. Escolha um dos horários disponíveis abaixo.**
 
 ---
 
@@ -587,7 +609,11 @@ Quando ocorre conflito:
 code: SLOT_UNAVAILABLE
 ```
 
-A aplicação pode retornar horários alternativos ou solicitar nova busca.
+Resposta amigável para o canal:
+
+> **Desculpe, este horário acabou de ser preenchido. Escolha um dos horários disponíveis abaixo.**
+
+A aplicação deve atualizar/recalcular os horários e, sempre que possível, devolver alternativas válidas no mesmo fluxo para evitar que o cliente tenha de reiniciar a conversa.
 
 ### InvalidBusinessRule
 
@@ -667,6 +693,7 @@ A IA nunca confirma disponibilidade ou pagamento sem resultado estruturado do ba
 14. Mudança de serviço/preço não entra no reagendamento simples do MVP.
 15. Cancelamento libera agenda independentemente do tempo do refund.
 16. Nenhuma realocação automática sem consentimento do cliente.
+17. Em disputa por slot, somente a primeira reserva válida é persistida; as demais recebem `SLOT_UNAVAILABLE`, mensagem amigável e novos horários.
 
 ---
 
