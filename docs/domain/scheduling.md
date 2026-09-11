@@ -1,545 +1,245 @@
 # Scheduling Domain — Regras de Implementação v1
 
-> Status: Draft v1
+> Status: Draft v1 — regras funcionais aprovadas
 > Data: 2026-09-11
 
-## Objetivo
+## 1. Responsabilidades
 
-Detalhar o comportamento implementável do domínio de Scheduling da Virtual Employee Platform antes da criação do ERD físico, entidades EF Core e migrations PostgreSQL.
+Scheduling calcula disponibilidade, valida serviços/profissional, cria/reagenda/cancela Appointment, bloqueia períodos, identifica appointments afetados, preserva histórico e impede double-booking.
 
-O Scheduling Engine é o coração operacional do produto. Ele deve garantir disponibilidade correta, impedir double-booking, respeitar timezone do negócio e preservar consistência mesmo sob concorrência.
+Não interpreta linguagem natural, não envia WhatsApp diretamente e não processa pagamentos/refunds.
 
----
+## 2. Tempo e timezone
 
-## 1. Responsabilidades do Scheduling
+- PostgreSQL `timestamptz` para instantes absolutos.
+- UTC internamente.
+- `Business.Timezone` IANA obrigatório.
+- AvailabilityRule usa horário local recorrente.
+- Intervalos de Appointment usam `[StartsAt, EndsAt)`.
 
-O módulo de Scheduling é responsável por:
+## 3. Agenda-base, ciclos e exceções
 
-- calcular slots disponíveis;
-- validar profissional e serviço;
-- criar appointments;
-- reagendar appointments;
-- cancelar appointments;
-- bloquear períodos;
-- localizar appointments afetados por bloqueios;
-- preservar histórico operacional;
-- impedir conflitos de agenda;
-- emitir eventos de domínio relacionados ao ciclo do appointment.
+`AvailabilityRule` representa a agenda-base recorrente. Pode haver várias janelas por dia; ausência de regra representa dia recorrente sem expediente.
 
-O Scheduling não é responsável por:
-
-- interpretar linguagem natural;
-- enviar mensagens WhatsApp;
-- processar cartão/Pix;
-- confirmar pagamento por conta própria;
-- calcular analytics;
-- executar refund diretamente.
-
----
-
-## 2. Timezone e armazenamento temporal
-
-### Decisão
-
-- Todo instante absoluto será armazenado em PostgreSQL usando `timestamptz`.
-- A aplicação trabalhará internamente em UTC para persistência e comparação.
-- Cada Business terá `Timezone` em formato IANA, por exemplo `America/Sao_Paulo`.
-- Regras recorrentes de disponibilidade (`AvailabilityRule`) serão armazenadas como horário local do estabelecimento.
-
-### Exemplo
-
-Business:
+A UX deve reduzir trabalho do pequeno empresário:
 
 ```text
-Timezone = America/Sao_Paulo
+Primeiro ciclo -> configura agenda-base
+Próximo ciclo -> reutiliza/copia configuração anterior
+              -> altera somente exceções
+              -> publica/confirma
 ```
 
-AvailabilityRule:
+Não é necessário materializar semanas de slots. Reaproveitamento é uma operação da aplicação sobre a configuração existente.
 
-```text
-Monday 09:00 -> 18:00
-```
+`ScheduleBlock` representa exceção pontual: folga, compromisso, feriado, treinamento, fechamento ou indisponibilidade. `ProfessionalId = null` bloqueia o estabelecimento inteiro.
 
-Ao calcular slots para uma data específica, a aplicação converte a janela local para instantes UTC respeitando regras de timezone.
-
-### Regra
-
-Nunca persistir `DateTime` sem semântica clara de timezone no domínio.
-
-Na implementação .NET, preferir tipos que preservem intenção temporal e conversões explícitas.
-
----
-
-## 3. Disponibilidade
-
-A disponibilidade efetiva é calculada a partir de:
+Disponibilidade efetiva:
 
 ```text
 AvailabilityRule
 - ScheduleBlock
 - Appointments ativos
-= Slots disponíveis
+= janelas livres
 ```
 
-Não haverá uma tabela de slots materializados no MVP.
+## 4. ProfessionalService como capacidade
 
-### AvailabilityRule
+`ProfessionalService` define quais serviços cada profissional executa. Não criar entidade Skill separada no MVP.
 
-Representa uma janela recorrente por dia da semana.
+Para N serviços selecionados, profissional elegível deve executar **todos**.
+
+```text
+João: Corte
+Arthur: Corte + Barba
+
+Corte -> João, Arthur
+Corte + Barba -> Arthur
+```
+
+Um Appointment tem um único Professional no MVP. Não dividir serviços do mesmo Appointment entre profissionais.
+
+`CustomDurationMinutes` permanece preparado no modelo, mas o MVP usa `Service.DurationMinutes` por padrão.
+
+## 5. Multi-service e combos
+
+Um Appointment contém 1..N AppointmentItems.
+
+Fluxo preferido:
+
+```text
+Selecionar serviços
+-> backend calcula total preço/duração
+-> opcionalmente sugere combo equivalente
+-> calcula profissionais elegíveis
+-> busca intervalo contínuo
+-> cliente escolhe slot
+```
+
+Para serviços individuais, duração total é a soma das durações. Para um Service `COMBO`, usar preço/duração próprios do combo, não a soma dos componentes.
 
 Exemplo:
 
 ```text
-ProfessionalId: P1
-Monday: 09:00 -> 12:00
-Monday: 13:00 -> 18:00
+Corte 45 min + Barba 30 min = 75 min contínuos
 ```
 
-Pode existir mais de uma janela por dia.
+A busca deve encontrar uma janela contínua de 75 minutos com um profissional habilitado para ambos.
 
-### ScheduleBlock
-
-Representa indisponibilidade excepcional.
-
-Exemplos:
-
-```text
-2026-09-18 14:00 -> 18:00
-2026-09-21 00:00 -> 2026-09-25 23:59
-```
-
-Pode ser:
-
-- específico de um profissional;
-- do estabelecimento inteiro, quando `ProfessionalId` for nulo.
-
----
-
-## 4. Geração de slots
+## 6. Geração de slots
 
 Entrada conceitual:
 
 ```text
 TenantId
-ServiceId
+ServiceIds[1..N]
 Date
 ProfessionalId? (opcional)
 ```
 
 Fluxo:
+1. validar todos os Services ativos;
+2. calcular preço e duração no backend;
+3. localizar profissionais ativos habilitados para TODOS os Services;
+4. se ProfessionalId informado, validar que ele executa todos;
+5. carregar AvailabilityRules;
+6. subtrair ScheduleBlocks;
+7. subtrair Appointments ativos;
+8. gerar inícios conforme `Business.SlotIntervalMinutes` (default 15);
+9. manter somente candidatos cujo intervalo completo comporte a duração total;
+10. retornar slots válidos.
 
-1. carregar Service ativo;
-2. localizar profissionais habilitados para o Service;
-3. se `ProfessionalId` informado, validar vínculo ProfessionalService;
-4. carregar AvailabilityRules da data/dia da semana;
-5. carregar ScheduleBlocks sobrepostos;
-6. carregar Appointments ativos sobrepostos;
-7. gerar candidatos conforme `Service.DurationMinutes`;
-8. remover candidatos conflitantes;
-9. retornar somente horários válidos.
+`slot_interval_minutes` é granularidade de **início**, não duração do serviço.
 
-### Granularidade de início
+Slot retornado é disponibilidade observada; não é lock.
 
-Para o MVP, adotar intervalo configurável de início, com default de **15 minutos**.
-
-Exemplo para serviço de 45 minutos:
-
-```text
-09:00-09:45
-09:15-10:00
-09:30-10:15
-...
-```
-
-Posteriormente o estabelecimento poderá configurar granularidade diferente.
-
-### Observação
-
-Slot retornado pela consulta é apenas uma oportunidade de reserva naquele instante; não representa lock e não garante disponibilidade até a gravação do Appointment.
-
----
-
-## 5. Estados de Appointment relevantes para conflito
-
-Appointments que ocupam agenda no MVP:
-
-- `PENDING`
-- `CONFIRMED`
-- `CONFIRMED_BY_CLIENT`
-- `RESCHEDULE_REQUESTED` enquanto ainda mantém o horário atual
-
-Appointments que **não** ocupam agenda:
-
-- `CANCELLED_BY_CLIENT`
-- `CANCELLED_BY_BUSINESS`
-- `COMPLETED`
-- `NO_SHOW`
-
-### RESCHEDULED
-
-`RESCHEDULED` não deve ser usado como um estado terminal permanente para o registro atual do appointment quando isso gerar ambiguidade operacional.
-
-Decisão recomendada para implementação:
-
-- o mesmo Appointment mantém o novo horário;
-- a mudança é registrada em `AppointmentHistory`;
-- o estado operacional retorna para `CONFIRMED` ou `PENDING`, conforme a situação de pagamento;
-- o evento `AppointmentRescheduled` registra a transição.
-
-Assim evitamos que um appointment futuro fique preso em um estado sem semântica clara de ocupação.
-
----
-
-## 6. Criação de Appointment
+## 7. CreateAppointment
 
 Command conceitual:
 
 ```text
 CreateAppointment(
-    TenantId,
-    CustomerId,
-    ProfessionalId,
-    ServiceId,
-    StartsAt,
-    CorrelationId,
-    IdempotencyKey?
+  TenantId,
+  CustomerId,
+  ProfessionalId,
+  ServiceIds[1..N],
+  StartsAt,
+  CorrelationId,
+  IdempotencyKey
 )
 ```
 
-Validações:
+O cliente não envia preço, duração ou EndsAt autoritativos.
 
-1. Tenant ativo;
-2. Business ativo;
-3. Service ativo;
-4. Professional ativo;
-5. Professional habilitado para Service;
-6. StartsAt dentro de AvailabilityRule;
-7. intervalo não cruza ScheduleBlock;
-8. intervalo não cruza Appointment ativo;
-9. preço e duração obtidos do Service atual;
-10. gerar snapshots no Appointment;
-11. persistir de forma transacional;
-12. constraint de banco realiza última barreira contra concorrência.
+Na escrita, backend revalida:
+1. Tenant/Business ativos;
+2. Services ativos;
+3. Professional ativo;
+4. Professional habilitado para TODOS os Services;
+5. preço/duração atuais;
+6. AvailabilityRule;
+7. ScheduleBlocks;
+8. intervalo contínuo completo;
+9. conflitos com Appointments ativos;
+10. snapshots por AppointmentItem;
+11. totais do Appointment;
+12. persistência transacional;
+13. constraint PostgreSQL como última barreira.
 
-Resultado:
-
-```text
-AppointmentId
-Status = PENDING (quando exige pagamento)
-ou
-Status = CONFIRMED (quando política não exige pagamento)
-```
-
-Evento:
+Quando exige pagamento:
 
 ```text
-AppointmentCreated
+Status = PENDING
+ReservationExpiresAt = CreatedAt + 10 minutos (default MVP)
 ```
 
----
+## 8. Estados que ocupam agenda
 
-## 7. Double-booking e concorrência
+Ocupam:
+- `PENDING`
+- `CONFIRMED`
+- `CONFIRMED_BY_CLIENT`
+- `RESCHEDULE_REQUESTED`
 
-### Problema
+Não ocupam:
+- `CANCELLED_BY_CLIENT`
+- `CANCELLED_BY_BUSINESS`
+- `EXPIRED`
+- `COMPLETED`
+- `NO_SHOW`
 
-Dois clientes podem visualizar o mesmo slot disponível ao mesmo tempo.
+Worker materializa expiração mudando PENDING expirado para `EXPIRED`; a constraint não usa `now()` no predicado.
 
-Ambos podem tentar confirmar em milissegundos de diferença.
+## 9. Double-booking
 
-A checagem da aplicação sozinha é insuficiente.
+Camada 1: validação de aplicação.
 
-### Estratégia
+Camada 2: PostgreSQL `EXCLUDE USING gist` sobre `tenant_id`, `professional_id` e `tstzrange(starts_at, ends_at, '[)')`, considerando estados ocupantes.
 
-O sistema terá duas camadas:
-
-#### Camada 1 — validação de aplicação
-
-Antes de gravar:
+Se A vence e B tenta o mesmo intervalo, B não persiste Appointment e recebe:
 
 ```text
-SELECT appointments sobrepostos ativos
+409 SLOT_UNAVAILABLE
 ```
 
-Se encontrar conflito, retorna `SlotUnavailable`.
-
-#### Camada 2 — proteção no PostgreSQL
-
-A persistência deve impedir sobreposição mesmo quando duas transações passam na validação simultaneamente.
-
-Estratégia preferida: `EXCLUDE CONSTRAINT` usando range temporal PostgreSQL.
-
-Exemplo conceitual:
-
-```sql
-EXCLUDE USING gist (
-    tenant_id WITH =,
-    professional_id WITH =,
-    tstzrange(starts_at, ends_at, '[)') WITH &&
-)
-WHERE (status IN ('PENDING', 'CONFIRMED', 'CONFIRMED_BY_CLIENT', 'RESCHEDULE_REQUESTED'));
-```
-
-Observação: a sintaxe final depende do modelo físico e extensões necessárias, como `btree_gist`.
-
-### Intervalo `[)`
-
-Usar intervalo semiaberto:
-
-```text
-[StartsAt, EndsAt)
-```
-
-Assim:
-
-```text
-09:00-10:00
-10:00-11:00
-```
-
-não são considerados conflitantes.
-
-### Resultado esperado sob corrida
-
-Cliente A e Cliente B visualizam o mesmo horário de 10:00 e tentam reservá-lo quase simultaneamente.
-
-```text
-Cliente A -> CreateAppointment
-          -> validação OK
-          -> commit OK
-          -> horário passa a estar ocupado
-
-Cliente B -> CreateAppointment alguns milissegundos depois
-          -> sistema revalida o slot
-          -> detecta que o horário já foi ocupado
-          -> cancela/rejeita a tentativa de criação
-          -> retorna SLOT_UNAVAILABLE
-          -> informa ao cliente: "Desculpe, este horário acabou de ser preenchido."
-          -> oferece novos horários disponíveis
-```
-
-Se as duas requisições passarem pela validação de aplicação antes de qualquer commit, a `EXCLUDE CONSTRAINT` do PostgreSQL decide o vencedor:
-
-```text
-A -> commit OK
-B -> constraint violation
-B -> aplicação converte a violação para SLOT_UNAVAILABLE
-B -> nenhuma reserva duplicada é criada
-B -> cliente recebe a mesma mensagem amigável e novos horários
-```
-
-A experiência do usuário deve ser a mesma independentemente de o conflito ter sido detectado na validação de aplicação ou pela constraint do PostgreSQL. O consumidor nunca deve receber erro SQL, HTTP 500 ou detalhes de concorrência.
-
-Mensagem padrão do MVP:
-
+Mensagem:
 > **Desculpe, este horário acabou de ser preenchido. Escolha um dos horários disponíveis abaixo.**
 
----
+Sempre que possível, recalcular e devolver alternativas sem reiniciar a conversa.
 
-## 8. PENDING e reserva temporária
+## 10. PENDING e pagamento tardio
 
-Quando o serviço exige pagamento, um Appointment `PENDING` ocupa o slot temporariamente.
+PENDING reserva temporariamente o intervalo. Após 10 minutos sem confirmação, worker muda para `EXPIRED` e libera agenda.
 
-Sem expiração, usuários poderiam abandonar checkout e bloquear agenda indefinidamente.
+Pagamento confirmado após EXPIRED **não reativa** Appointment. Deve iniciar fluxo compensatório/refund integral e informar cliente.
 
-### Decisão v1
+## 11. Reagendamento
 
-Adicionar:
+Mantém o mesmo AppointmentId e AppointmentItems quando composição comercial não muda.
 
-```text
-ReservationExpiresAt
-```
+Revalidar profissional, intervalo completo, agenda, blocks e concorrência. Registrar horário/profissional anterior e novo em AppointmentHistory.
 
-Default sugerido:
+Appointment pago pode mudar de horário mantendo pagamento quando serviços/preço permanecem iguais.
 
-```text
-10 minutos
-```
+Mudança de serviços que altere preço após pagamento não é suportada no MVP: não cobrar diferença nem fazer refund parcial. Usar fluxo controlado de cancelamento/novo booking.
 
-Configuração futura pode variar.
+## 12. Imprevistos e reagendamento assistido
 
-### Regra
-
-Appointment PENDING ocupa agenda somente enquanto:
+Administrador pode informar indisponibilidade pela PWA ou WhatsApp administrativo.
 
 ```text
-ReservationExpiresAt > now()
+Indisponibilidade
+-> GetAffectedAppointments
+-> mostrar impacto ao administrador
+-> administrador confirma
+-> ScheduleBlock
+-> Alternative Slot Engine
+-> clientes recebem opções
+-> cliente escolhe
+-> backend revalida
+-> RescheduleAppointment
 ```
 
-Após expiração:
+Regra central:
+> **O sistema propõe automaticamente; o cliente decide.**
 
-- worker/job marca como `CANCELLED_BY_SYSTEM` ou estado equivalente de expiração;
-- slot volta a ficar disponível;
-- pagamento tardio precisa ser tratado cuidadosamente.
+Nunca mover Appointment sem consentimento do cliente.
 
-### Ajuste necessário no enum
+## 13. Cancelamento
 
-Adicionar estado:
+Cancelamento muda estado e libera slot imediatamente. Refund é processo financeiro separado e assíncrono.
 
-```text
-EXPIRED
-```
-
-em vez de reutilizar cancelamento de cliente/estabelecimento.
-
-### Pagamento tardio
-
-Se webhook de pagamento chegar após expiração:
-
-1. não confirmar automaticamente um appointment cujo slot já possa ter sido ocupado;
-2. validar estado do Appointment;
-3. se expirado, abrir fluxo compensatório;
-4. preferencialmente solicitar refund automático integral ou encaminhar política específica.
-
-No MVP, regra mais segura:
-
-> Payment confirmado para Appointment expirado não reativa a reserva. O sistema inicia compensação financeira e informa o cliente.
-
----
-
-## 9. Reagendamento
-
-Command conceitual:
-
-```text
-RescheduleAppointment(
-    TenantId,
-    AppointmentId,
-    NewProfessionalId,
-    NewStartsAt,
-    RequestedBy,
-    CorrelationId
-)
-```
-
-Fluxo:
-
-1. carregar Appointment;
-2. validar estado atual;
-3. calcular novo `EndsAt` a partir do snapshot/duração aplicável;
-4. validar ProfessionalService;
-5. validar AvailabilityRule;
-6. validar ScheduleBlock;
-7. validar conflito com outros Appointments;
-8. persistir novo horário na mesma transação;
-9. gravar AppointmentHistory com horário anterior e novo;
-10. emitir `AppointmentRescheduled`.
-
-### Pagamento
-
-Se o mesmo serviço/preço continua:
-
-- Payment existente permanece associado;
-- não criar nova cobrança.
-
-Mudança para outro serviço/preço fica fora do fluxo simples de reagendamento do MVP; deve ser tratada como cancelamento + novo booking ou fluxo futuro específico.
-
----
-
-## 10. Cancelamento
-
-Command conceitual:
-
-```text
-CancelAppointment(
-    TenantId,
-    AppointmentId,
-    CancelledBy,
-    Reason,
-    CorrelationId
-)
-```
-
-Fluxo:
-
-1. validar Appointment existente;
-2. validar estado cancelável;
-3. transicionar para `CANCELLED_BY_CLIENT` ou `CANCELLED_BY_BUSINESS`;
-4. gravar histórico;
-5. liberar slot imediatamente;
-6. emitir `AppointmentCancelled`;
-7. Refund Policy avalia elegibilidade de forma separada.
-
-O cancelamento do Appointment não deve esperar o gateway concluir refund.
-
----
-
-## 11. Bloqueio de agenda e indisponibilidade do negócio
-
-Command conceitual:
-
-```text
-CreateScheduleBlock(
-    TenantId,
-    ProfessionalId?,
-    StartsAt,
-    EndsAt,
-    Reason
-)
-```
-
-Antes de confirmar uma indisponibilidade relevante, o sistema deve consultar:
-
-```text
-GetAffectedAppointments
-```
-
-Resposta conceitual:
-
-```text
-AffectedCount
-Appointments[]
-```
-
-Fluxo ideal via WhatsApp Admin:
-
-```text
-"Não vou trabalhar amanhã à tarde"
-  -> IA interpreta período/profissional
-  -> Scheduling.GetAffectedAppointments
-  -> sistema mostra impacto
-  -> proprietário confirma
-  -> ScheduleBlock criado
-  -> evento ScheduleBlocked
-  -> clientes afetados recebem opções
-```
-
-### Regra
-
-Nenhum Appointment afetado é movido automaticamente.
-
-Cliente deve escolher:
-
-- novo horário;
-- cancelamento.
-
----
-
-## 12. Idempotência
-
-Operações mutáveis expostas por API/integration layer devem aceitar idempotência quando houver risco de retry.
+## 14. Idempotência
 
 Prioridade:
+- CreateAppointment
+- RescheduleAppointment
+- CancelAppointment
+- CreateScheduleBlock
 
-- `CreateAppointment`
-- `RescheduleAppointment`
-- `CancelAppointment`
-- `CreateScheduleBlock`
+Chave lógica: `TenantId + OperationType + IdempotencyKey`.
 
-Formato lógico sugerido:
-
-```text
-TenantId + OperationType + IdempotencyKey
-```
-
-Uma repetição com a mesma chave e mesmo payload retorna o resultado anterior.
-
-Mesmo key com payload incompatível deve gerar conflito.
-
----
-
-## 13. Eventos do Scheduling
-
-Eventos principais:
+## 15. Eventos
 
 ```text
 AppointmentCreated
@@ -552,36 +252,19 @@ NoShowRegistered
 ScheduleBlocked
 ```
 
-Envelope padrão:
+## 16. Interfaces iniciais
 
-```text
-EventId
-EventType
-EventVersion
-OccurredAt
-TenantId
-CorrelationId
-CausationId
-AggregateId
-Payload
-```
-
----
-
-## 14. Interfaces de aplicação iniciais
-
-### Queries
-
+Queries:
 ```text
 GetAvailableSlots
+GetEligibleProfessionals
 GetAppointment
 GetAppointmentsByPeriod
 GetAffectedAppointments
 GetProfessionalSchedule
 ```
 
-### Commands
-
+Commands:
 ```text
 CreateAppointment
 RescheduleAppointment
@@ -589,137 +272,22 @@ CancelAppointment
 CreateScheduleBlock
 RemoveScheduleBlock
 ConfirmAppointment
+ExpirePendingAppointment
 RegisterNoShow
 CompleteAppointment
-ExpirePendingAppointment
 ```
 
-Esses contratos são de aplicação e não devem expor EF Core nem entidades persistidas diretamente.
-
----
-
-## 15. Tratamento de falhas
-
-### SlotUnavailable
-
-Quando ocorre conflito:
+## 17. Regra central
 
 ```text
-409 Conflict
-code: SLOT_UNAVAILABLE
+Serviços selecionados
+-> profissionais que executam TODOS
+-> preço/duração calculados no backend
+-> janela contínua
+-> escolha do cliente
+-> CreateAppointment revalida
+-> PENDING
+-> pagamento integral
+-> webhook confiável
+-> CONFIRMED
 ```
-
-Resposta amigável para o canal:
-
-> **Desculpe, este horário acabou de ser preenchido. Escolha um dos horários disponíveis abaixo.**
-
-A aplicação deve atualizar/recalcular os horários e, sempre que possível, devolver alternativas válidas no mesmo fluxo para evitar que o cliente tenha de reiniciar a conversa.
-
-### InvalidBusinessRule
-
-Exemplos:
-
-- Professional não executa Service;
-- horário fora da disponibilidade;
-- appointment não pode ser reagendado naquele estado.
-
-Retorno de domínio não deve carregar detalhes internos de infraestrutura.
-
-### Concurrency conflict
-
-Constraint violation conhecida deve ser traduzida para erro de negócio previsível, nunca HTTP 500 genérico quando representar disputa válida por slot.
-
----
-
-## 16. Índices previstos para o ERD físico
-
-Ainda serão detalhados no modelo físico, mas o Scheduling exigirá pelo menos:
-
-```text
-Appointments(TenantId, ProfessionalId, StartsAt)
-Appointments(TenantId, CustomerId, StartsAt)
-Appointments(TenantId, Status, StartsAt)
-AvailabilityRules(TenantId, ProfessionalId, DayOfWeek)
-ScheduleBlocks(TenantId, ProfessionalId, StartsAt, EndsAt)
-ProfessionalServices(TenantId, ProfessionalId, ServiceId)
-```
-
-Além da constraint temporal de exclusão para conflitos ativos.
-
----
-
-## 17. Fluxo crítico end-to-end
-
-```text
-Cliente
-  -> WhatsApp
-  -> Conversation
-  -> AI Gateway interpreta intenção
-  -> Scheduling.GetAvailableSlots
-  -> cliente escolhe
-  -> Scheduling.CreateAppointment
-  -> Appointment PENDING + ReservationExpiresAt
-  -> Payments.CreatePaymentOrder
-  -> hosted checkout
-  -> gateway
-  -> webhook validado
-  -> PaymentConfirmed
-  -> Scheduling.ConfirmAppointment
-  -> Appointment CONFIRMED
-  -> AppointmentConfirmed
-  -> Messaging envia confirmação
-  -> Reminder Scheduler agenda lembrete
-```
-
-A IA nunca confirma disponibilidade ou pagamento sem resultado estruturado do backend.
-
----
-
-## 18. Decisões fechadas nesta versão
-
-1. PostgreSQL `timestamptz` para instantes absolutos.
-2. `Business.Timezone` IANA obrigatório.
-3. AvailabilityRule é recorrente/local; não materializar Slot no MVP.
-4. ScheduleBlock representa exceções.
-5. Intervalos de appointment usam semântica `[start, end)`.
-6. Double-booking protegido pela aplicação **e** pelo PostgreSQL.
-7. Preferência por exclusion constraint com range temporal.
-8. PENDING ocupa slot temporariamente.
-9. PENDING terá `ReservationExpiresAt`.
-10. Default inicial de hold de checkout: 10 minutos.
-11. Adicionar estado `EXPIRED` ao Appointment.
-12. Pagamento tardio após expiração não reativa automaticamente a reserva.
-13. Reagendamento mantém o mesmo Appointment e registra histórico.
-14. Mudança de serviço/preço não entra no reagendamento simples do MVP.
-15. Cancelamento libera agenda independentemente do tempo do refund.
-16. Nenhuma realocação automática sem consentimento do cliente.
-17. Em disputa por slot, somente a primeira reserva válida é persistida; as demais recebem `SLOT_UNAVAILABLE`, mensagem amigável e novos horários.
-
----
-
-## 19. Próximo passo
-
-Com estas regras fechadas, o próximo artefato é o **ERD físico v1**.
-
-Ele deve traduzir o domínio em tabelas, PKs, FKs, constraints, índices e tipos PostgreSQL para:
-
-- tenants
-- businesses
-- users
-- services
-- professionals
-- professional_services
-- availability_rules
-- schedule_blocks
-- customers
-- appointments
-- appointment_history
-- payments
-- refunds
-- conversations
-- subscriptions
-- usage_records
-- webhook_inbox
-- outbox_messages
-
-Após o ERD físico, podemos criar os contratos de API e a estrutura inicial da solution .NET.
