@@ -1,68 +1,27 @@
 # ERD Físico v1 — PostgreSQL
 
-> Status: Draft v1
+> Status: Draft v1 — alinhado às regras aprovadas
 > Data: 2026-09-11
 
-## Objetivo
+## Convenções
 
-Traduzir o Modelo de Domínio v1 e as regras de Scheduling em um modelo físico inicial para PostgreSQL, preparado para implementação com EF Core.
-
-Este documento define tabelas, chaves, relacionamentos, constraints e índices principais do MVP.
-
----
-
-## Convenções gerais
-
-- PKs: `uuid`.
-- Datas absolutas: `timestamptz`.
-- Horários locais recorrentes: `time`.
-- Datas locais recorrentes/eventuais sem instante absoluto: `date` quando aplicável.
-- Valores monetários: `numeric(12,2)`.
-- Booleanos: `boolean`.
-- Texto curto: `varchar(n)`.
-- Texto livre: `text`.
-- Enums podem iniciar como `varchar` + `CHECK`, evitando acoplamento inicial a enums físicos do PostgreSQL.
-- Todas as tabelas de domínio pertencentes ao assinante carregam `tenant_id`.
-- FKs devem preservar isolamento por tenant sempre que possível por meio de índices/constraints compostos.
-
----
+PK `uuid`; instantes `timestamptz`; horários recorrentes `time`; dinheiro `numeric(12,2)`; enums inicialmente `varchar + CHECK`; dados tenant-owned carregam `tenant_id`.
 
 ## 1. tenants
-
 ```text
 tenants
--------
 id uuid PK
 name varchar(160) NOT NULL
 status varchar(30) NOT NULL
 created_at timestamptz NOT NULL
 activated_at timestamptz NULL
 suspended_at timestamptz NULL
+CHECK status: PENDING|ACTIVE|SUSPENDED|CANCELLED
 ```
-
-Checks sugeridos:
-
-```text
-status IN ('PENDING','ACTIVE','SUSPENDED','CANCELLED')
-```
-
-Índices:
-
-```text
-IX_tenants_status(status)
-```
-
----
 
 ## 2. business_types
-
-Catálogo de tipos de negócio usado no onboarding pelo componente **Creatable Select / Combobox**.
-
-Tipos de sistema são disponibilizados pela plataforma. Quando o assinante não encontrar uma opção adequada, pode criar uma nova.
-
 ```text
 business_types
---------------
 id uuid PK
 name varchar(80) NOT NULL
 normalized_name varchar(100) NOT NULL
@@ -72,67 +31,15 @@ is_active boolean NOT NULL DEFAULT true
 created_by_tenant_id uuid NULL FK -> tenants.id
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
-```
-
-Constraints:
-
-```text
 UNIQUE(normalized_name)
 UNIQUE(slug)
 ```
 
-Índices:
-
-```text
-IX_business_types_active_name(is_active, name)
-IX_business_types_created_by_tenant(created_by_tenant_id)
-```
-
-Regras:
-
-- `is_system = true`: tipo mantido pela plataforma, por exemplo `Barbearia`, `Salão de beleza`, `Manicure / Nail designer`, `Estética`, `Massagem` e `Personal trainer`.
-- `is_system = false`: tipo criado por um assinante através do Creatable Select.
-- `created_by_tenant_id` é nulo para tipos de sistema.
-- Antes de criar um novo tipo, o backend normaliza o texto e verifica duplicidade por `normalized_name`.
-- Um tipo criado pelo usuário não vira automaticamente um novo tipo oficial/global curado pela plataforma; ele pode ser revisado/normalizado posteriormente.
-
-### UX esperada
-
-```text
-Qual é o seu tipo de negócio?
-
-[ 🔍 Busque ou digite seu negócio... ]
-
-Barbearia
-Salão de beleza
-Manicure / Nail designer
-Estética
-...
-
-Se não existir:
-+ Adicionar "Studio de sobrancelhas"
-```
-
-Fluxo conceitual:
-
-```text
-GET /business-types?search=bar
-    -> retorna tipos existentes
-
-POST /business-types
-    -> cria tipo quando não existir
-
-Business.business_type_id
-    -> referencia BusinessType
-```
-
----
+> Ponto de revisão antes da migration: a unicidade global de tipos customizados por tenant ainda deve ser revisada; não alterar silenciosamente nesta versão.
 
 ## 3. businesses
-
 ```text
 businesses
-----------
 id uuid PK
 tenant_id uuid NOT NULL FK -> tenants.id
 business_type_id uuid NOT NULL FK -> business_types.id
@@ -148,95 +55,65 @@ refund_deadline_hours_before_appointment integer NULL
 slot_interval_minutes integer NOT NULL DEFAULT 15
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
-```
-
-Constraints:
-
-```text
 UNIQUE(tenant_id)
 CHECK(slot_interval_minutes > 0)
-CHECK(refund_deadline_hours_before_appointment IS NULL OR refund_deadline_hours_before_appointment >= 0)
 ```
-
-Índices:
-
-```text
-IX_businesses_business_type(business_type_id)
-```
-
-Observação:
-
-`business_type` deixa de ser texto livre em `businesses`. O estabelecimento referencia `business_types.id`, preservando flexibilidade de UX sem perder consistência analítica e semântica.
-
----
 
 ## 4. users
-
 ```text
 users
------
 id uuid PK
-tenant_id uuid NOT NULL FK -> tenants.id
+tenant_id uuid NOT NULL
 email varchar(254) NOT NULL
 display_name varchar(160) NOT NULL
 role varchar(40) NOT NULL
 status varchar(30) NOT NULL
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
+UNIQUE(tenant_id,email)
 ```
-
-Constraints:
-
-```text
-UNIQUE(tenant_id, email)
-role IN ('OWNER','ADMIN','STAFF')
-status IN ('ACTIVE','INVITED','DISABLED')
-```
-
----
 
 ## 5. services
-
 ```text
 services
---------
 id uuid PK
-tenant_id uuid NOT NULL FK -> tenants.id
+tenant_id uuid NOT NULL
 business_id uuid NOT NULL FK -> businesses.id
 name varchar(160) NOT NULL
 description text NULL
+service_type varchar(20) NOT NULL DEFAULT 'SINGLE'
 price numeric(12,2) NOT NULL
 duration_minutes integer NOT NULL
 requires_payment boolean NOT NULL DEFAULT true
 is_active boolean NOT NULL DEFAULT true
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
-```
-
-Constraints:
-
-```text
+CHECK(service_type IN ('SINGLE','COMBO'))
 CHECK(price >= 0)
 CHECK(duration_minutes > 0)
-UNIQUE(tenant_id, id)
+UNIQUE(tenant_id,id)
 ```
 
-Índices:
+Combo possui preço/duração próprios.
 
+## 6. service_components
 ```text
-IX_services_tenant_active(tenant_id, is_active)
-IX_services_business(tenant_id, business_id)
+service_components
+tenant_id uuid NOT NULL
+service_id uuid NOT NULL FK -> services.id
+component_service_id uuid NOT NULL FK -> services.id
+created_at timestamptz NOT NULL
+PK(tenant_id,service_id,component_service_id)
+CHECK(service_id <> component_service_id)
 ```
 
----
+Regras de aplicação: `service_id` deve ser COMBO; componente deve ser SINGLE; combos aninhados não entram no MVP; componentes não determinam preço/duração do combo.
 
-## 6. professionals
-
+## 7. professionals
 ```text
 professionals
--------------
 id uuid PK
-tenant_id uuid NOT NULL FK -> tenants.id
+tenant_id uuid NOT NULL
 business_id uuid NOT NULL FK -> businesses.id
 name varchar(160) NOT NULL
 is_active boolean NOT NULL DEFAULT true
@@ -244,43 +121,24 @@ created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 ```
 
-Índices:
-
-```text
-IX_professionals_tenant_active(tenant_id, is_active)
-IX_professionals_business(tenant_id, business_id)
-```
-
----
-
-## 7. professional_services
-
+## 8. professional_services
 ```text
 professional_services
----------------------
 tenant_id uuid NOT NULL
 professional_id uuid NOT NULL FK -> professionals.id
 service_id uuid NOT NULL FK -> services.id
 is_active boolean NOT NULL DEFAULT true
 custom_duration_minutes integer NULL
 created_at timestamptz NOT NULL
-
-PK (tenant_id, professional_id, service_id)
-```
-
-Constraints:
-
-```text
+PK(tenant_id,professional_id,service_id)
 CHECK(custom_duration_minutes IS NULL OR custom_duration_minutes > 0)
 ```
 
----
+`ProfessionalService` é a matriz de capacidade. Para Appointment com N serviços, o profissional deve estar habilitado para todos. `custom_duration_minutes` fica preparado, mas não é usado no MVP inicial.
 
-## 8. availability_rules
-
+## 9. availability_rules
 ```text
 availability_rules
-------------------
 id uuid PK
 tenant_id uuid NOT NULL
 professional_id uuid NOT NULL FK -> professionals.id
@@ -290,28 +148,15 @@ end_time time NOT NULL
 is_active boolean NOT NULL DEFAULT true
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
-```
-
-Constraints:
-
-```text
 CHECK(day_of_week BETWEEN 0 AND 6)
 CHECK(start_time < end_time)
 ```
 
-Índices:
+Agenda recorrente é reaproveitável pela aplicação entre ciclos; não materializar slots/semanas no banco.
 
-```text
-IX_availability_rules_professional_day(tenant_id, professional_id, day_of_week, is_active)
-```
-
----
-
-## 9. schedule_blocks
-
+## 10. schedule_blocks
 ```text
 schedule_blocks
----------------
 id uuid PK
 tenant_id uuid NOT NULL
 professional_id uuid NULL FK -> professionals.id
@@ -320,32 +165,14 @@ ends_at timestamptz NOT NULL
 reason varchar(300) NULL
 created_by_user_id uuid NULL FK -> users.id
 created_at timestamptz NOT NULL
-```
-
-Regra:
-
-- `professional_id = NULL` significa bloqueio do estabelecimento inteiro.
-
-Constraints:
-
-```text
 CHECK(starts_at < ends_at)
 ```
 
-Índices:
+`professional_id = NULL` significa bloqueio do estabelecimento inteiro.
 
-```text
-IX_schedule_blocks_professional_period(tenant_id, professional_id, starts_at, ends_at)
-IX_schedule_blocks_tenant_period(tenant_id, starts_at, ends_at)
-```
-
----
-
-## 10. customers
-
+## 11. customers
 ```text
 customers
----------
 id uuid PK
 tenant_id uuid NOT NULL
 business_id uuid NOT NULL FK -> businesses.id
@@ -354,48 +181,33 @@ phone varchar(30) NOT NULL
 email varchar(254) NULL
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
+UNIQUE(tenant_id,phone)
 ```
 
-Constraints:
-
-```text
-UNIQUE(tenant_id, phone)
-```
-
-Índices:
-
-```text
-IX_customers_business(tenant_id, business_id)
-```
-
----
-
-## 11. appointments
-
+## 12. appointments
 ```text
 appointments
-------------
 id uuid PK
 tenant_id uuid NOT NULL
 business_id uuid NOT NULL FK -> businesses.id
 customer_id uuid NOT NULL FK -> customers.id
 professional_id uuid NOT NULL FK -> professionals.id
-service_id uuid NOT NULL FK -> services.id
 starts_at timestamptz NOT NULL
 ends_at timestamptz NOT NULL
+total_price_snapshot numeric(12,2) NOT NULL
+total_duration_minutes_snapshot integer NOT NULL
 status varchar(40) NOT NULL
 reservation_expires_at timestamptz NULL
-service_name_snapshot varchar(160) NOT NULL
-service_price_snapshot numeric(12,2) NOT NULL
-service_duration_minutes_snapshot integer NOT NULL
 cancellation_reason varchar(500) NULL
 cancelled_at timestamptz NULL
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
+CHECK(starts_at < ends_at)
+CHECK(total_price_snapshot >= 0)
+CHECK(total_duration_minutes_snapshot > 0)
 ```
 
-Status v1:
-
+Status:
 ```text
 PENDING
 CONFIRMED
@@ -408,78 +220,37 @@ COMPLETED
 NO_SHOW
 ```
 
-Constraints:
+Um Appointment tem um único Professional no MVP.
 
+## 13. appointment_items
 ```text
-CHECK(starts_at < ends_at)
-CHECK(service_price_snapshot >= 0)
-CHECK(service_duration_minutes_snapshot > 0)
+appointment_items
+id uuid PK
+tenant_id uuid NOT NULL
+appointment_id uuid NOT NULL FK -> appointments.id
+service_id uuid NOT NULL FK -> services.id
+service_name_snapshot varchar(160) NOT NULL
+price_snapshot numeric(12,2) NOT NULL
+duration_minutes_snapshot integer NOT NULL
+created_at timestamptz NOT NULL
+CHECK(price_snapshot >= 0)
+CHECK(duration_minutes_snapshot > 0)
+UNIQUE(tenant_id,appointment_id,service_id)
 ```
 
-### Regra de ocupação
+Sem `quantity` no MVP. Cada serviço/combo aparece no máximo uma vez no Appointment.
 
-Ocupam a agenda:
-
+Regras:
 ```text
-PENDING
-CONFIRMED
-CONFIRMED_BY_CLIENT
-RESCHEDULE_REQUESTED
+SUM(item.price_snapshot) = appointment.total_price_snapshot
+SUM(item.duration_minutes_snapshot) = appointment.total_duration_minutes_snapshot
+appointment.ends_at = appointment.starts_at + total_duration
 ```
+Validadas pelo domínio/transação.
 
-Para `PENDING`, somente enquanto `reservation_expires_at > now()` em lógica de aplicação. Como partial indexes/constraints não podem depender de `now()` de forma segura como predicado mutável, a expiração deve ser materializada pela aplicação/worker mudando o status para `EXPIRED`.
-
-### Constraint anti-double-booking
-
-Extensão:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS btree_gist;
-```
-
-Constraint conceitual:
-
-```sql
-ALTER TABLE appointments
-ADD CONSTRAINT ex_appointments_no_overlap
-EXCLUDE USING gist (
-    tenant_id WITH =,
-    professional_id WITH =,
-    tstzrange(starts_at, ends_at, '[)') WITH &&
-)
-WHERE (
-    status IN (
-        'PENDING',
-        'CONFIRMED',
-        'CONFIRMED_BY_CLIENT',
-        'RESCHEDULE_REQUESTED'
-    )
-);
-```
-
-Comportamento:
-
-- primeira reserva válida vence;
-- segunda tentativa concorrente recebe conflito;
-- aplicação traduz para `SLOT_UNAVAILABLE`;
-- mensagem ao cliente: **“Desculpe, este horário acabou de ser preenchido. Escolha um dos horários disponíveis abaixo.”**
-
-Índices:
-
-```text
-IX_appointments_professional_start(tenant_id, professional_id, starts_at)
-IX_appointments_customer_start(tenant_id, customer_id, starts_at)
-IX_appointments_status_start(tenant_id, status, starts_at)
-IX_appointments_business_start(tenant_id, business_id, starts_at)
-```
-
----
-
-## 12. appointment_history
-
+## 14. appointment_history
 ```text
 appointment_history
--------------------
 id uuid PK
 tenant_id uuid NOT NULL
 appointment_id uuid NOT NULL FK -> appointments.id
@@ -496,19 +267,9 @@ correlation_id uuid NULL
 changed_at timestamptz NOT NULL
 ```
 
-Índices:
-
-```text
-IX_appointment_history_appointment(tenant_id, appointment_id, changed_at)
-```
-
----
-
-## 13. payments
-
+## 15. payments
 ```text
 payments
---------
 id uuid PK
 tenant_id uuid NOT NULL
 appointment_id uuid NOT NULL FK -> appointments.id
@@ -522,39 +283,16 @@ idempotency_key varchar(160) NOT NULL
 created_at timestamptz NOT NULL
 confirmed_at timestamptz NULL
 failed_at timestamptz NULL
-```
-
-Constraints:
-
-```text
 CHECK(amount > 0)
-payment_method IN ('PIX','CREDIT_CARD','DEBIT_CARD')
-status IN ('CREATED','PENDING','CONFIRMED','FAILED','CANCELLED')
-UNIQUE(tenant_id, appointment_id, payment_purpose)
-UNIQUE(tenant_id, idempotency_key)
+UNIQUE(tenant_id,appointment_id,payment_purpose)
+UNIQUE(tenant_id,idempotency_key)
 ```
 
-Índices:
+Regra: `Payment.amount == Appointment.total_price_snapshot`.
 
-```text
-IX_payments_appointment(tenant_id, appointment_id)
-IX_payments_provider_id(provider, provider_payment_id)
-IX_payments_status(tenant_id, status, created_at)
-```
-
-Regra de aplicação:
-
-```text
-Payment.amount == Appointment.service_price_snapshot
-```
-
----
-
-## 14. refunds
-
+## 16. refunds
 ```text
 refunds
--------
 id uuid PK
 tenant_id uuid NOT NULL
 appointment_id uuid NOT NULL FK -> appointments.id
@@ -569,38 +307,11 @@ processed_at timestamptz NULL
 completed_at timestamptz NULL
 failed_at timestamptz NULL
 ```
+Regra MVP: `Refund.amount == Payment.amount`; refund integral apenas.
 
-Constraints:
-
-```text
-CHECK(amount > 0)
-status IN ('REFUND_REQUESTED','REFUND_PROCESSING','REFUNDED','REFUND_FAILED')
-UNIQUE(tenant_id, idempotency_key)
-```
-
-Para o MVP, apenas um refund bem-sucedido por Payment.
-
-Sugestão de unique partial index:
-
-```sql
-CREATE UNIQUE INDEX ux_refunds_one_success_per_payment
-ON refunds (tenant_id, payment_id)
-WHERE status = 'REFUNDED';
-```
-
-Regra de aplicação:
-
-```text
-Refund.amount == Payment.amount
-```
-
----
-
-## 15. conversations
-
+## 17. conversations
 ```text
 conversations
--------------
 id uuid PK
 tenant_id uuid NOT NULL
 channel varchar(30) NOT NULL
@@ -612,26 +323,9 @@ started_at timestamptz NOT NULL
 last_interaction_at timestamptz NOT NULL
 ```
 
-Checks:
-
-```text
-channel IN ('WHATSAPP','PWA')
-participant_type IN ('CUSTOMER','BUSINESS_USER')
-```
-
-Índices:
-
-```text
-IX_conversations_participant(tenant_id, participant_type, participant_id, last_interaction_at)
-```
-
----
-
-## 16. subscriptions
-
+## 18. subscriptions
 ```text
 subscriptions
--------------
 id uuid PK
 tenant_id uuid NOT NULL FK -> tenants.id
 provider varchar(40) NOT NULL
@@ -645,32 +339,9 @@ created_at timestamptz NOT NULL
 cancelled_at timestamptz NULL
 ```
 
-Checks:
-
-```text
-plan_type IN ('MONTHLY','ANNUAL_COMMITMENT')
-billing_method IN ('RECURRING_CARD','PIX')
-```
-
-Regra comercial:
-
-- MONTHLY: `RECURRING_CARD` ou `PIX`.
-- ANNUAL_COMMITMENT: `RECURRING_CARD` apenas.
-
-Índices:
-
-```text
-IX_subscriptions_tenant_status(tenant_id, status)
-IX_subscriptions_provider(provider, provider_subscription_id)
-```
-
----
-
-## 17. usage_records
-
+## 19. usage_records
 ```text
 usage_records
--------------
 id uuid PK
 tenant_id uuid NOT NULL
 usage_type varchar(50) NOT NULL
@@ -684,20 +355,9 @@ output_tokens integer NULL
 occurred_at timestamptz NOT NULL
 ```
 
-Índices:
-
-```text
-IX_usage_records_tenant_period(tenant_id, occurred_at)
-IX_usage_records_type_period(tenant_id, usage_type, occurred_at)
-```
-
----
-
-## 18. webhook_inbox
-
+## 20. webhook_inbox
 ```text
 webhook_inbox
--------------
 id uuid PK
 provider varchar(40) NOT NULL
 provider_event_id varchar(180) NOT NULL
@@ -709,38 +369,12 @@ processed_at timestamptz NULL
 retry_count integer NOT NULL DEFAULT 0
 last_error text NULL
 correlation_id uuid NULL
+UNIQUE(provider,provider_event_id)
 ```
 
-Constraints:
-
-```text
-UNIQUE(provider, provider_event_id)
-CHECK(retry_count >= 0)
-```
-
-Status sugerido:
-
-```text
-RECEIVED
-PROCESSING
-PROCESSED
-FAILED
-```
-
-Objetivo:
-
-- deduplicação de webhook;
-- resposta HTTP rápida;
-- processamento resiliente;
-- auditoria financeira.
-
----
-
-## 19. outbox_messages
-
+## 21. outbox_messages
 ```text
 outbox_messages
----------------
 id uuid PK
 tenant_id uuid NULL
 event_type varchar(160) NOT NULL
@@ -755,132 +389,65 @@ retry_count integer NOT NULL DEFAULT 0
 last_error text NULL
 ```
 
-Índices:
+## Anti-double-booking
 
-```text
-IX_outbox_unprocessed(processed_at, occurred_at)
-IX_outbox_tenant(tenant_id, occurred_at)
+```sql
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+ALTER TABLE appointments
+ADD CONSTRAINT ex_appointments_no_overlap
+EXCLUDE USING gist (
+  tenant_id WITH =,
+  professional_id WITH =,
+  tstzrange(starts_at, ends_at, '[)') WITH &&
+)
+WHERE (status IN ('PENDING','CONFIRMED','CONFIRMED_BY_CLIENT','RESCHEDULE_REQUESTED'));
 ```
 
-Objetivo:
+PENDING expirado deve ser materializado como `EXPIRED` por worker; não usar `now()` no predicado da constraint.
 
-- persistir estado + evento na mesma transação;
-- reduzir risco de perda de evento entre commit e processamento assíncrono.
-
----
-
-## Relacionamentos principais
+## Relacionamentos
 
 ```text
-Tenant 1 ─── 1 Business
-BusinessType 1 ─── N Business
-Tenant 1 ─── N Users
-Business 1 ─── N Services
-Business 1 ─── N Professionals
-Business 1 ─── N Customers
-Professional N ─── N Service      via ProfessionalService
-Professional 1 ─── N AvailabilityRule
-Professional 1 ─── N ScheduleBlock
-Customer 1 ─── N Appointment
-Professional 1 ─── N Appointment
-Service 1 ─── N Appointment
-Appointment 1 ─── N AppointmentHistory
-Appointment 1 ─── 0..1 Payment    no MVP normal
-Payment 1 ─── 0..N Refund
-Tenant 1 ─── N Conversation
-Tenant 1 ─── N UsageRecord
-Tenant 1 ─── N Subscription history
+Business 1 -> N Services
+Service(COMBO) N -> N Service(SINGLE) via ServiceComponent
+Professional N -> N Service via ProfessionalService
+Professional 1 -> N AvailabilityRule
+Professional 1 -> N ScheduleBlock
+Customer 1 -> N Appointment
+Professional 1 -> N Appointment
+Appointment 1 -> N AppointmentItem
+Service 1 -> N AppointmentItem
+Appointment 1 -> N AppointmentHistory
+Appointment 1 -> 0..1 Payment lógico MVP
+Payment 1 -> 0..N Refund
 ```
 
-Observação: fisicamente `Payment` pode permitir histórico técnico de tentativas, mas o MVP parte de uma cobrança lógica por appointment/purpose. Se quisermos registrar múltiplas tentativas no mesmo Payment, isso deve ser modelado internamente ou por entidade futura `PaymentAttempt`.
-
----
-
-## Diagrama textual simplificado
+## Índices prioritários
 
 ```text
-BUSINESS_TYPES
-      │
-      └──────────────┐
-                     │
-TENANTS              │
-  │                  │
-  ├── BUSINESSES ◄───┘
-  │     ├── SERVICES ───────────────┐
-  │     ├── PROFESSIONALS           │
-  │     │      ├── AVAILABILITY     │
-  │     │      ├── SCHEDULE_BLOCKS  │
-  │     │      └── PROFESSIONAL_SERVICES ── SERVICES
-  │     │                            │
-  │     ├── CUSTOMERS                │
-  │     │      │                     │
-  │     │      └──── APPOINTMENTS ───┘
-  │     │                 │
-  │     │                 ├── APPOINTMENT_HISTORY
-  │     │                 └── PAYMENTS
-  │     │                        └── REFUNDS
-  │     │
-  │     └── USERS
-  │
-  ├── SUBSCRIPTIONS
-  ├── CONVERSATIONS
-  ├── USAGE_RECORDS
-  ├── WEBHOOK_INBOX
-  └── OUTBOX_MESSAGES
+services(tenant_id,is_active)
+professionals(tenant_id,is_active)
+availability_rules(tenant_id,professional_id,day_of_week,is_active)
+schedule_blocks(tenant_id,professional_id,starts_at,ends_at)
+appointments(tenant_id,professional_id,starts_at)
+appointments(tenant_id,customer_id,starts_at)
+appointments(tenant_id,status,starts_at)
+appointment_items(tenant_id,appointment_id)
+payments(tenant_id,appointment_id)
+usage_records(tenant_id,occurred_at)
 ```
 
----
+## Multi-tenancy
 
-## Constraints multi-tenant
+Combinar TenantId do contexto autenticado, Global Query Filters EF Core, FKs/validações tenant-aware, índices tenant-scoped e testes de isolamento. RLS fica como evolução futura.
 
-Somente possuir `tenant_id` não garante isolamento completo.
+## Pontos antes da primeira migration
 
-Na implementação EF Core/PostgreSQL devemos combinar:
-
-1. Query Filter global por `TenantId` onde apropriado.
-2. `TenantId` derivado do contexto autenticado, nunca aceito cegamente do cliente.
-3. Índices iniciando por `tenant_id` em consultas tenant-scoped relevantes.
-4. Validação de FKs lógicas para impedir associação entre entidades de tenants diferentes.
-5. Testes automatizados específicos de isolamento.
-
-Evolução futura possível: Row-Level Security no PostgreSQL, se justificar complexidade adicional.
-
----
-
-## Decisões que ficam para implementação EF Core
-
-1. Naming convention `snake_case` no PostgreSQL.
-2. Configuração de `uuid` e geração de IDs na aplicação.
-3. Conversão de enums de domínio para strings.
-4. Global Query Filters por tenant.
-5. Interceptor/auditoria de `CreatedAt`/`UpdatedAt`.
-6. Migration manual para `btree_gist` e `EXCLUDE CONSTRAINT`, se o provider EF Core não expressar toda a constraint de forma conveniente.
-7. Tratamento de SQLSTATE da exclusion violation para converter em `SLOT_UNAVAILABLE`.
-8. Normalização determinística de `business_types.normalized_name` e geração de `slug`.
-
----
-
-## Pontos de revisão antes da primeira migration
-
-Antes de gerar a migration inicial, revisar:
-
-- se Customer por telefone deve ser único por tenant ou por business;
-- se haverá mais de um Business por Tenant no futuro;
-- se `Payment` deve ser 1:1 lógico ou suportar `PaymentAttempt` desde o início;
-- se `ProfessionalService.custom_duration_minutes` entra no MVP;
-- retenção de conversations e payloads de webhook;
-- política de PII e LGPD para dados de cliente;
-- estratégia exata de roles/permissões;
-- quais `business_types` serão pré-carregados como seed oficial do MVP.
-
----
-
-## Próximo passo
-
-Após revisão deste ERD físico v1:
-
-1. fechar decisões pendentes;
-2. criar contratos de API v1;
-3. definir estrutura física da solution .NET;
-4. criar projetos e dependências;
-5. iniciar migrations e implementação do Scheduling Core.
+- revisar escopo de unicidade de `business_types` customizados;
+- decidir PaymentAttempt se múltiplas tentativas precisarem de entidade própria;
+- manter `ProfessionalService.custom_duration_minutes` desabilitado na UX inicial;
+- validar constraints compostas de TenantId;
+- retenção/LGPD de Conversation/webhooks;
+- seed oficial de business types;
+- validar regra de combo sem nesting.
