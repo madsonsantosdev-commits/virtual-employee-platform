@@ -14,15 +14,20 @@ O produto é um **funcionário virtual** que atende clientes pelo WhatsApp, conh
 - Multi-Tenant desde o primeiro dia
 - IA interpreta; backend valida e executa
 - Pagamentos e assinaturas SaaS em fluxos financeiros separados
-- Security by Design e Observability by Design
+- Security by Design, Privacy by Design/LGPD e Observability by Design
 - Sem adoção prematura de microsserviços
 
 ## Documentação
 
 - [Visão do Produto](docs/product/product-vision.md)
 - [Visão Geral da Arquitetura](docs/architecture/architecture-overview.md)
+- [LGPD & Privacy Architecture v1](docs/architecture/privacy-lgpd-v1.md)
 - [Módulos e Limites Arquiteturais](docs/architecture/modules.md)
 - [Interações e Eventos](docs/architecture/interactions-and-events.md)
+- [Modelo de Domínio v1](docs/domain/domain-model.md)
+- [ERD Físico v1](docs/domain/erd-v1.md)
+- [Scheduling Domain](docs/domain/scheduling.md)
+- [Contratos API v1](docs/api/contracts-v1.md)
 - [ADRs](docs/architecture/adr/)
 
 ## Diagramas de Arquitetura
@@ -35,4 +40,4 @@ O workspace contém, entre outros artefatos, as visões **Macro Architecture** e
 
 ## Status
 
-Projeto em fase de planejamento arquitetural e definição do MVP.
+Projeto em fase de fechamento pré-implementação do MVP: ERD/API, privacidade/LGPD, wireframes essenciais e backlog antes da estrutura inicial da Solution .NET.
