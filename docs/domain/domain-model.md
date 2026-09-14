@@ -19,6 +19,7 @@ Definir o modelo de domínio inicial da Virtual Employee Platform antes da imple
 10. Sem sinal, pagamento parcial, pagamento complementar ou refund parcial no MVP.
 11. Double-booking é impedido por validação transacional + constraint PostgreSQL.
 12. Um Appointment pode conter um ou mais serviços, mas possui um único Professional no MVP.
+13. Privacy by Design: coletar, persistir, expor e compartilhar somente os dados necessários à finalidade.
 
 ---
 
@@ -30,192 +31,178 @@ Fronteira lógica de propriedade, isolamento de dados, segurança e cobrança do
 ### Business
 Representa o negócio/marca operado pelo Tenant. Mantém políticas comerciais como cancelamento/refund e granularidade de início de agenda (`SlotIntervalMinutes`, default 15).
 
-No MVP a experiência inicial será simples: 1 Tenant -> 1 Business -> 1 Location. O modelo, porém, suporta 1 Business -> N Locations para redes e unidades futuras.
+No MVP a experiência inicial será simples: 1 Tenant -> 1 Business -> 1 Location. O modelo suporta 1 Business -> N Locations.
 
 ### BusinessType
-Classificação do negócio. Tipos oficiais da plataforma possuem escopo global; tipos customizados pertencem ao Tenant que os criou. A unicidade de tipos customizados é tenant-scoped, evitando conflito quando tenants diferentes usam o mesmo nome personalizado.
+Classificação do negócio. Tipos oficiais possuem escopo global; tipos customizados pertencem ao Tenant. Unicidade customizada é tenant-scoped.
 
 ### LegalEntity
-Representa a identidade jurídica/fiscal associada ao Business.
+Representa identidade jurídica/fiscal associada ao Business.
 
-Campos conceituais:
-- `TenantId`, `BusinessId`
-- `EntityType` (`PERSON`, `COMPANY`)
-- `DocumentType` (`CPF`, `CNPJ`)
-- `DocumentNumber`
-- `CountryCode`
-- `LegalName`, `TradeName`
-- `IsPrimary`, `IsActive`
+Campos conceituais: `TenantId`, `BusinessId`, `EntityType (PERSON|COMPANY)`, `DocumentType (CPF|CNPJ)`, `DocumentNumber`, `CountryCode`, `LegalName`, `TradeName`, `IsPrimary`, `IsActive`.
 
-Regras:
-- CPF/CNPJ são normalizados e validados no backend;
-- documento fiscal nunca é chave primária;
-- documento completo não deve aparecer em logs;
-- alteração de dados fiscais deve ser auditável;
-- IA não recebe CPF/CNPJ sem necessidade operacional.
+Regras de privacidade e domínio:
+- CPF/CNPJ normalizados e validados no backend;
+- documento fiscal nunca é PK;
+- documento completo não aparece em logs;
+- UI mascara documento quando visualização integral não for necessária;
+- alteração de dados fiscais é auditável;
+- acesso requer autorização;
+- IA não recebe CPF/CNPJ sem necessidade operacional explícita;
+- retenção/exclusão segue política definida por finalidade e obrigação aplicável.
 
 ### Location
-Representa uma unidade operacional física ou virtual do Business.
+Unidade operacional física ou virtual. Mantém nome, telefone, endereço, país e timezone. Pode referenciar LegalEntity.
 
-Mantém nome da unidade, telefone, endereço, país e timezone. Pode referenciar uma `LegalEntity`, permitindo que matriz e filial tenham entidades fiscais diferentes quando necessário.
-
-Regra arquitetural aprovada:
 > **Tenant = fronteira de propriedade, segurança e cobrança. Business = negócio/marca. Location = unidade operacional física ou virtual.**
 
-Franquias não serão implementadas como módulo no MVP. Franqueados independentes podem futuramente possuir Tenants separados, preservando isolamento financeiro e de dados.
+Franquias não serão módulo do MVP. Franqueados independentes podem futuramente possuir Tenants separados.
 
 ---
 
 ## Catálogo e profissionais
 
 ### Service
-Catálogo comercial do estabelecimento.
+Catálogo comercial do estabelecimento: `ServiceId`, `TenantId`, `BusinessId`, nome, descrição, tipo `SINGLE|COMBO`, preço, duração, RequiresPayment e IsActive.
 
-Campos principais:
-- `ServiceId`, `TenantId`, `BusinessId`
-- `Name`, `Description`
-- `ServiceType` (`SINGLE`, `COMBO`)
-- `Price`, `DurationMinutes`
-- `RequiresPayment`, `IsActive`
-
-Regras: preço e duração são definidos pelo backend; combo possui preço/duração próprios; alteração posterior não modifica Appointment histórico; combo não contém outro combo no MVP.
-
-O escopo final Business x Location de Service será fechado na revisão do próximo bloco do ERD.
+Preço/duração definidos pelo backend; combo possui valores próprios; alterações não modificam histórico; sem combo aninhado no MVP. Escopo Business x Location será fechado na próxima revisão.
 
 ### ServiceComponent
-Descreve a composição comercial de um Service `COMBO`. Componentes devem ser serviços simples, não calculam automaticamente preço/duração do combo e não há combos aninhados no MVP.
+Composição comercial de COMBO. Componentes SINGLE; não calculam automaticamente preço/duração; sem nesting.
 
 ### Professional
-Profissional que executa serviços. O relacionamento definitivo com Location será fechado na revisão multi-unidade do bloco de catálogo/profissionais.
+Profissional que executa serviços. O relacionamento definitivo com Location será fechado na revisão multi-unidade.
+
+Dados pessoais de Professional devem ser limitados aos necessários para operação e administração. Informações não necessárias ao Scheduling não pertencem automaticamente ao agregado.
 
 ### ProfessionalService
-Matriz de capacidade **Professional × Service**. Um profissional é elegível somente se estiver habilitado para todos os serviços selecionados. Não criar entidade `Skill` separada no MVP.
+Matriz Professional × Service. Profissional elegível deve estar habilitado para todos os serviços selecionados. Sem entidade Skill separada no MVP.
 
 ### AvailabilityRule
-Agenda-base recorrente do profissional por dia da semana e horário local. A aplicação permite reaproveitar/copiar configuração e alterar exceções.
+Agenda-base recorrente do profissional. Aplicação permite reutilizar/copiar configuração e alterar exceções.
 
 ### ScheduleBlock
-Exceção/indisponibilidade específica. Antes de bloquear período com appointments afetados, o sistema apresenta impacto; após confirmação, oferece alternativas aos clientes. Nenhum cliente é movido automaticamente sem consentimento.
+Exceção/indisponibilidade. Sistema apresenta impacto e oferece alternativas; nenhum cliente é movido sem consentimento.
 
 ### Customer
 Cliente final. Telefone/WhatsApp é identificador operacional principal, mas não PK.
+
+Dados previstos no MVP: nome opcional, telefone/WhatsApp obrigatório operacionalmente e e-mail opcional. Evitar enriquecer Customer com dados pessoais sem finalidade definida.
+
+Atendimento de direitos LGPD deve conseguir localizar os registros relacionados ao titular sem tornar telefone/CPF chave primária.
 
 ---
 
 ## Appointment — Aggregate Root
 Principal agregado operacional do Scheduling.
 
-Campos principais: `AppointmentId`, `TenantId`, `BusinessId`, `CustomerId`, `ProfessionalId`, `StartsAt`, `EndsAt`, `TotalPriceSnapshot`, `TotalDurationMinutesSnapshot`, `Status`, `ReservationExpiresAt`, dados de cancelamento e auditoria.
+Campos principais: `AppointmentId`, `TenantId`, `BusinessId`, `CustomerId`, `ProfessionalId`, `StartsAt`, `EndsAt`, `TotalPriceSnapshot`, `TotalDurationMinutesSnapshot`, `Status`, `ReservationExpiresAt`, cancelamento e auditoria.
 
-`LocationId` será incorporado ao Appointment quando fecharmos o escopo operacional multi-location do Scheduling.
+`LocationId` será incorporado quando fecharmos Scheduling multi-location.
 
 ### AppointmentItem
-Um Appointment possui 1..N itens. Cada item preserva `ServiceId`, nome, preço e duração em snapshot. No MVP o mesmo Service não se repete no Appointment e não existe `quantity`.
+Appointment possui 1..N itens, preservando ServiceId, nome, preço e duração em snapshot. Sem quantity no MVP.
+
+Snapshots devem preservar apenas dados comerciais necessários ao histórico; não duplicar PII do Customer/Professional nos itens.
 
 ### Totais
 ```text
-SUM(AppointmentItems.PriceSnapshot)
- -> Appointment.TotalPriceSnapshot
- -> Payment.Amount
-
-SUM(AppointmentItems.DurationMinutesSnapshot)
- -> Appointment.TotalDurationMinutesSnapshot
- -> EndsAt = StartsAt + duração total
+SUM(AppointmentItems.PriceSnapshot) -> Appointment.TotalPriceSnapshot -> Payment.Amount
+SUM(AppointmentItems.DurationMinutesSnapshot) -> Appointment.TotalDurationMinutesSnapshot -> EndsAt
 ```
 
 Combo usa preço/duração próprios.
 
-### Fluxo de seleção
+### Fluxo
 ```text
 Selecionar 1..N serviços
 -> backend calcula preço/duração
--> opcionalmente sugere combo equivalente
--> encontra profissionais habilitados para TODOS os serviços
--> encontra janela contínua
--> cliente escolhe horário
--> CreateAppointment revalida tudo
--> Appointment PENDING
+-> opcionalmente sugere combo
+-> profissionais habilitados para TODOS
+-> janela contínua
+-> cliente escolhe
+-> CreateAppointment revalida
+-> PENDING
 -> pagamento integral
 -> webhook confiável
 -> CONFIRMED
 ```
 
-Um Appointment possui um único Professional no MVP.
-
-### Status v1
+### Status
 `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`, `EXPIRED`, `COMPLETED`, `NO_SHOW`.
 
-`RESCHEDULED` é evento/histórico, não estado permanente.
-
 ### Invariantes
-1. `StartsAt < EndsAt`.
+1. StartsAt < EndsAt.
 2. Pelo menos um AppointmentItem.
 3. Duração total corresponde ao intervalo.
 4. Preço total corresponde à soma dos itens.
 5. Professional habilitado para todos os Services.
 6. Intervalo respeita agenda, bloqueios e appointments ativos.
-7. Não há sobreposição ativa para o mesmo profissional.
-8. CreateAppointment recalcula preço/duração e disponibilidade.
-9. Appointment pago só vira CONFIRMED após confirmação financeira confiável.
-10. Mudança financeira após pagamento não usa pagamento complementar no MVP; requer fluxo controlado de cancelamento/novo booking.
+7. Sem sobreposição ativa para mesmo profissional.
+8. CreateAppointment recalcula preço/duração/disponibilidade.
+9. Pago só vira CONFIRMED após confirmação financeira confiável.
+10. Mudança financeira após pagamento requer cancelamento/novo booking no MVP.
 
 ### AppointmentHistory
-Registra mudanças de status, horário, profissional e motivo, preservando auditoria e reagendamentos.
+Preserva auditoria operacional. Registrar mudança necessária sem copiar PII desnecessária; preferir IDs, ator, timestamps, estados e motivo operacional.
 
 ---
 
 ## Payment e Refund
-Payment representa pagamento integral do Appointment via PIX, CREDIT_CARD ou DEBIT_CARD. `Payment.Amount == Appointment.TotalPriceSnapshot`; sem valor arbitrário, sinal ou parcial; checkout hospedado/tokenizado; confirmação apenas por webhook/API confiável.
+Payment integral via PIX, CREDIT_CARD ou DEBIT_CARD. `Payment.Amount == Appointment.TotalPriceSnapshot`. Checkout hospedado/tokenizado; dados brutos de cartão não trafegam pela aplicação; confirmação apenas por webhook/API confiável.
 
-Refund é integral e assíncrono. `Refund.Amount == Payment.Amount` no MVP. Nunca comunicar REFUNDED antes da confirmação do gateway.
+Refund integral e assíncrono. Nunca comunicar REFUNDED antes da confirmação do gateway.
 
 ## Conversation
-Estado conversacional não substitui estado do Appointment. IA interpreta intenção e solicita ferramentas estruturadas, mas não altera banco diretamente.
+Estado conversacional não substitui Appointment. IA interpreta e solicita ferramentas estruturadas, sem acesso direto ao banco.
 
-## Subscription e unidade faturável
-Billing SaaS é separado de Customer Payments. Mensal: cartão recorrente ou Pix. Anual/12 meses: cartão recorrente. Sem boleto.
+Conversation e conteúdo de mensagens são dados com retenção própria. Não presumir retenção indefinida.
 
-Uma Subscription não deve significar automaticamente “todas as unidades do Tenant”. O modelo inclui `SubscriptionUnit`, associando explicitamente a assinatura às Locations faturáveis.
-
-Exemplo futuro:
+Fluxo de IA:
 ```text
-Tenant: Barbearias Alpha
-Business: Alpha Barbearias
-Locations: Moema, Tatuapé, Campinas
-Subscription
- -> SubscriptionUnit: Moema
- -> SubscriptionUnit: Tatuapé
- -> SubscriptionUnit: Campinas
+Canal -> Conversation Engine -> Context Builder/Data Minimization -> AI Gateway -> LLM
 ```
 
-Isso evita cobrar apenas uma assinatura quando múltiplas unidades consomem plataforma, WhatsApp, IA e infraestrutura. Política de preço multi-unidade/franquias fica fora do MVP e poderá ser definida comercialmente depois.
+O modelo recebe apenas contexto necessário. CPF/CNPJ, cartão, secrets e dados financeiros irrelevantes são excluídos do contexto.
+
+## Subscription e unidade faturável
+Billing SaaS separado de Customer Payments. Mensal: cartão recorrente ou Pix. Anual: cartão recorrente. Sem boleto.
+
+Subscription não significa automaticamente todas as unidades. `SubscriptionUnit` associa assinatura às Locations faturáveis.
 
 ## UsageRecord
-Mede AI requests/tokens/custo, WhatsApp inbound/outbound/custo, appointments, payments e refunds por tenant. Evolução multi-location poderá também permitir análise/custo por Location.
+Mede consumo/custos. Telemetria deve usar IDs técnicos e evitar conteúdo pessoal/conversacional quando não necessário.
+
+---
+
+## Privacidade / LGPD — invariantes de domínio
+
+1. Toda nova categoria de dado pessoal exige finalidade documentada antes de entrar no modelo.
+2. APIs não retornam PII por conveniência; DTOs expõem somente o necessário ao caso de uso.
+3. CPF/CNPJ e identificadores pessoais não são usados como PK.
+4. PII não deve ser duplicada em snapshots sem necessidade histórica real.
+5. Logs/auditoria preferem IDs e metadados técnicos.
+6. Retenção é definida por categoria; soft-delete não é justificativa para retenção eterna.
+7. Processos devem permitir localizar/corrigir/exportar/anonimizar/eliminar dados quando juridicamente aplicável.
+8. Compartilhamento com provedores externos segue minimização.
+9. Papéis Controlador/Operador são avaliados por finalidade/fluxo.
+10. Decisão jurídica sobre base legal, retenção obrigatória ou incidente não é delegada ao LLM.
+
+Detalhamento: `docs/architecture/privacy-lgpd-v1.md`.
 
 ---
 
 ## Disponibilidade e agenda
 ```text
-Agenda-base recorrente (AvailabilityRule)
-- exceções (ScheduleBlock)
-- Appointments ativos
-= janelas livres
+AvailabilityRule - ScheduleBlock - Appointments ativos = janelas livres
 ```
 
-Slots não são persistidos. Para múltiplos serviços: Services selecionados -> interseção de ProfessionalServices -> duração total -> janela contínua suficiente. Granularidade de 15 minutos define possíveis inícios, não duração do serviço.
+Para múltiplos serviços: Services -> interseção ProfessionalServices -> duração total -> janela contínua. Slots não são persistidos.
 
-Imprevistos: administrador informa indisponibilidade -> análise de impacto -> confirmação -> ScheduleBlock -> alternativas -> mensagem -> cliente escolhe -> backend revalida -> reagendamento.
-
----
+Imprevistos: indisponibilidade -> impacto -> confirmação -> ScheduleBlock -> alternativas -> mensagem -> cliente escolhe -> revalidação -> reagendamento.
 
 ## Concorrência
-Consultar disponibilidade não garante vaga. CreateAppointment revalida e a constraint PostgreSQL é a última barreira. Em corrida, apenas uma reserva persiste; a perdedora recebe `SLOT_UNAVAILABLE` e alternativas atualizadas.
-
-Mensagem padrão:
-> **Desculpe, este horário acabou de ser preenchido. Escolha um dos horários disponíveis abaixo.**
-
----
+Consultar disponibilidade não garante vaga. CreateAppointment revalida e constraint PostgreSQL é última barreira. Perdedor recebe SLOT_UNAVAILABLE e alternativas.
 
 ## Relacionamentos conceituais
 ```text
@@ -245,3 +232,6 @@ Tenant -> Conversations / Subscription / UsageRecords
 
 Para operações financeiras:
 > **IA interpreta -> Usuário autoriza quando necessário -> Backend valida -> Gateway processa -> Webhook confirma.**
+
+Para privacidade:
+> **Coletar o necessário -> limitar finalidade/acesso -> compartilhar o mínimo -> reter pelo período definido -> atender direitos do titular.**
