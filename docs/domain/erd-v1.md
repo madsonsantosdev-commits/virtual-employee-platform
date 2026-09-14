@@ -27,20 +27,23 @@ Tenant
 
 `AvailabilityRule` é Professional + Location. `ScheduleBlock` sempre é Location-scoped e opcionalmente Professional-scoped.
 
-## LocationService
+## LocationService — APROVADO PARA MIGRATION 001
 ```text
 location_services
 tenant_id uuid NOT NULL
 location_id uuid NOT NULL FK -> locations.id
 service_id uuid NOT NULL FK -> services.id
 is_active boolean NOT NULL DEFAULT true
-price_override numeric(12,2) NULL
-duration_minutes_override integer NULL
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 PK(tenant_id,location_id,service_id)
 ```
-Overrides continuam como decisão pendente para Migration 001; UX/API inicial não os utiliza.
+
+`LocationService` define somente se um Service do Business está disponível em determinada Location.
+
+**Migration 001 não terá `price_override` nem `duration_minutes_override`.** Preço e duração permanecem definidos em `Service` no MVP. Caso surja requisito real de preço/duração por unidade, a evolução será feita por migration própria, com impacto explícito em API, snapshots, analytics e regras de booking.
+
+Motivação: reduzir complexidade, joins condicionais e ambiguidade comercial no hot path do Scheduling sem antecipar um requisito ainda não comprovado.
 
 ## Appointment
 ```text
@@ -142,6 +145,8 @@ Tenant + Location
   = Slot elegível
 ```
 
+Preço/duração são obtidos diretamente de `Service` no MVP, sem fallback/override por Location.
+
 ## Estratégia de integridade Multi-Tenant — APROVADA
 
 A arquitetura adota isolamento estrutural por `TenantId` com foco simultâneo em segurança, simplicidade e performance.
@@ -194,7 +199,6 @@ Esta lista é baseline, não obrigação de criar índices redundantes. Validar 
 TenantId do contexto autenticado, Global Query Filters EF Core, validações tenant-aware, índices tenant-scoped e testes de isolamento. RLS é evolução futura. LGPD detalhada em `docs/architecture/privacy-lgpd-v1.md`.
 
 ## Pontos antes da primeira migration
-- decidir se overrides de LocationService ficam fisicamente na Migration 001 ou somente em migration futura;
 - validar unicidade/proteção CPF/CNPJ;
 - definir retenção de Conversation/webhooks/logs;
 - seed oficial de BusinessTypes;
