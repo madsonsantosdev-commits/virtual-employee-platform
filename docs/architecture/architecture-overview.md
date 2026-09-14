@@ -25,6 +25,18 @@ LegalEntity = identidade jurídica/fiscal
 
 No MVP a experiência inicial será 1 Tenant -> 1 Business -> 1 Location, mas o modelo suporta múltiplas Locations. Autorização e isolamento são requisitos arquiteturais, não filtros de interface.
 
+### Estratégia de integridade com foco em performance
+
+`TenantId` é a principal barreira estrutural no banco para dados tenant-owned. Relacionamentos críticos usam validação tenant-aware e índices tenant-scoped.
+
+Regras específicas de coerência operacional de Business, Location, Service e Professional permanecem prioritariamente no domínio/aplicação, evitando inflar todas as FKs com chaves compostas maiores quando isso não entrega benefício proporcional.
+
+Princípio aprovado:
+
+> **Integridade suficiente para impedir vazamento entre tenants, com domínio responsável por regras específicas de Business e índices/constraints adicionais orientados por hot paths reais e pelo equilíbrio entre integridade e performance.**
+
+Isso não reduz a segurança: a aplicação valida contexto/autorização, o domínio valida invariantes operacionais e o PostgreSQL continua como última barreira para isolamento crítico.
+
 ## 4. Canais
 
 Cliente final: WhatsApp. Assinante: PWA mobile-first + WhatsApp para comandos administrativos selecionados.
@@ -34,7 +46,7 @@ Cliente final: WhatsApp. Assinante: PWA mobile-first + WhatsApp para comandos ad
 1. **Canais** — WhatsApp do cliente, WhatsApp administrativo e PWA.
 2. **Experiência e Orquestração** — Conversation Engine, AI Gateway e Messaging.
 3. **Core do Negócio** — Business Profile, Locations, Services, Professionals, Customers e Scheduling.
-4. **Financeiro e Inteligência** — Payments, Refunds, Billing, Analytics e Usage Metering.
+4. **Financeiro e Inteligência** — Payments, PaymentAttempts, Refunds, Billing, Analytics e Usage Metering.
 5. **Plataforma e Infraestrutura** — Identity/Tenants, PostgreSQL, workers, observabilidade, segurança e privacidade.
 
 Provedores externos permanecem atrás de adapters.
@@ -62,6 +74,21 @@ Privacy/LGPD é requisito transversal, não um módulo isolado que possa ser ign
 ## 7. Domínio operacional central
 
 O **Scheduling Engine** é o domínio operacional central do MVP. Conhece as regras necessárias para disponibilidade, serviços, profissionais, locations e appointments, mas não depende diretamente de SDKs do WhatsApp, LLM ou gateways de pagamento.
+
+Os hot paths de performance serão medidos e otimizados principalmente em:
+
+```text
+Tenant + Location
+-> LocationService
+-> ProfessionalLocation
+-> ProfessionalService
+-> AvailabilityRule
+-> ScheduleBlock
+-> Appointments ativos
+-> Slots disponíveis
+```
+
+Índices serão criados a partir desses padrões de acesso e de evidência real de uso, evitando índices redundantes que aumentem custo de escrita e memória.
 
 ## 8. Inteligência Artificial
 
@@ -91,9 +118,14 @@ Somente dados necessários à tarefa são enviados ao modelo. CPF/CNPJ, dados de
 
 - PostgreSQL transacional principal;
 - banco compartilhado;
-- isolamento por TenantId;
+- isolamento por `TenantId`;
+- índices tenant-scoped orientados por consultas reais;
+- coerência específica de Business validada no domínio;
+- constraints adicionais somente quando houver ganho claro de integridade/concorrência;
 - Azure Blob Storage quando necessário;
 - sem banco separado por módulo/tenant no MVP.
+
+Não será adotada uma estratégia de adicionar `BusinessId` a todas as FKs compostas indiscriminadamente. O desenho busca reduzir largura de índices, custo de escrita e complexidade no EF Core sem enfraquecer o isolamento entre tenants.
 
 ## 10. Processamento assíncrono
 
@@ -111,6 +143,16 @@ Existem dois fluxos financeiros independentes.
 
 ### Customer Payments
 Cliente paga o estabelecimento. Gateway processa e a plataforma orquestra/acompanha. Dados brutos de cartão não trafegam pela aplicação; usar checkout hospedado/tokenizado.
+
+O modelo separa:
+
+```text
+Appointment
+  -> Payment              = obrigação financeira lógica
+       -> PaymentAttempt  = tentativa concreta no gateway
+```
+
+Um Payment pode receber várias tentativas sem criar novas obrigações financeiras. Webhook confiável confirma o PaymentAttempt; então o Payment é confirmado e somente depois o Appointment pode ser confirmado financeiramente.
 
 ### SaaS Billing
 Estabelecimento paga a assinatura da plataforma. Billing Engine + provedor de cobrança, com liquidação para a conta PJ da plataforma. Mensalidade não é descontada das vendas do estabelecimento.
@@ -144,7 +186,7 @@ Documento normativo do projeto: `docs/architecture/privacy-lgpd-v1.md`.
 
 Observability by Design inclui logs estruturados, métricas, traces e correlação. Logs devem privilegiar IDs técnicos e evitar PII desnecessária.
 
-Medir por tenant e, quando útil, por Location: WhatsApp, IA/tokens/custos, appointments, payments e refunds.
+Medir por tenant e, quando útil, por Location: WhatsApp, IA/tokens/custos, appointments, payments, payment attempts e refunds.
 
 ## 16. Stack inicial
 
@@ -163,6 +205,11 @@ Medir por tenant e, quando útil, por Location: WhatsApp, IA/tokens/custos, appo
 - Monólito Modular primeiro.
 - Multi-Tenant desde o primeiro dia.
 - Tenant != Location.
+- `TenantId` como principal barreira estrutural de isolamento no banco.
+- Regras específicas de Business validadas no domínio.
+- Índices orientados por hot paths reais.
+- Evitar constraints e índices redundantes.
+- Equilíbrio entre integridade, simplicidade e performance.
 - API-first.
 - WhatsApp-first para cliente.
 - PWA mobile-first para assinante.
