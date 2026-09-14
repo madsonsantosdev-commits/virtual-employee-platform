@@ -4,46 +4,38 @@
 
 Este documento registra a direção arquitetural inicial do Virtual Employee Platform.
 
-A arquitetura deve permitir validar o produto rapidamente, manter baixo custo operacional e preservar caminhos claros de evolução conforme o número de tenants, conversas, agendamentos e pagamentos crescer.
+A arquitetura deve permitir validar o produto rapidamente, manter baixo custo operacional e preservar caminhos claros de evolução conforme o número de tenants, locations, conversas, agendamentos e pagamentos crescer.
 
 ## 2. Estilo arquitetural
 
-O MVP utilizará **Monólito Modular** em ASP.NET Core.
+O MVP utilizará **Monólito Modular** em ASP.NET Core. A aplicação será organizada em módulos de domínio com limites explícitos. Não adotaremos microsserviços ou Kubernetes prematuramente.
 
-A aplicação será organizada em módulos de domínio com limites explícitos. A separação lógica deverá permitir que módulos específicos sejam extraídos no futuro somente quando métricas técnicas ou de negócio justificarem essa mudança.
+## 3. Multi-Tenancy e estrutura organizacional
 
-Não adotaremos microsserviços ou Kubernetes prematuramente.
+A plataforma será Multi-Tenant desde o primeiro dia, usando inicialmente PostgreSQL compartilhado e isolamento por `TenantId`.
 
-## 3. Multi-Tenancy
+Fronteiras aprovadas:
 
-A plataforma será Multi-Tenant desde o primeiro dia.
+```text
+Tenant = propriedade, segurança e cobrança
+Business = negócio/marca
+Location = unidade operacional física ou virtual
+LegalEntity = identidade jurídica/fiscal
+```
 
-Inicialmente será utilizado um banco PostgreSQL compartilhado, com dados pertencentes aos estabelecimentos identificados e isolados por `TenantId`.
-
-Autorização e isolamento de tenant são requisitos arquiteturais, não apenas filtros de interface.
+No MVP a experiência inicial será 1 Tenant -> 1 Business -> 1 Location, mas o modelo suporta múltiplas Locations. Autorização e isolamento são requisitos arquiteturais, não filtros de interface.
 
 ## 4. Canais
 
-### Cliente final
-
-WhatsApp é o canal principal.
-
-### Assinante
-
-O assinante utilizará:
-
-- PWA mobile-first;
-- WhatsApp para comandos administrativos selecionados.
+Cliente final: WhatsApp. Assinante: PWA mobile-first + WhatsApp para comandos administrativos selecionados.
 
 ## 5. Camadas macro
 
-A arquitetura está organizada conceitualmente em cinco áreas:
-
 1. **Canais** — WhatsApp do cliente, WhatsApp administrativo e PWA.
 2. **Experiência e Orquestração** — Conversation Engine, AI Gateway e Messaging.
-3. **Core do Negócio** — Business Profile, Services, Professionals, Customers e Scheduling.
+3. **Core do Negócio** — Business Profile, Locations, Services, Professionals, Customers e Scheduling.
 4. **Financeiro e Inteligência** — Payments, Refunds, Billing, Analytics e Usage Metering.
-5. **Plataforma e Infraestrutura** — Identity/Tenants, PostgreSQL, workers, observabilidade e segurança.
+5. **Plataforma e Infraestrutura** — Identity/Tenants, PostgreSQL, workers, observabilidade, segurança e privacidade.
 
 Provedores externos permanecem atrás de adapters.
 
@@ -65,19 +57,15 @@ Provedores externos permanecem atrás de adapters.
 - Usage Metering
 - Audit & Observability
 
-Os limites e contratos desses módulos serão detalhados em documentos posteriores.
+Privacy/LGPD é requisito transversal, não um módulo isolado que possa ser ignorado pelos demais.
 
 ## 7. Domínio operacional central
 
-O **Scheduling Engine** é o domínio operacional central do MVP.
-
-Ele deverá conhecer regras necessárias para disponibilidade, serviços, profissionais e appointments, mas não deverá depender diretamente de SDKs do WhatsApp, OpenAI ou gateways de pagamento.
+O **Scheduling Engine** é o domínio operacional central do MVP. Conhece as regras necessárias para disponibilidade, serviços, profissionais, locations e appointments, mas não depende diretamente de SDKs do WhatsApp, LLM ou gateways de pagamento.
 
 ## 8. Inteligência Artificial
 
-A IA não é o centro da arquitetura. É uma capacidade utilizada pela camada de conversação.
-
-Regra arquitetural:
+A IA não é o centro da arquitetura. É uma capacidade da camada de conversação.
 
 > **IA interpreta → Backend valida → Domínio executa.**
 
@@ -85,95 +73,80 @@ Para operações financeiras:
 
 > **IA interpreta → Usuário autoriza quando necessário → Backend valida → Domínio executa → Gateway processa → Webhook confirma.**
 
-A IA não terá acesso direto ao banco de dados.
+A IA não terá acesso direto ao banco. O AI Gateway abstrai provedores/modelos, contexto, custos, tokens, logs e políticas por tenant.
 
-O AI Gateway será responsável por abstrair provedores/modelos, contexto, custos, tokens, logs e políticas de uso por tenant.
+Privacidade na IA:
+
+```text
+Canal
+ -> Conversation Engine
+ -> Context Builder / Data Minimization
+ -> AI Gateway
+ -> LLM Provider
+```
+
+Somente dados necessários à tarefa são enviados ao modelo. CPF/CNPJ, dados de cartão, secrets e dados financeiros sem relação com a tarefa não entram no contexto por padrão.
 
 ## 9. Persistência
 
-Inicialmente:
-
-- PostgreSQL como banco transacional principal;
-- um banco compartilhado;
-- isolamento por `TenantId`;
-- Azure Blob Storage para objetos/arquivos quando necessário.
-
-Não haverá banco separado por módulo ou tenant no MVP.
+- PostgreSQL transacional principal;
+- banco compartilhado;
+- isolamento por TenantId;
+- Azure Blob Storage quando necessário;
+- sem banco separado por módulo/tenant no MVP.
 
 ## 10. Processamento assíncrono
 
-Processamento assíncrono será usado onde trouxer benefício operacional, principalmente para:
-
-- lembretes;
-- mensagens de saída;
-- retries;
-- processamento de webhooks;
-- estornos;
-- tarefas analíticas e de background.
-
-Azure Functions ou workers poderão executar esses jobs.
-
-Azure Service Bus é um ponto de evolução e será introduzido quando houver necessidade concreta de desacoplamento, escala ou confiabilidade adicional.
+Usado para lembretes, mensagens de saída, retries, webhooks, refunds e tarefas analíticas/background. Azure Functions ou workers poderão executar jobs. Azure Service Bus é ponto de evolução quando houver necessidade concreta.
 
 ## 11. Integrações externas
 
-Principais integrações previstas:
+Previstas: Meta/WhatsApp Business, provedor de LLM, gateway de pagamentos de serviços e provedor de billing SaaS. Todas ficam atrás de adapters.
 
-- Meta / WhatsApp Business;
-- provedor de LLM;
-- gateway de pagamentos de serviços;
-- provedor de cobrança da assinatura SaaS.
-
-Todas devem ser acessadas através de adapters/abstrações para impedir acoplamento do domínio aos SDKs externos.
+Integrações que tratam dados pessoais devem constar no inventário de provedores/suboperadores, com finalidade e categorias de dados compartilhadas.
 
 ## 12. Pagamentos
 
 Existem dois fluxos financeiros independentes.
 
 ### Customer Payments
-
-O cliente paga o estabelecimento pelo serviço. O gateway processa o pagamento e a plataforma orquestra e acompanha o estado da transação.
+Cliente paga o estabelecimento. Gateway processa e a plataforma orquestra/acompanha. Dados brutos de cartão não trafegam pela aplicação; usar checkout hospedado/tokenizado.
 
 ### SaaS Billing
+Estabelecimento paga a assinatura da plataforma. Billing Engine + provedor de cobrança, com liquidação para a conta PJ da plataforma. Mensalidade não é descontada das vendas do estabelecimento.
 
-O estabelecimento paga a assinatura da plataforma. Esse fluxo utiliza o Billing Engine e um provedor de cobrança SaaS, com liquidação destinada à conta PJ da plataforma.
+Subscription possui unidades faturáveis explícitas (`SubscriptionUnit -> Location`), evitando assumir que uma assinatura cobre todas as unidades.
 
-A assinatura SaaS não será descontada das vendas do estabelecimento.
+## 13. Security by Design
 
-## 13. Segurança
+Inclui autenticação/autorização, isolamento por tenant, menor privilégio, secret management, checkout hospedado/tokenizado, ausência de cartão em WhatsApp/IA/logs/DB, validação de webhooks, idempotência, proteção contra replay/duplicidade, auditoria e rate limiting.
 
-Security by Design é requisito transversal.
+## 14. Privacy by Design / LGPD
 
-Inclui:
+Privacy by Design e Privacy by Default são requisitos arquiteturais transversais.
 
-- autenticação e autorização;
-- isolamento por tenant;
-- princípio do menor privilégio;
-- gerenciamento seguro de secrets;
-- checkout hospedado/tokenizado;
-- ausência de dados de cartão no WhatsApp, IA, logs e banco da aplicação;
-- validação de assinatura/autenticidade de webhooks;
-- idempotência;
-- proteção contra replay e duplicidade;
-- trilha de auditoria;
-- rate limiting;
-- proteção de dados alinhada à LGPD.
+Diretrizes:
+- finalidade definida para cada categoria de dado;
+- minimização/necessidade;
+- transparência;
+- acesso restrito;
+- retenção definida;
+- exclusão ou anonimização quando cabível;
+- capacidade técnica de atender direitos do titular;
+- papéis Controlador/Operador definidos por finalidade/fluxo;
+- compartilhamento mínimo com provedores;
+- PII redigida/mascarada em logs e interfaces quando possível;
+- incidentes de segurança com processo documentado.
 
-## 14. Observabilidade e custos
+Documento normativo do projeto: `docs/architecture/privacy-lgpd-v1.md`.
 
-Observability by Design deverá incluir logs estruturados, métricas, traces e correlação entre operações.
+## 15. Observabilidade e custos
 
-A plataforma também deverá medir consumo por tenant, especialmente:
+Observability by Design inclui logs estruturados, métricas, traces e correlação. Logs devem privilegiar IDs técnicos e evitar PII desnecessária.
 
-- mensagens WhatsApp;
-- requisições de IA;
-- tokens de entrada e saída;
-- custo estimado de IA;
-- appointments;
-- pagamentos;
-- refunds.
+Medir por tenant e, quando útil, por Location: WhatsApp, IA/tokens/custos, appointments, payments e refunds.
 
-## 15. Stack inicial
+## 16. Stack inicial
 
 - Backend: ASP.NET Core
 - ORM: Entity Framework Core
@@ -185,26 +158,27 @@ A plataforma também deverá medir consumo por tenant, especialmente:
 - CI/CD: GitHub Actions ou Azure DevOps, decisão final pendente
 - IaC: Terraform após estabilização da infraestrutura
 
-## 16. Princípios arquiteturais
+## 17. Princípios arquiteturais
 
 - Monólito Modular primeiro.
 - Multi-Tenant desde o primeiro dia.
+- Tenant != Location.
 - API-first.
-- WhatsApp-first para o cliente.
-- PWA mobile-first para o assinante.
+- WhatsApp-first para cliente.
+- PWA mobile-first para assinante.
 - Limites orientados pelo domínio.
 - IA interpreta; backend executa.
-- Integrações externas através de adapters.
-- Segurança e observabilidade desde a concepção.
+- Integrações por adapters.
+- Security by Design.
+- **Privacy by Design / LGPD.**
+- Observability by Design.
 - Monitoramento de custos por tenant.
 - Processamento assíncrono quando apropriado.
 - Sem microsserviços prematuros.
 - Sem Kubernetes no MVP.
 
-## 17. Evolução
+## 18. Evolução
 
-A arquitetura deverá evoluir baseada em evidências.
+A arquitetura evolui baseada em evidências. Messaging, AI, Notifications ou processamento de webhooks financeiros poderão ser extraídos futuramente se volume, isolamento, disponibilidade ou escala justificarem.
 
-Módulos como Messaging, AI, Notifications ou processamento de webhooks financeiros poderão ser extraídos futuramente se volume, isolamento, disponibilidade ou escala justificarem a complexidade operacional adicional.
-
-A próxima etapa arquitetural é definir formalmente os **limites dos módulos, responsabilidades, dependências permitidas e contratos entre eles**.
+Antes da implementação, além do fechamento do ERD/API, deve existir uma baseline de privacidade: inventário de dados, finalidades/bases legais candidatas, papéis Controlador/Operador, retenção, processo de direitos do titular, fornecedores/suboperadores e procedimento de incidentes.
