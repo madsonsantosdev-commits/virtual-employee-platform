@@ -1,7 +1,7 @@
 # ERD Físico v1 — PostgreSQL
 
 > Status: Draft v1 — alinhado às regras aprovadas
-> Data: 2026-09-11
+> Data: 2026-09-14
 
 ## Convenções
 
@@ -19,23 +19,27 @@ suspended_at timestamptz NULL
 CHECK status: PENDING|ACTIVE|SUSPENDED|CANCELLED
 ```
 
+Tenant é a fronteira de propriedade, segurança e cobrança. Não representa obrigatoriamente uma unidade física.
+
 ## 2. business_types
 ```text
 business_types
 id uuid PK
+tenant_id uuid NULL FK -> tenants.id
 name varchar(80) NOT NULL
 normalized_name varchar(100) NOT NULL
 slug varchar(100) NOT NULL
 is_system boolean NOT NULL DEFAULT false
 is_active boolean NOT NULL DEFAULT true
-created_by_tenant_id uuid NULL FK -> tenants.id
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
-UNIQUE(normalized_name)
-UNIQUE(slug)
 ```
 
-> Ponto de revisão antes da migration: a unicidade global de tipos customizados por tenant ainda deve ser revisada; não alterar silenciosamente nesta versão.
+Regras:
+- `tenant_id = NULL`: tipo oficial/system da plataforma;
+- `tenant_id != NULL`: tipo customizado pertencente ao tenant;
+- remover `created_by_tenant_id`, pois `tenant_id` define o escopo/proprietário do tipo customizado;
+- unicidade de `normalized_name`/`slug` deve respeitar o escopo: global entre tipos SYSTEM e por tenant entre tipos CUSTOM, implementada por índices únicos parciais/escopados na migration.
 
 ## 3. businesses
 ```text
@@ -44,12 +48,6 @@ id uuid PK
 tenant_id uuid NOT NULL FK -> tenants.id
 business_type_id uuid NOT NULL FK -> business_types.id
 name varchar(160) NOT NULL
-timezone varchar(80) NOT NULL
-phone varchar(30) NULL
-address_line varchar(240) NULL
-city varchar(120) NULL
-state varchar(80) NULL
-postal_code varchar(20) NULL
 automatic_refund_on_cancellation boolean NOT NULL DEFAULT false
 refund_deadline_hours_before_appointment integer NULL
 slot_interval_minutes integer NOT NULL DEFAULT 15
@@ -59,7 +57,56 @@ UNIQUE(tenant_id)
 CHECK(slot_interval_minutes > 0)
 ```
 
-## 4. users
+No MVP a experiência inicial continua 1 Tenant -> 1 Business. Endereço/timezone operacional deixam Business e pertencem à Location.
+
+## 4. legal_entities
+```text
+legal_entities
+id uuid PK
+tenant_id uuid NOT NULL FK -> tenants.id
+business_id uuid NOT NULL FK -> businesses.id
+entity_type varchar(20) NOT NULL
+document_type varchar(20) NOT NULL
+document_number varchar(32) NOT NULL
+country_code char(2) NOT NULL DEFAULT 'BR'
+legal_name varchar(180) NOT NULL
+trade_name varchar(180) NULL
+is_primary boolean NOT NULL DEFAULT false
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+CHECK(entity_type IN ('PERSON','COMPANY'))
+CHECK(document_type IN ('CPF','CNPJ'))
+```
+
+Regras: documento normalizado sem formatação; CPF/CNPJ validados no backend; documento não é PK; não registrar documento completo em logs; alterações relevantes devem ser auditáveis. A unicidade fiscal será validada na migration considerando `country_code + document_type + document_number` e regras de isolamento.
+
+## 5. locations
+```text
+locations
+id uuid PK
+tenant_id uuid NOT NULL FK -> tenants.id
+business_id uuid NOT NULL FK -> businesses.id
+legal_entity_id uuid NULL FK -> legal_entities.id
+name varchar(160) NOT NULL
+phone varchar(30) NULL
+address_line1 varchar(180) NULL
+address_line2 varchar(180) NULL
+number varchar(30) NULL
+district varchar(120) NULL
+city varchar(120) NULL
+state varchar(80) NULL
+postal_code varchar(20) NULL
+country_code char(2) NOT NULL DEFAULT 'BR'
+timezone varchar(80) NOT NULL
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+```
+
+Location é a unidade operacional física ou virtual. O modelo suporta 1 Business -> N Locations, embora o MVP inicialmente crie apenas uma unidade por negócio. Uma Location pode referenciar a entidade legal responsável por aquela unidade.
+
+## 6. users
 ```text
 users
 id uuid PK
@@ -73,7 +120,7 @@ updated_at timestamptz NOT NULL
 UNIQUE(tenant_id,email)
 ```
 
-## 5. services
+## 7. services
 ```text
 services
 id uuid PK
@@ -94,9 +141,9 @@ CHECK(duration_minutes > 0)
 UNIQUE(tenant_id,id)
 ```
 
-Combo possui preço/duração próprios.
+Combo possui preço/duração próprios. O escopo Business x Location será fechado na próxima revisão do catálogo.
 
-## 6. service_components
+## 8. service_components
 ```text
 service_components
 tenant_id uuid NOT NULL
@@ -109,7 +156,7 @@ CHECK(service_id <> component_service_id)
 
 Regras de aplicação: `service_id` deve ser COMBO; componente deve ser SINGLE; combos aninhados não entram no MVP; componentes não determinam preço/duração do combo.
 
-## 7. professionals
+## 9. professionals
 ```text
 professionals
 id uuid PK
@@ -121,7 +168,7 @@ created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 ```
 
-## 8. professional_services
+## 10. professional_services
 ```text
 professional_services
 tenant_id uuid NOT NULL
@@ -136,7 +183,7 @@ CHECK(custom_duration_minutes IS NULL OR custom_duration_minutes > 0)
 
 `ProfessionalService` é a matriz de capacidade. Para Appointment com N serviços, o profissional deve estar habilitado para todos. `custom_duration_minutes` fica preparado, mas não é usado no MVP inicial.
 
-## 9. availability_rules
+## 11. availability_rules
 ```text
 availability_rules
 id uuid PK
@@ -154,7 +201,7 @@ CHECK(start_time < end_time)
 
 Agenda recorrente é reaproveitável pela aplicação entre ciclos; não materializar slots/semanas no banco.
 
-## 10. schedule_blocks
+## 12. schedule_blocks
 ```text
 schedule_blocks
 id uuid PK
@@ -168,9 +215,9 @@ created_at timestamptz NOT NULL
 CHECK(starts_at < ends_at)
 ```
 
-`professional_id = NULL` significa bloqueio do estabelecimento inteiro.
+`professional_id = NULL` significa bloqueio do estabelecimento/unidade conforme escopo operacional a fechar na revisão de Scheduling multi-location.
 
-## 11. customers
+## 13. customers
 ```text
 customers
 id uuid PK
@@ -184,7 +231,7 @@ updated_at timestamptz NOT NULL
 UNIQUE(tenant_id,phone)
 ```
 
-## 12. appointments
+## 14. appointments
 ```text
 appointments
 id uuid PK
@@ -207,22 +254,11 @@ CHECK(total_price_snapshot >= 0)
 CHECK(total_duration_minutes_snapshot > 0)
 ```
 
-Status:
-```text
-PENDING
-CONFIRMED
-CONFIRMED_BY_CLIENT
-RESCHEDULE_REQUESTED
-CANCELLED_BY_CLIENT
-CANCELLED_BY_BUSINESS
-EXPIRED
-COMPLETED
-NO_SHOW
-```
+Status: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`, `EXPIRED`, `COMPLETED`, `NO_SHOW`.
 
-Um Appointment tem um único Professional no MVP.
+Um Appointment tem um único Professional no MVP. `location_id` será incorporado quando fecharmos o escopo operacional multi-location no bloco Scheduling.
 
-## 13. appointment_items
+## 15. appointment_items
 ```text
 appointment_items
 id uuid PK
@@ -240,15 +276,9 @@ UNIQUE(tenant_id,appointment_id,service_id)
 
 Sem `quantity` no MVP. Cada serviço/combo aparece no máximo uma vez no Appointment.
 
-Regras:
-```text
-SUM(item.price_snapshot) = appointment.total_price_snapshot
-SUM(item.duration_minutes_snapshot) = appointment.total_duration_minutes_snapshot
-appointment.ends_at = appointment.starts_at + total_duration
-```
-Validadas pelo domínio/transação.
+Regras: soma dos preços = total do Appointment; soma das durações = duração total; `ends_at = starts_at + total duration`. Validadas pelo domínio/transação.
 
-## 14. appointment_history
+## 16. appointment_history
 ```text
 appointment_history
 id uuid PK
@@ -267,7 +297,7 @@ correlation_id uuid NULL
 changed_at timestamptz NOT NULL
 ```
 
-## 15. payments
+## 17. payments
 ```text
 payments
 id uuid PK
@@ -290,7 +320,7 @@ UNIQUE(tenant_id,idempotency_key)
 
 Regra: `Payment.amount == Appointment.total_price_snapshot`.
 
-## 16. refunds
+## 18. refunds
 ```text
 refunds
 id uuid PK
@@ -309,7 +339,7 @@ failed_at timestamptz NULL
 ```
 Regra MVP: `Refund.amount == Payment.amount`; refund integral apenas.
 
-## 17. conversations
+## 19. conversations
 ```text
 conversations
 id uuid PK
@@ -323,7 +353,7 @@ started_at timestamptz NOT NULL
 last_interaction_at timestamptz NOT NULL
 ```
 
-## 18. subscriptions
+## 20. subscriptions
 ```text
 subscriptions
 id uuid PK
@@ -339,7 +369,18 @@ created_at timestamptz NOT NULL
 cancelled_at timestamptz NULL
 ```
 
-## 19. usage_records
+## 21. subscription_units
+```text
+subscription_units
+subscription_id uuid NOT NULL FK -> subscriptions.id
+location_id uuid NOT NULL FK -> locations.id
+created_at timestamptz NOT NULL
+PK(subscription_id,location_id)
+```
+
+A cobrança possui unidades faturáveis explícitas. Não inferir que uma Subscription cobre automaticamente todas as Locations do Tenant. No MVP haverá uma Location inicial; o modelo já evita cobrança única acidental de múltiplas unidades futuras.
+
+## 22. usage_records
 ```text
 usage_records
 id uuid PK
@@ -355,7 +396,7 @@ output_tokens integer NULL
 occurred_at timestamptz NOT NULL
 ```
 
-## 20. webhook_inbox
+## 23. webhook_inbox
 ```text
 webhook_inbox
 id uuid PK
@@ -372,7 +413,7 @@ correlation_id uuid NULL
 UNIQUE(provider,provider_event_id)
 ```
 
-## 21. outbox_messages
+## 24. outbox_messages
 ```text
 outbox_messages
 id uuid PK
@@ -393,7 +434,6 @@ last_error text NULL
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS btree_gist;
-
 ALTER TABLE appointments
 ADD CONSTRAINT ex_appointments_no_overlap
 EXCLUDE USING gist (
@@ -409,6 +449,12 @@ PENDING expirado deve ser materializado como `EXPIRED` por worker; não usar `no
 ## Relacionamentos
 
 ```text
+Tenant 1 -> N Business
+Business N -> 1 BusinessType
+Business 1 -> N LegalEntity
+Business 1 -> N Location
+Location N -> 0..1 LegalEntity
+Subscription N -> N Location via SubscriptionUnit
 Business 1 -> N Services
 Service(COMBO) N -> N Service(SINGLE) via ServiceComponent
 Professional N -> N Service via ProfessionalService
@@ -426,6 +472,9 @@ Payment 1 -> 0..N Refund
 ## Índices prioritários
 
 ```text
+business_types(tenant_id,normalized_name)
+legal_entities(tenant_id,business_id)
+locations(tenant_id,business_id,is_active)
 services(tenant_id,is_active)
 professionals(tenant_id,is_active)
 availability_rules(tenant_id,professional_id,day_of_week,is_active)
@@ -435,6 +484,7 @@ appointments(tenant_id,customer_id,starts_at)
 appointments(tenant_id,status,starts_at)
 appointment_items(tenant_id,appointment_id)
 payments(tenant_id,appointment_id)
+subscription_units(subscription_id,location_id)
 usage_records(tenant_id,occurred_at)
 ```
 
@@ -444,10 +494,13 @@ Combinar TenantId do contexto autenticado, Global Query Filters EF Core, FKs/val
 
 ## Pontos antes da primeira migration
 
-- revisar escopo de unicidade de `business_types` customizados;
+- fechar escopo Business x Location de Services e Professionals;
+- incorporar `location_id` ao Scheduling onde operacionalmente necessário;
 - decidir PaymentAttempt se múltiplas tentativas precisarem de entidade própria;
 - manter `ProfessionalService.custom_duration_minutes` desabilitado na UX inicial;
 - validar constraints compostas de TenantId;
+- validar índices únicos parciais de `business_types` SYSTEM/CUSTOM;
+- validar unicidade e proteção de CPF/CNPJ;
 - retenção/LGPD de Conversation/webhooks;
 - seed oficial de business types;
 - validar regra de combo sem nesting.
