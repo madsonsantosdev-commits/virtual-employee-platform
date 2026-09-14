@@ -17,37 +17,22 @@ Base: `/api/v1`. JSON, UUID, ISO-8601. TenantId vem do contexto confiável. Escr
 `POST /locations`
 `PUT /locations/{locationId}`
 
-Exemplo:
-```json
-{
-  "name":"Moema",
-  "legalEntityId":"<uuid-or-null>",
-  "phone":"+5511999999999",
-  "addressLine1":"Av. Exemplo",
-  "number":"100",
-  "district":"Moema",
-  "city":"São Paulo",
-  "state":"SP",
-  "postalCode":"00000000",
-  "countryCode":"BR",
-  "timezone":"America/Sao_Paulo"
-}
-```
-
 MVP cria uma Location no onboarding, mas contratos não assumem que ela será sempre única.
 
 ## 3. Services, Combos e disponibilidade por Location
 `GET /services?active=true&locationId=<uuid>`
 `POST /services`, `PUT /services/{serviceId}`.
 
-Service pertence ao Business e contém preço/duração padrão.
+Service pertence ao Business e é a fonte comercial de preço/duração no MVP.
 
 `PUT /locations/{locationId}/services/{serviceId}`
 ```json
 {"isActive":true}
 ```
 
-`LocationService` define disponibilidade por unidade. Overrides de preço/duração ficam preparados como evolução e não entram na primeira UX/API.
+`LocationService` define **somente disponibilidade do Service na unidade**. A API v1 não aceita nem retorna override de preço/duração por Location.
+
+Preço/duração por unidade não fazem parte da Migration 001. Se esse requisito aparecer após validação real do produto, será introduzido explicitamente em nova migration e nova versão/evolução de contrato, preservando snapshots históricos de AppointmentItem.
 
 COMBO possui preço/duração próprios, componentes SINGLE e sem nesting.
 
@@ -62,21 +47,14 @@ Professional pertence ao Business.
 {"locationIds":["<moema-id>","<tatuape-id>"]}
 ```
 
-`ProfessionalLocation` define onde trabalha; `ProfessionalService` define o que executa.
-
-Quando vários serviceIds forem informados, retornar somente profissionais da Location habilitados para TODOS os Services.
+`ProfessionalLocation` define onde trabalha; `ProfessionalService` define o que executa. Quando vários serviceIds forem informados, retornar somente profissionais da Location habilitados para TODOS os Services.
 
 ## 5. Availability Rules
 `GET /locations/{locationId}/professionals/{professionalId}/availability-rules`
 
 `PUT /locations/{locationId}/professionals/{professionalId}/availability-rules`
 ```json
-{
-  "rules":[
-    {"dayOfWeek":1,"startTime":"09:00","endTime":"12:00"},
-    {"dayOfWeek":1,"startTime":"13:00","endTime":"18:00"}
-  ]
-}
+{"rules":[{"dayOfWeek":1,"startTime":"09:00","endTime":"12:00"},{"dayOfWeek":1,"startTime":"13:00","endTime":"18:00"}]}
 ```
 
 AvailabilityRule é específica de Professional + Location. Timezone vem da Location.
@@ -84,17 +62,7 @@ AvailabilityRule é específica de Professional + Location. Timezone vem da Loca
 ## 6. Schedule Blocks
 `GET /schedule-blocks?locationId=<uuid>&from=<instant>&to=<instant>&professionalId=<uuid>`
 
-`POST /schedule-blocks/impact`
-```json
-{
-  "locationId":"<uuid>",
-  "professionalId":null,
-  "startsAt":"2026-09-18T12:00:00Z",
-  "endsAt":"2026-09-18T21:00:00Z"
-}
-```
-
-ProfessionalId null bloqueia a Location inteira. Criar block não move appointments automaticamente.
+`POST /schedule-blocks/impact` recebe LocationId, ProfessionalId opcional e intervalo. ProfessionalId null bloqueia a Location inteira. Criar block não move appointments automaticamente.
 
 ## 7. Customers
 `GET /customers`, `GET /customers/{id}`, `POST /customers`.
@@ -102,41 +70,15 @@ ProfessionalId null bloqueia a Location inteira. Criar block não move appointme
 ## 8. Booking Quote
 `POST /booking/quote`
 ```json
-{
-  "locationId":"<uuid>",
-  "serviceIds":["<corte-id>","<barba-id>"]
-}
+{"locationId":"<uuid>","serviceIds":["<corte-id>","<barba-id>"]}
 ```
 
-Backend valida que todos os Services estão disponíveis na Location. Quote é informativo; CreateAppointment recalcula tudo.
+Backend valida que todos os Services estão disponíveis na Location. Quote é informativo; CreateAppointment recalcula tudo. Preço/duração vêm de Service (ou do próprio COMBO selecionado), sem override por Location no MVP.
 
 ## 9. Available Slots
 `POST /availability/slots/search`
 ```json
-{
-  "locationId":"<moema-id>",
-  "serviceIds":["<corte-id>","<barba-id>"],
-  "date":"2026-09-18",
-  "professionalId":null
-}
-```
-
-Response conceitual:
-```json
-{
-  "locationId":"<moema-id>",
-  "date":"2026-09-18",
-  "timezone":"America/Sao_Paulo",
-  "totalPrice":170.00,
-  "totalDurationMinutes":75,
-  "slots":[{
-    "professionalId":"<arthur-id>",
-    "professionalName":"Arthur",
-    "startsAt":"2026-09-18T13:00:00Z",
-    "endsAt":"2026-09-18T14:15:00Z",
-    "localStartsAt":"2026-09-18T10:00:00-03:00"
-  }]
-}
+{"locationId":"<moema-id>","serviceIds":["<corte-id>","<barba-id>"],"date":"2026-09-18","professionalId":null}
 ```
 
 Busca: LocationService -> ProfessionalLocation -> ProfessionalService -> AvailabilityRule -> ScheduleBlock -> Appointments.
@@ -146,34 +88,13 @@ Busca: LocationService -> ProfessionalLocation -> ProfessionalService -> Availab
 `GET /appointments/{appointmentId}`
 `POST /appointments` requer Idempotency-Key.
 
-```json
-{
-  "locationId":"<moema-id>",
-  "customerId":"<uuid>",
-  "professionalId":"<arthur-id>",
-  "serviceIds":["<corte-id>","<barba-id>"],
-  "startsAt":"2026-09-18T13:00:00Z"
-}
-```
-
-Não aceitar preço, duração ou EndsAt autoritativos. Backend revalida Location, Services na Location, ProfessionalLocation, ProfessionalServices, agenda, blocks e concorrência.
-
-Response inclui `locationId`, Professional, Services, snapshots, totais, status e ReservationExpiresAt.
+Create não aceita preço, duração ou EndsAt autoritativos. Backend revalida Location, Services na Location, ProfessionalLocation, ProfessionalServices, agenda, blocks e concorrência e cria snapshots comerciais.
 
 ### Double-booking
-`409 SLOT_UNAVAILABLE`. Tentativa perdedora não persiste Appointment. A proteção considera o Professional globalmente dentro do Tenant, evitando que o mesmo profissional seja reservado simultaneamente em duas Locations.
+`409 SLOT_UNAVAILABLE`. Tentativa perdedora não persiste Appointment. A proteção considera o Professional globalmente dentro do Tenant, evitando reserva simultânea em duas Locations.
 
 ### Reschedule
-`POST /appointments/{id}/reschedule`
-```json
-{
-  "locationId":"<uuid>",
-  "professionalId":"<uuid>",
-  "startsAt":"2026-09-19T13:00:00Z"
-}
-```
-
-Pode mudar Location quando regras de elegibilidade/disponibilidade forem satisfeitas. Se futura diferença de preço exigir ajuste financeiro, MVP usa cancelamento/novo booking; sem pagamento complementar/refund parcial.
+`POST /appointments/{id}/reschedule`. Pode mudar Location quando elegibilidade/disponibilidade forem satisfeitas. Se futura diferença comercial exigir ajuste financeiro, MVP usa cancelamento/novo booking; sem pagamento complementar/refund parcial.
 
 ### Cancel
 `POST /appointments/{id}/cancel` requer Idempotency-Key.
@@ -183,12 +104,13 @@ Pode mudar Location quando regras de elegibilidade/disponibilidade forem satisfe
 ```json
 {"appointmentId":"<uuid>","paymentMethod":"PIX"}
 ```
-Valor vem de Appointment.TotalPriceSnapshot. PIX, CREDIT_CARD, DEBIT_CARD. Sem sinal, parcial ou boleto. Checkout hospedado/tokenizado; redirect não confirma pagamento.
 
-Webhook validado/idempotente confirma pagamento e Appointment.
+Cria/resolve o Payment lógico do Appointment e uma nova tentativa de cobrança (`PaymentAttempt`) quando permitido. Valor vem de Appointment.TotalPriceSnapshot. PIX, CREDIT_CARD, DEBIT_CARD. Sem sinal, parcial ou boleto. Checkout hospedado/tokenizado; redirect não confirma pagamento.
+
+Webhook validado/idempotente confirma PaymentAttempt -> Payment -> Appointment.
 
 ## 12. Refunds
-`POST /payments/{paymentId}/refunds` — integral no MVP; confirmação apenas após provider.
+`POST /payments/{paymentId}/refunds` — integral no MVP; ligado à tentativa confirmada que originou a transação; estado final somente após provider.
 
 ## 13. Analytics
 Endpoints financeiros aceitam `locationId` opcional para visão por unidade:
@@ -256,4 +178,4 @@ POST /appointments/{id}/reschedule
 POST /appointments/{id}/cancel
 ```
 
-Segunda fatia: Payments + webhook + Refunds. Terceira: Schedule Blocks/WhatsApp/AI/Analytics/Billing/Usage.
+Segunda fatia: Payments + PaymentAttempts + webhook + Refunds. Terceira: Schedule Blocks/WhatsApp/AI/Analytics/Billing/Usage.
