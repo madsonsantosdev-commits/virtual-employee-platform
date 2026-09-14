@@ -4,8 +4,9 @@
 > Data: 2026-09-14
 
 ## Convenções
-
 PK `uuid`; instantes `timestamptz`; horários recorrentes `time`; dinheiro `numeric(12,2)`; enums inicialmente `varchar + CHECK`; dados tenant-owned carregam `tenant_id`.
+
+Privacy by Design: dados pessoais somente quando necessários à finalidade; evitar duplicação de PII; logs/auditoria preferem IDs; retenção por categoria será definida antes do piloto.
 
 ## 1. tenants
 ```text
@@ -18,8 +19,7 @@ activated_at timestamptz NULL
 suspended_at timestamptz NULL
 CHECK status: PENDING|ACTIVE|SUSPENDED|CANCELLED
 ```
-
-Tenant é a fronteira de propriedade, segurança e cobrança. Não representa obrigatoriamente uma unidade física.
+Tenant é fronteira de propriedade, segurança e cobrança.
 
 ## 2. business_types
 ```text
@@ -34,12 +34,7 @@ is_active boolean NOT NULL DEFAULT true
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 ```
-
-Regras:
-- `tenant_id = NULL`: tipo oficial/system da plataforma;
-- `tenant_id != NULL`: tipo customizado pertencente ao tenant;
-- remover `created_by_tenant_id`, pois `tenant_id` define o escopo/proprietário do tipo customizado;
-- unicidade de `normalized_name`/`slug` deve respeitar o escopo: global entre tipos SYSTEM e por tenant entre tipos CUSTOM, implementada por índices únicos parciais/escopados na migration.
+`tenant_id=NULL` = tipo SYSTEM; tenant != null = CUSTOM. Unicidade global para SYSTEM e tenant-scoped para CUSTOM via índices apropriados.
 
 ## 3. businesses
 ```text
@@ -56,8 +51,7 @@ updated_at timestamptz NOT NULL
 UNIQUE(tenant_id)
 CHECK(slot_interval_minutes > 0)
 ```
-
-No MVP a experiência inicial continua 1 Tenant -> 1 Business. Endereço/timezone operacional deixam Business e pertencem à Location.
+MVP: 1 Tenant -> 1 Business. Endereço/timezone pertencem à Location.
 
 ## 4. legal_entities
 ```text
@@ -78,8 +72,7 @@ updated_at timestamptz NOT NULL
 CHECK(entity_type IN ('PERSON','COMPANY'))
 CHECK(document_type IN ('CPF','CNPJ'))
 ```
-
-Regras: documento normalizado sem formatação; CPF/CNPJ validados no backend; documento não é PK; não registrar documento completo em logs; alterações relevantes devem ser auditáveis. A unicidade fiscal será validada na migration considerando `country_code + document_type + document_number` e regras de isolamento.
+Documento normalizado/validado no backend, nunca PK. CPF/CNPJ integral não deve aparecer em logs; UI mascara quando possível; alterações auditáveis; acesso autorizado. Estratégia de proteção/criptografia de campos e unicidade fiscal será validada antes da migration/go-live.
 
 ## 5. locations
 ```text
@@ -103,8 +96,7 @@ is_active boolean NOT NULL DEFAULT true
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 ```
-
-Location é a unidade operacional física ou virtual. O modelo suporta 1 Business -> N Locations, embora o MVP inicialmente crie apenas uma unidade por negócio. Uma Location pode referenciar a entidade legal responsável por aquela unidade.
+Location = unidade operacional. Suporta 1 Business -> N Locations; MVP cria uma inicialmente.
 
 ## 6. users
 ```text
@@ -140,8 +132,7 @@ CHECK(price >= 0)
 CHECK(duration_minutes > 0)
 UNIQUE(tenant_id,id)
 ```
-
-Combo possui preço/duração próprios. O escopo Business x Location será fechado na próxima revisão do catálogo.
+Escopo Business x Location será fechado na próxima revisão.
 
 ## 8. service_components
 ```text
@@ -153,8 +144,7 @@ created_at timestamptz NOT NULL
 PK(tenant_id,service_id,component_service_id)
 CHECK(service_id <> component_service_id)
 ```
-
-Regras de aplicação: `service_id` deve ser COMBO; componente deve ser SINGLE; combos aninhados não entram no MVP; componentes não determinam preço/duração do combo.
+Combo -> componentes SINGLE; sem nesting; componentes não determinam preço/duração.
 
 ## 9. professionals
 ```text
@@ -167,6 +157,7 @@ is_active boolean NOT NULL DEFAULT true
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 ```
+Adicionar dados pessoais somente quando houver finalidade operacional definida. Escopo Location pendente.
 
 ## 10. professional_services
 ```text
@@ -180,8 +171,6 @@ created_at timestamptz NOT NULL
 PK(tenant_id,professional_id,service_id)
 CHECK(custom_duration_minutes IS NULL OR custom_duration_minutes > 0)
 ```
-
-`ProfessionalService` é a matriz de capacidade. Para Appointment com N serviços, o profissional deve estar habilitado para todos. `custom_duration_minutes` fica preparado, mas não é usado no MVP inicial.
 
 ## 11. availability_rules
 ```text
@@ -199,8 +188,6 @@ CHECK(day_of_week BETWEEN 0 AND 6)
 CHECK(start_time < end_time)
 ```
 
-Agenda recorrente é reaproveitável pela aplicação entre ciclos; não materializar slots/semanas no banco.
-
 ## 12. schedule_blocks
 ```text
 schedule_blocks
@@ -214,8 +201,7 @@ created_by_user_id uuid NULL FK -> users.id
 created_at timestamptz NOT NULL
 CHECK(starts_at < ends_at)
 ```
-
-`professional_id = NULL` significa bloqueio do estabelecimento/unidade conforme escopo operacional a fechar na revisão de Scheduling multi-location.
+Motivo deve evitar dados pessoais/sensíveis desnecessários. Escopo Location será fechado na revisão Scheduling multi-location.
 
 ## 13. customers
 ```text
@@ -230,6 +216,7 @@ created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 UNIQUE(tenant_id,phone)
 ```
+Telefone/WhatsApp é identificador operacional, não PK. Não adicionar perfil/enriquecimento sem finalidade definida.
 
 ## 14. appointments
 ```text
@@ -253,10 +240,7 @@ CHECK(starts_at < ends_at)
 CHECK(total_price_snapshot >= 0)
 CHECK(total_duration_minutes_snapshot > 0)
 ```
-
-Status: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`, `EXPIRED`, `COMPLETED`, `NO_SHOW`.
-
-Um Appointment tem um único Professional no MVP. `location_id` será incorporado quando fecharmos o escopo operacional multi-location no bloco Scheduling.
+Status: PENDING, CONFIRMED, CONFIRMED_BY_CLIENT, RESCHEDULE_REQUESTED, CANCELLED_BY_CLIENT, CANCELLED_BY_BUSINESS, EXPIRED, COMPLETED, NO_SHOW. CancellationReason deve evitar PII/sensível desnecessária. LocationId pendente do fechamento multi-location.
 
 ## 15. appointment_items
 ```text
@@ -273,10 +257,7 @@ CHECK(price_snapshot >= 0)
 CHECK(duration_minutes_snapshot > 0)
 UNIQUE(tenant_id,appointment_id,service_id)
 ```
-
-Sem `quantity` no MVP. Cada serviço/combo aparece no máximo uma vez no Appointment.
-
-Regras: soma dos preços = total do Appointment; soma das durações = duração total; `ends_at = starts_at + total duration`. Validadas pelo domínio/transação.
+Snapshots comerciais mínimos; não duplicar PII de Customer/Professional.
 
 ## 16. appointment_history
 ```text
@@ -296,6 +277,7 @@ reason varchar(500) NULL
 correlation_id uuid NULL
 changed_at timestamptz NOT NULL
 ```
+Auditoria usa IDs/metadados e evita cópia de PII.
 
 ## 17. payments
 ```text
@@ -317,8 +299,7 @@ CHECK(amount > 0)
 UNIQUE(tenant_id,appointment_id,payment_purpose)
 UNIQUE(tenant_id,idempotency_key)
 ```
-
-Regra: `Payment.amount == Appointment.total_price_snapshot`.
+Sem PAN/CVV/dados brutos de cartão. Payment.amount == Appointment.total_price_snapshot.
 
 ## 18. refunds
 ```text
@@ -337,7 +318,7 @@ processed_at timestamptz NULL
 completed_at timestamptz NULL
 failed_at timestamptz NULL
 ```
-Regra MVP: `Refund.amount == Payment.amount`; refund integral apenas.
+Refund integral no MVP. Reason evita PII desnecessária.
 
 ## 19. conversations
 ```text
@@ -352,6 +333,7 @@ correlation_id uuid NULL
 started_at timestamptz NOT NULL
 last_interaction_at timestamptz NOT NULL
 ```
+Conteúdo conversacional, se persistido em estrutura posterior, terá retenção, controle de acesso e minimização próprios. Não duplicar payload integral aqui.
 
 ## 20. subscriptions
 ```text
@@ -377,8 +359,7 @@ location_id uuid NOT NULL FK -> locations.id
 created_at timestamptz NOT NULL
 PK(subscription_id,location_id)
 ```
-
-A cobrança possui unidades faturáveis explícitas. Não inferir que uma Subscription cobre automaticamente todas as Locations do Tenant. No MVP haverá uma Location inicial; o modelo já evita cobrança única acidental de múltiplas unidades futuras.
+Unidades faturáveis explícitas.
 
 ## 22. usage_records
 ```text
@@ -395,6 +376,7 @@ input_tokens integer NULL
 output_tokens integer NULL
 occurred_at timestamptz NOT NULL
 ```
+Telemetria não armazena prompt/resposta ou PII por padrão.
 
 ## 23. webhook_inbox
 ```text
@@ -412,6 +394,7 @@ last_error text NULL
 correlation_id uuid NULL
 UNIQUE(provider,provider_event_id)
 ```
+Payload externo deve possuir retenção definida; evitar copiar payload sensível em `last_error`.
 
 ## 24. outbox_messages
 ```text
@@ -429,9 +412,9 @@ processed_at timestamptz NULL
 retry_count integer NOT NULL DEFAULT 0
 last_error text NULL
 ```
+Eventos devem transportar o mínimo necessário; preferir IDs a PII.
 
 ## Anti-double-booking
-
 ```sql
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 ALTER TABLE appointments
@@ -443,11 +426,9 @@ EXCLUDE USING gist (
 )
 WHERE (status IN ('PENDING','CONFIRMED','CONFIRMED_BY_CLIENT','RESCHEDULE_REQUESTED'));
 ```
-
-PENDING expirado deve ser materializado como `EXPIRED` por worker; não usar `now()` no predicado da constraint.
+PENDING expirado -> EXPIRED por worker; sem now() no predicado.
 
 ## Relacionamentos
-
 ```text
 Tenant 1 -> N Business
 Business N -> 1 BusinessType
@@ -470,7 +451,6 @@ Payment 1 -> 0..N Refund
 ```
 
 ## Índices prioritários
-
 ```text
 business_types(tenant_id,normalized_name)
 legal_entities(tenant_id,business_id)
@@ -488,19 +468,19 @@ subscription_units(subscription_id,location_id)
 usage_records(tenant_id,occurred_at)
 ```
 
-## Multi-tenancy
+## Multi-tenancy e privacidade
+TenantId do contexto autenticado, Global Query Filters EF Core, FKs/validações tenant-aware, índices tenant-scoped e testes de isolamento. RLS é evolução futura.
 
-Combinar TenantId do contexto autenticado, Global Query Filters EF Core, FKs/validações tenant-aware, índices tenant-scoped e testes de isolamento. RLS fica como evolução futura.
+Requisitos LGPD/Privacy detalhados em `docs/architecture/privacy-lgpd-v1.md`.
 
 ## Pontos antes da primeira migration
-
 - fechar escopo Business x Location de Services e Professionals;
-- incorporar `location_id` ao Scheduling onde operacionalmente necessário;
+- incorporar LocationId ao Scheduling onde necessário;
 - decidir PaymentAttempt se múltiplas tentativas precisarem de entidade própria;
-- manter `ProfessionalService.custom_duration_minutes` desabilitado na UX inicial;
 - validar constraints compostas de TenantId;
-- validar índices únicos parciais de `business_types` SYSTEM/CUSTOM;
-- validar unicidade e proteção de CPF/CNPJ;
-- retenção/LGPD de Conversation/webhooks;
+- validar índices únicos parciais de business_types;
+- validar unicidade e estratégia de proteção de CPF/CNPJ;
+- definir retenção para Customer, Conversation, Webhook, Outbox, Audit e Logs;
+- validar processo técnico para direitos do titular;
 - seed oficial de business types;
-- validar regra de combo sem nesting.
+- validar combo sem nesting.
