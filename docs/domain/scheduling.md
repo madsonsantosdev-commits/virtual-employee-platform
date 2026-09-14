@@ -1,125 +1,109 @@
 # Scheduling Domain — Regras de Implementação v1
 
 > Status: Draft v1 — regras funcionais aprovadas
-> Data: 2026-09-11
+> Data: 2026-09-14
 
 ## 1. Responsabilidades
-
-Scheduling calcula disponibilidade, valida serviços/profissional, cria/reagenda/cancela Appointment, bloqueia períodos, identifica appointments afetados, preserva histórico e impede double-booking.
+Scheduling calcula disponibilidade por Location, valida serviços/profissional, cria/reagenda/cancela Appointment, bloqueia períodos, identifica appointments afetados, preserva histórico e impede double-booking.
 
 Não interpreta linguagem natural, não envia WhatsApp diretamente e não processa pagamentos/refunds.
 
-## 2. Tempo e timezone
+## 2. Location, tempo e timezone
+Todo Appointment ocorre em uma `Location`. O timezone operacional vem de `Location.Timezone` (IANA).
 
 - PostgreSQL `timestamptz` para instantes absolutos.
 - UTC internamente.
-- `Business.Timezone` IANA obrigatório.
-- AvailabilityRule usa horário local recorrente.
+- AvailabilityRule usa horário local recorrente da Location.
 - Intervalos de Appointment usam `[StartsAt, EndsAt)`.
 
-## 3. Agenda-base, ciclos e exceções
+## 3. Modelo operacional multi-location
+Service e Professional pertencem ao Business.
 
-`AvailabilityRule` representa a agenda-base recorrente. Pode haver várias janelas por dia; ausência de regra representa dia recorrente sem expediente.
+`LocationService` define quais Services são oferecidos em cada Location.
+`ProfessionalLocation` define onde cada Professional trabalha.
+`ProfessionalService` define quais Services o Professional executa.
 
-A UX deve reduzir trabalho do pequeno empresário:
-
+Elegibilidade:
 ```text
-Primeiro ciclo -> configura agenda-base
-Próximo ciclo -> reutiliza/copia configuração anterior
-              -> altera somente exceções
-              -> publica/confirma
+Location selecionada
+-> Services disponíveis via LocationService
+-> Professionals da Location via ProfessionalLocation
+-> Professional habilitado para TODOS via ProfessionalService
+-> AvailabilityRules daquela Location
+-> ScheduleBlocks
+-> Appointments ativos
+-> slots
 ```
 
-Não é necessário materializar semanas de slots. Reaproveitamento é uma operação da aplicação sobre a configuração existente.
+No MVP normalmente haverá uma única Location, mas os comandos/queries não devem assumir isso implicitamente.
 
-`ScheduleBlock` representa exceção pontual: folga, compromisso, feriado, treinamento, fechamento ou indisponibilidade. `ProfessionalId = null` bloqueia o estabelecimento inteiro.
+## 4. Agenda-base, ciclos e exceções
+`AvailabilityRule` representa a agenda-base recorrente de um Professional em uma Location. Pode haver várias janelas por dia; ausência de regra representa dia sem expediente naquela unidade.
+
+A UX permite reutilizar/copiar configuração e alterar exceções. Slots não são materializados.
+
+`ScheduleBlock` sempre possui LocationId. `ProfessionalId=null` bloqueia a Location inteira; ProfessionalId preenchido bloqueia somente aquele profissional naquela Location.
 
 Disponibilidade efetiva:
-
 ```text
-AvailabilityRule
-- ScheduleBlock
-- Appointments ativos
+AvailabilityRule(Location, Professional)
+- ScheduleBlock(Location[, Professional])
+- Appointments ativos(Location, Professional)
 = janelas livres
 ```
 
-## 4. ProfessionalService como capacidade
+## 5. ProfessionalService como capacidade
+ProfessionalService define capacidade. Sem Skill separada no MVP. Para N serviços, profissional deve executar TODOS.
 
-`ProfessionalService` define quais serviços cada profissional executa. Não criar entidade Skill separada no MVP.
+Um Appointment tem um único Professional no MVP.
 
-Para N serviços selecionados, profissional elegível deve executar **todos**.
-
-```text
-João: Corte
-Arthur: Corte + Barba
-
-Corte -> João, Arthur
-Corte + Barba -> Arthur
-```
-
-Um Appointment tem um único Professional no MVP. Não dividir serviços do mesmo Appointment entre profissionais.
-
-`CustomDurationMinutes` permanece preparado no modelo, mas o MVP usa `Service.DurationMinutes` por padrão.
-
-## 5. Multi-service e combos
-
-Um Appointment contém 1..N AppointmentItems.
-
-Fluxo preferido:
+## 6. Multi-service e combos
+Appointment contém 1..N AppointmentItems.
 
 ```text
-Selecionar serviços
--> backend calcula total preço/duração
--> opcionalmente sugere combo equivalente
--> calcula profissionais elegíveis
+Selecionar Location
+-> selecionar Services disponíveis
+-> backend calcula preço/duração
+-> opcionalmente sugere combo equivalente disponível na Location
+-> calcula profissionais elegíveis naquela Location
 -> busca intervalo contínuo
 -> cliente escolhe slot
 ```
 
-Para serviços individuais, duração total é a soma das durações. Para um Service `COMBO`, usar preço/duração próprios do combo, não a soma dos componentes.
+Para serviços individuais, duração total é soma. COMBO usa preço/duração próprios.
 
-Exemplo:
-
-```text
-Corte 45 min + Barba 30 min = 75 min contínuos
-```
-
-A busca deve encontrar uma janela contínua de 75 minutos com um profissional habilitado para ambos.
-
-## 6. Geração de slots
-
+## 7. Geração de slots
 Entrada conceitual:
-
 ```text
 TenantId
+LocationId
 ServiceIds[1..N]
 Date
 ProfessionalId? (opcional)
 ```
 
 Fluxo:
-1. validar todos os Services ativos;
-2. calcular preço e duração no backend;
-3. localizar profissionais ativos habilitados para TODOS os Services;
-4. se ProfessionalId informado, validar que ele executa todos;
-5. carregar AvailabilityRules;
-6. subtrair ScheduleBlocks;
-7. subtrair Appointments ativos;
-8. gerar inícios conforme `Business.SlotIntervalMinutes` (default 15);
-9. manter somente candidatos cujo intervalo completo comporte a duração total;
-10. retornar slots válidos.
-
-`slot_interval_minutes` é granularidade de **início**, não duração do serviço.
+1. validar Tenant/Business/Location ativos e coerentes;
+2. validar todos os Services ativos e disponíveis na Location;
+3. calcular preço/duração no backend;
+4. localizar Professionals ativos associados à Location;
+5. manter apenas os habilitados para TODOS os Services;
+6. se ProfessionalId informado, validar ProfessionalLocation + ProfessionalService;
+7. carregar AvailabilityRules de Professional + Location;
+8. subtrair ScheduleBlocks da Location/profissional;
+9. subtrair Appointments ativos da Location/profissional;
+10. gerar inícios conforme `Business.SlotIntervalMinutes`;
+11. manter candidatos cujo intervalo completo comporte duração total;
+12. retornar slots válidos usando `Location.Timezone`.
 
 Slot retornado é disponibilidade observada; não é lock.
 
-## 7. CreateAppointment
-
+## 8. CreateAppointment
 Command conceitual:
-
 ```text
 CreateAppointment(
   TenantId,
+  LocationId,
   CustomerId,
   ProfessionalId,
   ServiceIds[1..N],
@@ -129,118 +113,67 @@ CreateAppointment(
 )
 ```
 
-O cliente não envia preço, duração ou EndsAt autoritativos.
-
-Na escrita, backend revalida:
-1. Tenant/Business ativos;
-2. Services ativos;
-3. Professional ativo;
-4. Professional habilitado para TODOS os Services;
-5. preço/duração atuais;
-6. AvailabilityRule;
-7. ScheduleBlocks;
-8. intervalo contínuo completo;
-9. conflitos com Appointments ativos;
-10. snapshots por AppointmentItem;
-11. totais do Appointment;
-12. persistência transacional;
-13. constraint PostgreSQL como última barreira.
+Backend revalida Location, LocationServices, ProfessionalLocation, ProfessionalServices, preço/duração, AvailabilityRules, ScheduleBlocks, intervalo contínuo e concorrência. Persiste Appointment + AppointmentItems atomicamente.
 
 Quando exige pagamento:
-
 ```text
 Status = PENDING
 ReservationExpiresAt = CreatedAt + 10 minutos (default MVP)
 ```
 
-## 8. Estados que ocupam agenda
+## 9. Estados que ocupam agenda
+Ocupam: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`.
 
-Ocupam:
-- `PENDING`
-- `CONFIRMED`
-- `CONFIRMED_BY_CLIENT`
-- `RESCHEDULE_REQUESTED`
+Não ocupam: `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`, `EXPIRED`, `COMPLETED`, `NO_SHOW`.
 
-Não ocupam:
-- `CANCELLED_BY_CLIENT`
-- `CANCELLED_BY_BUSINESS`
-- `EXPIRED`
-- `COMPLETED`
-- `NO_SHOW`
+Worker materializa PENDING expirado como EXPIRED.
 
-Worker materializa expiração mudando PENDING expirado para `EXPIRED`; a constraint não usa `now()` no predicado.
-
-## 9. Double-booking
-
+## 10. Double-booking
 Camada 1: validação de aplicação.
 
-Camada 2: PostgreSQL `EXCLUDE USING gist` sobre `tenant_id`, `professional_id` e `tstzrange(starts_at, ends_at, '[)')`, considerando estados ocupantes.
+Camada 2: PostgreSQL `EXCLUDE USING gist` sobre `tenant_id`, `professional_id` e intervalo. Como um mesmo Professional não pode executar dois atendimentos simultâneos mesmo em Locations diferentes, a constraint deliberadamente **não limita o conflito por LocationId**.
 
-Se A vence e B tenta o mesmo intervalo, B não persiste Appointment e recebe:
+Se A vence, B não persiste Appointment e recebe `409 SLOT_UNAVAILABLE` com alternativas atualizadas.
 
-```text
-409 SLOT_UNAVAILABLE
-```
-
-Mensagem:
 > **Desculpe, este horário acabou de ser preenchido. Escolha um dos horários disponíveis abaixo.**
 
-Sempre que possível, recalcular e devolver alternativas sem reiniciar a conversa.
+## 11. PENDING e pagamento tardio
+Após 10 minutos sem confirmação, PENDING -> EXPIRED. Pagamento confirmado após EXPIRED não reativa Appointment; inicia compensação/refund integral.
 
-## 10. PENDING e pagamento tardio
+## 12. Reagendamento
+Mantém AppointmentId e AppointmentItems quando composição comercial não muda.
 
-PENDING reserva temporariamente o intervalo. Após 10 minutos sem confirmação, worker muda para `EXPIRED` e libera agenda.
+Reagendamento pode alterar horário, Professional e/ou Location, desde que:
+- Services estejam disponíveis na nova Location;
+- Professional trabalhe na nova Location;
+- Professional execute todos os Services;
+- agenda e concorrência sejam revalidadas.
 
-Pagamento confirmado após EXPIRED **não reativa** Appointment. Deve iniciar fluxo compensatório/refund integral e informar cliente.
+Se mudança de Location implicar diferença de preço no futuro, o MVP não faz cobrança complementar/refund parcial; deve usar fluxo controlado de cancelamento/novo booking.
 
-## 11. Reagendamento
-
-Mantém o mesmo AppointmentId e AppointmentItems quando composição comercial não muda.
-
-Revalidar profissional, intervalo completo, agenda, blocks e concorrência. Registrar horário/profissional anterior e novo em AppointmentHistory.
-
-Appointment pago pode mudar de horário mantendo pagamento quando serviços/preço permanecem iguais.
-
-Mudança de serviços que altere preço após pagamento não é suportada no MVP: não cobrar diferença nem fazer refund parcial. Usar fluxo controlado de cancelamento/novo booking.
-
-## 12. Imprevistos e reagendamento assistido
-
-Administrador pode informar indisponibilidade pela PWA ou WhatsApp administrativo.
-
+## 13. Imprevistos e reagendamento assistido
 ```text
-Indisponibilidade
+Indisponibilidade(Location[, Professional])
 -> GetAffectedAppointments
--> mostrar impacto ao administrador
 -> administrador confirma
 -> ScheduleBlock
 -> Alternative Slot Engine
--> clientes recebem opções
+-> opções podem considerar mesma Location primeiro
 -> cliente escolhe
 -> backend revalida
 -> RescheduleAppointment
 ```
 
-Regra central:
-> **O sistema propõe automaticamente; o cliente decide.**
+O sistema propõe; cliente decide. Nunca mover sem consentimento.
 
-Nunca mover Appointment sem consentimento do cliente.
-
-## 13. Cancelamento
-
+## 14. Cancelamento
 Cancelamento muda estado e libera slot imediatamente. Refund é processo financeiro separado e assíncrono.
 
-## 14. Idempotência
-
-Prioridade:
-- CreateAppointment
-- RescheduleAppointment
-- CancelAppointment
-- CreateScheduleBlock
-
+## 15. Idempotência
+Prioridade: CreateAppointment, RescheduleAppointment, CancelAppointment, CreateScheduleBlock.
 Chave lógica: `TenantId + OperationType + IdempotencyKey`.
 
-## 15. Eventos
-
+## 16. Eventos
 ```text
 AppointmentCreated
 AppointmentConfirmed
@@ -252,16 +185,17 @@ NoShowRegistered
 ScheduleBlocked
 ```
 
-## 16. Interfaces iniciais
+Eventos operacionais de Appointment devem carregar LocationId quando necessário ao consumidor.
 
+## 17. Interfaces iniciais
 Queries:
 ```text
-GetAvailableSlots
-GetEligibleProfessionals
+GetAvailableSlots(LocationId,...)
+GetEligibleProfessionals(LocationId,...)
 GetAppointment
-GetAppointmentsByPeriod
-GetAffectedAppointments
-GetProfessionalSchedule
+GetAppointmentsByPeriod(LocationId?)
+GetAffectedAppointments(LocationId,...)
+GetProfessionalSchedule(LocationId,ProfessionalId,...)
 ```
 
 Commands:
@@ -277,12 +211,12 @@ RegisterNoShow
 CompleteAppointment
 ```
 
-## 17. Regra central
-
+## 18. Regra central
 ```text
-Serviços selecionados
--> profissionais que executam TODOS
--> preço/duração calculados no backend
+Location
+-> Services disponíveis
+-> Professionals da Location que executam TODOS
+-> preço/duração backend
 -> janela contínua
 -> escolha do cliente
 -> CreateAppointment revalida
