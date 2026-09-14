@@ -6,28 +6,28 @@
 ## Convenções
 PK `uuid`; instantes `timestamptz`; horários recorrentes `time`; dinheiro `numeric(12,2)`; dados tenant-owned carregam `tenant_id`. Privacy by Design: evitar duplicação de PII e exposição em logs.
 
-## 1. tenants
-`tenants: id PK, name, status, created_at, activated_at?, suspended_at?`
+## Entidades principais
+- Tenant = fronteira de propriedade, segurança e cobrança.
+- Business = negócio/marca.
+- LegalEntity = identidade fiscal.
+- Location = unidade operacional.
+- Service e Professional pertencem ao Business.
+- Customer permanece Business-scoped.
+- Appointment sempre ocorre em uma Location e contém 1..N AppointmentItems.
 
-## 2. business_types
-Tipos SYSTEM globais e CUSTOM tenant-scoped.
+## Multi-location
+```text
+Tenant
+  -> Business
+       -> Locations
+       -> Services -> LocationService
+       -> Professionals -> ProfessionalLocation
+                        -> ProfessionalService
+```
 
-## 3. businesses
-Business representa negócio/marca; MVP 1 por Tenant.
+`AvailabilityRule` é Professional + Location. `ScheduleBlock` sempre é Location-scoped e opcionalmente Professional-scoped.
 
-## 4. legal_entities
-Identidade fiscal PERSON|COMPANY, CPF|CNPJ; documento normalizado/validado, nunca PK e protegido contra exposição indevida.
-
-## 5. locations
-Unidade operacional com `tenant_id`, `business_id`, LegalEntity opcional, dados de endereço, timezone e status.
-
-## 6. users
-Usuários administrativos tenant-scoped.
-
-## 7. services
-Service pertence ao Business. Price/Duration são defaults comerciais do Business.
-
-## 8. location_services
+## LocationService
 ```text
 location_services
 tenant_id uuid NOT NULL
@@ -40,30 +40,9 @@ created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 PK(tenant_id,location_id,service_id)
 ```
-Define onde o Service é oferecido. Overrides ficam preparados, mas desabilitados na UX/API inicial.
+Overrides continuam como decisão pendente para Migration 001; UX/API inicial não os utiliza.
 
-## 9. service_components
-COMBO -> componentes SINGLE; sem nesting.
-
-## 10. professionals
-Professional pertence ao Business.
-
-## 11. professional_locations
-Relacionamento Professional x Location; define onde o profissional trabalha.
-
-## 12. professional_services
-Relacionamento Professional x Service; define capacidade, não unidade.
-
-## 13. availability_rules
-Agenda-base recorrente = Professional + Location.
-
-## 14. schedule_blocks
-Bloqueio de Location inteira ou Professional específico na Location.
-
-## 15. customers
-Customer permanece Business-scoped para manter histórico entre unidades.
-
-## 16. appointments
+## Appointment
 ```text
 appointments
 id uuid PK
@@ -83,16 +62,9 @@ cancelled_at timestamptz NULL
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 ```
-Todo Appointment ocorre em exatamente uma Location.
 
-## 17. appointment_items
-Snapshots comerciais de 1..N Services do Appointment.
-
-## 18. appointment_history
-Suporta estados, horários, profissionais e `previous_location_id` / `new_location_id` em reagendamento entre unidades.
-
-## 19. payments
-`Payment` representa a **obrigação financeira lógica** do Appointment, não uma tentativa específica no gateway.
+## Payment
+`Payment` representa a obrigação financeira lógica do Appointment.
 
 ```text
 payments
@@ -107,20 +79,13 @@ confirmed_at timestamptz NULL
 cancelled_at timestamptz NULL
 updated_at timestamptz NOT NULL
 CHECK(amount > 0)
-CHECK(status IN ('PENDING','PROCESSING','CONFIRMED','FAILED','CANCELLED','REFUNDED'))
 UNIQUE(tenant_id,appointment_id,payment_purpose)
 ```
 
-Regras:
-- `Payment.Amount == Appointment.TotalPriceSnapshot` para SERVICE no MVP;
-- um Appointment possui um pagamento lógico de serviço;
-- falha/expiração de uma tentativa não cria outra obrigação financeira;
-- Payment pode possuir N PaymentAttempts;
-- `CONFIRMED` somente após confirmação confiável do provider;
-- Payment não armazena PAN, CVV ou dados brutos de cartão.
+Para SERVICE no MVP, `Payment.Amount == Appointment.TotalPriceSnapshot`.
 
-## 20. payment_attempts
-`PaymentAttempt` representa cada tentativa concreta de cobrança realizada por um provider.
+## PaymentAttempt
+`PaymentAttempt` representa cada tentativa concreta de cobrança no provider.
 
 ```text
 payment_attempts
@@ -140,71 +105,15 @@ confirmed_at timestamptz NULL
 failed_at timestamptz NULL
 failure_code varchar(100) NULL
 failure_message varchar(500) NULL
-CHECK(payment_method IN ('PIX','CREDIT_CARD','DEBIT_CARD'))
-CHECK(status IN ('CREATED','PENDING','PROCESSING','CONFIRMED','FAILED','EXPIRED','CANCELLED'))
 UNIQUE(tenant_id,idempotency_key)
 ```
 
-Criar índice/constraint único para `(provider, provider_payment_id)` quando `provider_payment_id IS NOT NULL`.
+Índice único parcial `(provider, provider_payment_id)` quando `provider_payment_id IS NOT NULL`.
 
-`checkout_reference` deve guardar somente referência/URL segura necessária ao fluxo e nunca dados brutos de cartão ou secrets.
+Uma tentativa FAILED/EXPIRED não cria nova obrigação: Payment pode continuar PENDING e receber novo PaymentAttempt enquanto Appointment for reservável.
 
-Fluxo:
-```text
-Appointment PENDING
--> Payment PENDING
--> PaymentAttempt
--> Gateway
--> Webhook validado/deduplicado
--> PaymentAttempt CONFIRMED
--> Payment CONFIRMED
--> Appointment CONFIRMED
-```
-
-Se uma tentativa falhar/expirar, Payment pode permanecer PENDING e receber nova tentativa enquanto Appointment ainda estiver reservável.
-
-Se confirmação chegar após Appointment EXPIRED, não reativar a agenda; registrar confirmação financeira e iniciar fluxo compensatório/refund integral.
-
-## 21. refunds
-Refund integral no MVP e ligado ao Payment. Guarda também `payment_attempt_id` que identifica a transação externa efetivamente confirmada.
-
-```text
-refunds
-id uuid PK
-tenant_id uuid NOT NULL
-appointment_id uuid NOT NULL FK -> appointments.id
-payment_id uuid NOT NULL FK -> payments.id
-payment_attempt_id uuid NOT NULL FK -> payment_attempts.id
-amount numeric(12,2) NOT NULL
-reason varchar(500) NOT NULL
-status varchar(40) NOT NULL
-provider_refund_id varchar(160) NULL
-idempotency_key varchar(160) NOT NULL
-requested_at timestamptz NOT NULL
-processed_at timestamptz NULL
-completed_at timestamptz NULL
-failed_at timestamptz NULL
-```
-
-Nunca comunicar REFUNDED antes da confirmação do provider.
-
-## 22. conversations
-Estado conversacional tenant-scoped; conteúdo tem política própria de retenção/minimização.
-
-## 23. subscriptions
-Subscription SaaS tenant-scoped e separada de Customer Payments.
-
-## 24. subscription_units
-Associação explícita Subscription x Location para unidades faturáveis.
-
-## 25. usage_records
-Tenant-scoped; `location_id uuid NULL` pode atribuir consumo à unidade quando tecnicamente possível.
-
-## 26. webhook_inbox
-Deduplicação por Provider + ProviderEventId; payload com retenção definida. Webhook de pagamento resolve a tentativa pelo identificador externo do provider e processa transição idempotente.
-
-## 27. outbox_messages
-Eventos mínimos, preferindo IDs a PII. LocationId deve integrar payload quando necessário.
+## Refund
+Refund integral no MVP ligado ao Payment e ao PaymentAttempt confirmado que originou a transação externa. Estado final somente após confirmação do provider.
 
 ## Anti-double-booking
 ```sql
@@ -219,62 +128,47 @@ EXCLUDE USING gist (
 WHERE (status IN ('PENDING','CONFIRMED','CONFIRMED_BY_CLIENT','RESCHEDULE_REQUESTED'));
 ```
 
-**LocationId não entra na constraint deliberadamente.** Um Professional não pode estar reservado simultaneamente em duas unidades.
+`LocationId` deliberadamente não entra: Professional não pode estar reservado simultaneamente em duas unidades.
 
-## Elegibilidade de slot
+## Elegibilidade / hot path do Scheduling
 ```text
-Location
-  -> LocationService: todos Services disponíveis?
-  -> ProfessionalLocation: Professional trabalha aqui?
-  -> ProfessionalService: executa TODOS Services?
+Tenant + Location
+  -> LocationService
+  -> ProfessionalLocation
+  -> ProfessionalService
   -> AvailabilityRule(Location,Professional)
   - ScheduleBlock(Location[,Professional])
   - Appointment ativo
   = Slot elegível
 ```
 
-## Orquestração financeira
-```text
-Appointment
-    1
-    |
-    1 Payment lógico (SERVICE no MVP)
-    |
-    N PaymentAttempts
-       -> provider externo
-       -> webhook
+## Estratégia de integridade Multi-Tenant — APROVADA
 
-Payment CONFIRMED
-    |
-    0..N Refunds
-       -> PaymentAttempt confirmado que originou a transação
-```
+A arquitetura adota isolamento estrutural por `TenantId` com foco simultâneo em segurança, simplicidade e performance.
 
-A camada de aplicação orquestra as transições; gateway é autoridade do estado financeiro externo; Appointment não é confirmado por redirect/browser.
+### Banco
+- `tenant_id` obrigatório em dados tenant-owned;
+- consultas sempre partem do TenantContext;
+- relacionamentos críticos são tenant-aware;
+- índices são tenant-scoped quando compatíveis com o padrão de consulta;
+- PostgreSQL permanece a última barreira de isolamento crítico.
 
-## Relacionamentos
-```text
-Tenant 1 -> N Business
-Business 1 -> N Location
-Business 1 -> N Service
-Location N -> N Service via LocationService
-Business 1 -> N Professional
-Professional N -> N Location via ProfessionalLocation
-Professional N -> N Service via ProfessionalService
-Professional + Location -> N AvailabilityRule
-Location -> N ScheduleBlock
-Location -> N Appointment
-Customer -> N Appointment
-Professional -> N Appointment
-Appointment -> N AppointmentItem -> Service
-Appointment -> 0..1 Payment lógico SERVICE
-Payment -> N PaymentAttempt
-Payment -> 0..N Refund
-Refund -> 1 PaymentAttempt confirmado
-Subscription N -> N Location via SubscriptionUnit
-```
+### Domínio / aplicação
+Coerência operacional específica entre Business, Location, Service e Professional é validada no domínio/aplicação. Não adicionar `BusinessId` indiscriminadamente a todas as FKs compostas apenas por redundância.
 
-## Índices prioritários
+### Regra arquitetural
+> **TenantId é a principal barreira estrutural no banco. Regras específicas de Business pertencem ao domínio. Constraints e índices adicionais entram quando entregarem benefício real de integridade, concorrência ou performance.**
+
+### Motivação de performance
+Evitar FKs/índices compostos desnecessariamente largos reduz:
+- tamanho de índices;
+- custo de INSERT/UPDATE;
+- pressão de memória/cache;
+- complexidade de mapping no EF Core.
+
+Ao mesmo tempo, índices dos hot paths são priorizados para disponibilidade, agenda e pagamentos.
+
+## Índices prioritários iniciais
 ```text
 locations(tenant_id,business_id,is_active)
 location_services(tenant_id,location_id,is_active)
@@ -294,23 +188,15 @@ payment_attempts(provider,provider_payment_id) UNIQUE WHERE provider_payment_id 
 refunds(tenant_id,payment_id)
 ```
 
-## Regras de integridade multi-location
-- Location, Service e Professional usados juntos devem pertencer ao mesmo Tenant/Business.
-- LocationService deve existir/estar ativo para cada Service reservado.
-- ProfessionalLocation deve existir/estar ativo.
-- ProfessionalService deve existir/estar ativo para todos os Services.
-- AvailabilityRule só pode existir para ProfessionalLocation válido.
-- Appointment preserva LocationId histórico mesmo se associações forem desativadas depois.
-- Desativação de LocationService/ProfessionalLocation não altera Appointment histórico.
+Esta lista é baseline, não obrigação de criar índices redundantes. Validar com planos de execução e métricas conforme os hot paths reais aparecerem.
 
 ## Multi-tenancy e privacidade
-TenantId do contexto autenticado, Global Query Filters EF Core, FKs/validações tenant-aware, índices tenant-scoped e testes de isolamento. RLS é evolução futura. LGPD detalhada em `docs/architecture/privacy-lgpd-v1.md`.
+TenantId do contexto autenticado, Global Query Filters EF Core, validações tenant-aware, índices tenant-scoped e testes de isolamento. RLS é evolução futura. LGPD detalhada em `docs/architecture/privacy-lgpd-v1.md`.
 
 ## Pontos antes da primeira migration
-- validar constraints/FKs compostas TenantId + BusinessId entre Location/Service/Professional;
-- decidir se overrides de LocationService ficam fisicamente na migration 1 ou entram somente em migration futura;
+- decidir se overrides de LocationService ficam fisicamente na Migration 001 ou somente em migration futura;
 - validar unicidade/proteção CPF/CNPJ;
 - definir retenção de Conversation/webhooks/logs;
 - seed oficial de BusinessTypes;
 - validar combo sem nesting;
-- testes automatizados de isolamento, concorrência e idempotência financeira.
+- testes automatizados de isolamento, concorrência, hot paths e idempotência financeira.
