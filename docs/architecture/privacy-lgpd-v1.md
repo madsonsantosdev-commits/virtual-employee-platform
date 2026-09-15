@@ -1,7 +1,7 @@
 # LGPD & Privacy Architecture v1
 
 > Status: Draft v1 — requisito pré-implementação
-> Data: 2026-09-14
+> Data: 2026-09-15
 
 ## 1. Objetivo
 
@@ -13,108 +13,51 @@ Este documento não substitui revisão jurídica. Ele transforma requisitos de p
 
 A plataforma adota **Privacy by Design** e **Privacy by Default** como requisitos transversais.
 
-Princípios aplicados:
-- finalidade: cada dado precisa ter propósito definido;
-- adequação: uso compatível com a finalidade informada;
-- necessidade/minimização: coletar e expor somente o necessário;
-- transparência: informar tratamento e compartilhamentos relevantes;
-- segurança e prevenção: controles técnicos e organizacionais desde a concepção;
-- não discriminação;
-- responsabilização e prestação de contas.
+Princípios aplicados: finalidade, adequação, necessidade/minimização, transparência, segurança e prevenção, não discriminação, responsabilização e prestação de contas.
 
-Referências oficiais:
-- LGPD — Lei nº 13.709/2018;
-- ANPD — Titular de Dados: https://www.gov.br/anpd/pt-br/assuntos/titular-de-dados
-- ANPD — Perguntas Frequentes: https://www.gov.br/anpd/pt-br/acesso-a-informacao/perguntas-frequentes
+Referências oficiais: LGPD — Lei nº 13.709/2018 e orientações da ANPD.
 
 ## 3. Papéis no tratamento
 
-Os papéis de Controlador e Operador devem ser definidos por **finalidade e contexto**, não por uma regra única para toda a plataforma.
-
-Cenário típico de atendimento do cliente final:
-
-```text
-Cliente final
-   ↓
-Estabelecimento / Tenant
-   CONTROLADOR do relacionamento e agenda
-   ↓
-Virtual Employee Platform
-   OPERADOR em tratamentos executados por instrução do estabelecimento
-   ↓
-Suboperadores / provedores
-   Meta / WhatsApp
-   LLM Provider
-   Payment Provider
-   Azure / infraestrutura
-```
-
-A plataforma poderá atuar como **Controlador** para finalidades próprias, por exemplo: cadastro e cobrança da assinatura SaaS, segurança da própria plataforma, prevenção de fraude, cumprimento de obrigações legais e gestão da relação contratual com o assinante.
-
-A classificação final deve constar em contratos, política de privacidade e inventário de tratamento.
+Os papéis de Controlador e Operador devem ser definidos por finalidade e contexto. No atendimento do cliente final, o estabelecimento/Tenant tende a atuar como Controlador e a Virtual Employee Platform como Operador nos tratamentos executados por instrução do estabelecimento. A plataforma poderá atuar como Controlador para finalidades próprias, como cadastro e cobrança SaaS, segurança, prevenção de fraude, obrigações legais e gestão contratual.
 
 ## 4. Titulares e categorias de dados
 
-### 4.1 Proprietário / usuário do estabelecimento
-Possíveis dados:
-- nome;
-- e-mail;
-- telefone;
-- CPF quando pessoa física;
-- dados de autenticação e autorização;
-- dados contratuais e de billing.
+### Proprietário / usuário do estabelecimento
+Nome, e-mail, telefone, CPF quando pessoa física, autenticação/autorização e dados contratuais/billing quando necessários.
 
-### 4.2 Profissionais
-Possíveis dados:
-- nome;
-- telefone/e-mail quando necessário;
-- vínculo com serviços e unidades;
-- disponibilidade e agenda profissional.
+### Profissionais
+Nome, contato quando necessário, vínculo com serviços/unidades, disponibilidade e agenda profissional.
 
-### 4.3 Clientes finais
-Possíveis dados:
-- nome;
-- telefone/WhatsApp;
-- e-mail opcional;
-- histórico de agendamentos;
-- conteúdo conversacional necessário para atendimento;
-- identificadores e estado de pagamento retornados pelo gateway.
+### Clientes finais
+Nome, telefone/WhatsApp, e-mail opcional, histórico de agendamentos, conteúdo conversacional necessário e identificadores/estado de pagamento retornados pelo gateway.
 
-### 4.4 Dados fiscais
-`LegalEntity` pode armazenar CPF ou CNPJ. CPF é dado pessoal quando relacionado a pessoa natural.
+### Dados fiscais — decisão aprovada
+`LegalEntity` pode representar CPF ou CNPJ. CPF é dado pessoal quando relacionado a pessoa natural.
 
 Regras:
-- armazenar documento normalizado;
-- nunca usar CPF/CNPJ como chave primária;
-- nunca registrar documento completo em logs/traces;
-- mascarar na UI quando a visualização integral não for necessária;
-- auditar alterações;
-- restringir acesso por autorização;
-- não enviar CPF/CNPJ ao LLM sem necessidade explícita.
+- CPF/CNPJ nunca é chave primária; `LegalEntity.Id` é UUID;
+- documento é normalizado e validado no backend;
+- valor recuperável é armazenado protegido/criptografado;
+- comparação e unicidade usam `DocumentFingerprint` via HMAC-SHA-256 com chave secreta da plataforma;
+- a unicidade é **tenant-scoped**: `TenantId + DocumentType + DocumentFingerprint`;
+- o mesmo CPF/CNPJ pode existir em Tenants diferentes;
+- Tenants são independentes e não existe consulta de negócio cross-tenant para informar, relacionar ou bloquear cadastros por documento fiscal;
+- um usuário não recebe indicação de que o mesmo documento está cadastrado em outro Tenant;
+- documento integral nunca é registrado em logs/traces;
+- UI mascara o documento quando a visualização completa não for necessária;
+- alterações são auditadas sem replicar o documento integral no Audit Log;
+- CPF/CNPJ não é enviado ao LLM sem necessidade explícita e autorizada.
+
+A existência do mesmo documento em Tenants diferentes **não implica identidade de usuário, propriedade compartilhada, vínculo comercial ou compartilhamento de dados**.
 
 ## 5. Inventário e finalidade
 
-Antes do go-live deve existir um inventário de tratamento contendo, no mínimo:
+Antes do go-live deve existir inventário de tratamento com DataCategory, Purpose, DataSubject, ControllerRole, LegalBasisCandidate, Source, Storage, Recipients/Subprocessors, RetentionRule, DeletionOrAnonymizationRule e SecurityClassification.
 
-```text
-DataCategory
-Purpose
-DataSubject
-ControllerRole
-LegalBasisCandidate
-Source
-Storage
-Recipients/Subprocessors
-RetentionRule
-DeletionOrAnonymizationRule
-SecurityClassification
-```
-
-A base legal deve ser validada por finalidade. **Consentimento não é a base padrão para todo tratamento.** Dependendo do contexto podem existir outras hipóteses previstas na LGPD, como execução de contrato, obrigação legal/regulatória ou legítimo interesse, quando aplicáveis e devidamente avaliadas.
+Consentimento não é base padrão para todo tratamento; a base legal deve ser avaliada por finalidade.
 
 ## 6. Minimização de dados na IA
-
-Regra arquitetural:
 
 ```text
 WhatsApp / PWA
@@ -128,34 +71,11 @@ AI Gateway
 LLM Provider
 ```
 
-O LLM recebe somente o contexto necessário para executar a tarefa.
-
-Exemplo: para interpretar “quero corte amanhã às 15h”, o modelo pode receber intenção, serviço, data, contexto conversacional e identificadores técnicos mínimos. Não deve receber CPF/CNPJ, dados de cartão, histórico financeiro completo ou outros dados sem relação com a tarefa.
-
-Proibições:
-- LLM sem acesso direto ao banco;
-- dados de cartão nunca enviados ao LLM;
-- secrets/tokens nunca enviados ao LLM;
-- logs de prompts/respostas não devem armazenar dados pessoais além do necessário;
-- contexto conversacional deve possuir política de retenção.
+O LLM recebe somente o contexto necessário. Não recebe CPF/CNPJ, dados de cartão, secrets ou histórico financeiro completo sem necessidade legítima para a tarefa. LLM não acessa banco diretamente. Logs de prompts/respostas devem minimizar dados pessoais e contexto conversacional terá política de retenção.
 
 ## 7. Pagamentos
 
-A plataforma não armazena dados brutos de cartão.
-
-```text
-Cliente
-   ↓
-Hosted / Tokenized Checkout
-   ↓
-Payment Provider
-   ↓
-Webhook validado
-   ↓
-Backend
-```
-
-A aplicação armazena apenas dados necessários à conciliação e estado da transação, por exemplo `provider_payment_id`, valor, método, status, timestamps e referências internas.
+A plataforma não armazena dados brutos de cartão. Hosted/tokenized checkout envia dados financeiros sensíveis diretamente ao Payment Provider; webhook validado atualiza o backend. A aplicação guarda apenas referências e estados necessários à conciliação.
 
 ## 8. Segurança e isolamento
 
@@ -164,14 +84,13 @@ Controles mínimos:
 - autorização server-side;
 - Global Query Filters EF Core + validações tenant-aware;
 - testes automatizados de isolamento entre tenants;
+- nenhum relacionamento implícito entre Tenants por CPF/CNPJ, telefone, e-mail ou outro PII;
 - princípio do menor privilégio;
 - secrets em secret manager;
-- criptografia em trânsito;
-- proteção de dados em repouso conforme serviço de infraestrutura;
+- criptografia em trânsito e proteção em repouso;
 - mascaramento/redação de PII em logs;
 - rate limiting;
-- validação de webhooks;
-- idempotência e proteção contra replay;
+- validação de webhooks, idempotência e proteção contra replay;
 - audit trail para operações críticas;
 - acesso administrativo auditável.
 
@@ -179,133 +98,45 @@ RLS PostgreSQL é evolução possível e não substitui os controles da aplicaç
 
 ## 9. Retenção e eliminação
 
-Nenhum dado pessoal deve possuir retenção indefinida apenas por conveniência.
+Nenhum dado pessoal deve possuir retenção indefinida apenas por conveniência. Cada categoria terá política considerando finalidade operacional, contrato, obrigação legal/regulatória, exercício de direitos, auditoria e minimização.
 
-Cada categoria deve ter política definida considerando:
-- finalidade operacional;
-- contrato;
-- obrigação legal/regulatória aplicável;
-- prevenção/exercício de direitos;
-- necessidade de auditoria;
-- minimização.
+Estratégias possíveis: exclusão física, anonimização irreversível, soft-delete quando houver motivo legítimo e retenção diferenciada para Conversations, Webhook payloads e logs.
 
-Estratégias possíveis:
-- exclusão física quando permitida e segura;
-- anonimização irreversível quando o valor estatístico puder ser preservado;
-- soft-delete somente quando houver motivo legítimo para retenção;
-- retenção diferenciada para Conversations, Webhook payloads e logs.
-
-Pedido de exclusão não implica exclusão automática de tudo: antes da execução o sistema/processo deve avaliar eventual obrigação ou necessidade legítima de conservação.
+Pedido de exclusão não implica exclusão automática de tudo; obrigações ou necessidades legítimas de conservação devem ser avaliadas.
 
 ## 10. Direitos do titular
 
-A arquitetura não pode impedir o atendimento de direitos previstos pela LGPD.
-
-O MVP deve permitir processo operacional para:
-- confirmação da existência de tratamento;
-- acesso;
-- correção;
-- anonimização/bloqueio/eliminação quando aplicável;
-- informação sobre compartilhamento;
-- revogação de consentimento quando essa for a base utilizada;
-- oposição/requisições aplicáveis;
-- portabilidade quando regulamentação e contexto aplicável permitirem;
-- revisão/informação sobre decisões automatizadas quando aplicável.
-
-Não é necessário construir um portal completo de privacidade no primeiro MVP. É necessário existir um canal/processo rastreável e capacidade técnica para localizar, corrigir, exportar, anonimizar ou eliminar dados quando juridicamente cabível.
+O MVP deve permitir processo operacional para confirmação de tratamento, acesso, correção, anonimização/bloqueio/eliminação quando aplicável, informação sobre compartilhamento, revogação de consentimento quando aplicável, oposição/requisições pertinentes e demais direitos aplicáveis. Não é obrigatório um portal completo no MVP, mas deve existir processo rastreável e capacidade técnica de localizar, corrigir, exportar, anonimizar ou eliminar dados quando cabível.
 
 ## 11. Solicitações de titulares
 
-Modelo conceitual futuro/operacional:
-
-```text
-PrivacyRequest
-- Id
-- TenantId?
-- DataSubjectType
-- RequestType
-- Status
-- IdentityVerificationStatus
-- RequestedAt
-- DueAt
-- CompletedAt
-- Resolution
-- AuditReference
-```
-
-Tipos:
-`ACCESS`, `CORRECTION`, `DELETION`, `ANONYMIZATION`, `INFORMATION`, `CONSENT_REVOCATION`, `OTHER`.
-
-No MVP isso pode ser implementado inicialmente por processo administrativo auditável antes de justificar uma entidade persistida específica.
+Modelo conceitual futuro: `PrivacyRequest` com Id, TenantId quando aplicável, DataSubjectType, RequestType, Status, IdentityVerificationStatus, RequestedAt, DueAt, CompletedAt, Resolution e AuditReference. No MVP pode começar como processo administrativo auditável.
 
 ## 12. Compartilhamento e suboperadores
 
-Provedores externos devem ser inventariados com:
-- finalidade;
-- categorias de dados enviadas;
-- região/local de processamento quando relevante;
-- política de retenção disponível;
-- controles de segurança;
-- termos/DPA aplicáveis;
-- mecanismo de exclusão/atendimento de direitos quando necessário.
-
-Principais grupos previstos:
-- Meta / WhatsApp Business Platform;
-- provedor de LLM;
-- gateway de pagamentos;
-- provedor de billing SaaS;
-- Azure/infraestrutura e observabilidade.
-
-A integração deve enviar o **mínimo necessário** para cada provedor.
+Provedores externos devem ser inventariados por finalidade, categorias enviadas, região/local quando relevante, retenção, segurança, termos/DPA e mecanismo de exclusão/direitos. Grupos previstos: Meta/WhatsApp, LLM provider, gateway de pagamentos, billing SaaS e Azure/infraestrutura/observabilidade. Sempre enviar o mínimo necessário.
 
 ## 13. Observabilidade e logs
 
-Logs devem ser úteis para operação sem virar repositório paralelo de PII.
-
-Preferir:
-- IDs internos;
-- TenantId;
-- LocationId;
-- CorrelationId;
-- EventId;
-- códigos de erro;
-- estados técnicos.
-
-Evitar:
-- CPF/CNPJ integral;
-- número de cartão;
-- tokens/secrets;
-- payload integral de WhatsApp por padrão;
-- conteúdo completo de prompts/respostas quando não necessário.
-
-Quando conteúdo conversacional precisar ser armazenado para suporte/auditoria, deve ter acesso restrito e retenção definida.
+Preferir IDs internos, TenantId, LocationId, CorrelationId, EventId, códigos de erro e estados técnicos. Evitar CPF/CNPJ integral, cartão, tokens/secrets, payload integral de WhatsApp e prompts/respostas completos por padrão. Conteúdo conversacional armazenado para suporte/auditoria deve ter acesso restrito e retenção definida.
 
 ## 14. Incidentes de segurança
 
-Antes do piloto real deve existir procedimento de incidente contendo:
-- detecção;
-- contenção;
-- preservação de evidências;
-- avaliação do impacto;
-- identificação de titulares/dados afetados;
-- comunicação interna;
-- análise de necessidade de comunicação ao controlador, titulares e/ou ANPD conforme regra aplicável;
-- registro das decisões e ações corretivas.
+Antes do piloto deve existir procedimento para detecção, contenção, preservação de evidências, avaliação de impacto, identificação de titulares/dados afetados, comunicação interna, análise de eventual comunicação ao controlador/titulares/ANPD e registro de decisões e ações corretivas. A decisão jurídica de notificação não deve ser automatizada apenas por regra técnica.
 
-A decisão jurídica de notificação não deve ser automatizada apenas por regra técnica.
-
-## 15. Requisitos para o ERD e código
+## 15. Requisitos para ERD e código
 
 - entidades tenant-owned carregam `TenantId` quando aplicável;
-- `LegalEntity.DocumentNumber` é protegido contra exposição indevida;
-- `Location` mantém dados de endereço separados da identidade fiscal;
+- `LegalEntity.DocumentEncrypted` protege o valor recuperável;
+- `LegalEntity.DocumentFingerprint` permite validação tenant-scoped sem documento em claro;
+- não existe UNIQUE global para CPF/CNPJ;
+- Location mantém endereço separado da identidade fiscal;
 - Customer não usa telefone como PK;
-- dados históricos necessários à integridade comercial usam snapshots mínimos;
-- entidades não são duplicadas apenas para facilitar IA;
+- históricos usam snapshots mínimos necessários;
 - APIs não retornam PII desnecessária;
-- DTOs públicos devem ser menores que as entidades persistidas quando possível;
-- endpoints administrativos usam autorização explícita por papel/escopo;
-- auditoria registra ação, ator, alvo e timestamp, evitando copiar PII desnecessária.
+- DTOs públicos devem ser menores que entidades persistidas quando possível;
+- endpoints administrativos usam autorização explícita;
+- auditoria registra ação, ator, alvo e timestamp sem copiar PII desnecessária.
 
 ## 16. Checklist pré-piloto
 
@@ -318,7 +149,7 @@ A decisão jurídica de notificação não deve ser automatizada apenas por regr
 - [ ] Retenção definida para Customers, Conversations, Logs, Webhooks e Audit
 - [ ] Processo de direitos do titular testado
 - [ ] Redação de PII em logs testada
-- [ ] Isolamento multi-tenant testado
+- [ ] Isolamento multi-tenant testado, inclusive documentos fiscais repetidos entre Tenants
 - [ ] Backup/restore testado
 - [ ] Procedimento de incidente documentado
 - [ ] Context Builder/AI Gateway validado para minimização
@@ -326,4 +157,4 @@ A decisão jurídica de notificação não deve ser automatizada apenas por regr
 
 ## 17. Decisão central
 
-> **Coletar somente o necessário, usar somente para finalidade definida, compartilhar somente o mínimo, proteger por padrão e manter capacidade de atender os direitos do titular.**
+> **Coletar somente o necessário, usar somente para finalidade definida, compartilhar somente o mínimo, proteger por padrão e manter capacidade de atender os direitos do titular. Cada Tenant permanece uma fronteira independente, mesmo quando dados fiscais coincidem entre contas distintas.**
