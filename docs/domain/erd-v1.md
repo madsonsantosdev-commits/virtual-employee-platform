@@ -7,25 +7,7 @@
 PK `uuid`; instantes `timestamptz`; horários recorrentes `time`; dinheiro `numeric(12,2)`; dados tenant-owned carregam `tenant_id`. Privacy by Design: evitar duplicação de PII e exposição em logs.
 
 ## Entidades principais
-- Tenant = fronteira independente de propriedade, segurança e cobrança.
-- Business = negócio/marca.
-- LegalEntity = identidade fiscal.
-- Location = unidade operacional.
-- Service e Professional pertencem ao Business.
-- Customer permanece Business-scoped.
-- Appointment sempre ocorre em uma Location e contém 1..N AppointmentItems.
-
-## Multi-location
-```text
-Tenant
-  -> Business
-       -> Locations
-       -> Services -> LocationService
-       -> Professionals -> ProfessionalLocation
-                        -> ProfessionalService
-```
-
-`AvailabilityRule` é Professional + Location. `ScheduleBlock` sempre é Location-scoped e opcionalmente Professional-scoped.
+Tenant é fronteira independente de propriedade, segurança e cobrança. Business representa negócio/marca; LegalEntity identidade fiscal; Location unidade operacional. Service e Professional pertencem ao Business. Customer é Business-scoped. Appointment sempre ocorre em Location e contém 1..N AppointmentItems.
 
 ## LegalEntity / CPF-CNPJ — APROVADO
 ```text
@@ -33,10 +15,10 @@ legal_entities
 id uuid PK
 tenant_id uuid NOT NULL
 business_id uuid NOT NULL FK -> businesses.id
-entity_type varchar(20) NOT NULL          -- PERSON | COMPANY
-document_type varchar(10) NOT NULL        -- CPF | CNPJ
+entity_type varchar(20) NOT NULL
+document_type varchar(10) NOT NULL
 document_encrypted text NOT NULL
-document_fingerprint varchar(64) NOT NULL -- HMAC-SHA-256 do documento normalizado
+document_fingerprint varchar(64) NOT NULL
 country_code varchar(2) NOT NULL DEFAULT 'BR'
 legal_name varchar(200) NOT NULL
 trade_name varchar(200) NULL
@@ -44,26 +26,19 @@ is_primary boolean NOT NULL DEFAULT true
 is_active boolean NOT NULL DEFAULT true
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
+UNIQUE(tenant_id,document_type,document_fingerprint)
 ```
+CPF/CNPJ nunca PK; fingerprint HMAC-SHA-256; mesmo documento permitido em Tenants distintos sem relacionamento/exposição cross-tenant.
 
-Regras aprovadas:
-- `id` UUID é a identidade técnica; CPF/CNPJ nunca é PK;
-- documento é normalizado e validado no backend antes da persistência;
-- valor recuperável fica protegido em `document_encrypted`;
-- busca/detecção de duplicidade usa `document_fingerprint`, calculado com HMAC-SHA-256 e chave secreta da plataforma;
-- duplicidade é validada somente dentro da fronteira do Tenant;
-- o mesmo CPF/CNPJ pode existir em Tenants diferentes;
-- não existe constraint nem consulta de negócio cross-tenant para impedir/revelar essa ocorrência;
-- um Tenant não recebe informação sobre cadastros existentes em outro Tenant;
-- documento integral não vai para logs, traces ou LLM e deve ser mascarado na UI quando a visualização completa não for necessária;
-- alterações são auditadas sem copiar o documento integral para o Audit Log.
-
-Unicidade lógica/física inicial:
+## Multi-location
 ```text
-UNIQUE(tenant_id, document_type, document_fingerprint)
+Tenant -> Business
+            -> Locations
+            -> Services -> LocationService
+            -> Professionals -> ProfessionalLocation
+                             -> ProfessionalService
 ```
-
-Essa regra preserva independência entre contas e impede duplicação acidental da mesma identidade fiscal dentro do Tenant.
+AvailabilityRule = Professional + Location. ScheduleBlock sempre Location-scoped e opcionalmente Professional-scoped.
 
 ## LocationService — APROVADO PARA MIGRATION 001
 ```text
@@ -76,12 +51,7 @@ created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 PK(tenant_id,location_id,service_id)
 ```
-
-`LocationService` define somente se um Service do Business está disponível em determinada Location.
-
-**Migration 001 não terá `price_override` nem `duration_minutes_override`.** Preço e duração permanecem definidos em `Service` no MVP. Caso surja requisito real de preço/duração por unidade, a evolução será feita por migration própria, com impacto explícito em API, snapshots, analytics e regras de booking.
-
-Motivação: reduzir complexidade, joins condicionais e ambiguidade comercial no hot path do Scheduling sem antecipar um requisito ainda não comprovado.
+Sem `price_override`/`duration_minutes_override` na Migration 001. Service é fonte autoritativa de preço/duração no MVP.
 
 ## Appointment
 ```text
@@ -103,58 +73,29 @@ cancelled_at timestamptz NULL
 created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 ```
+AppointmentItems preservam snapshots de serviço/preço/duração para verdade histórica e Analytics.
 
-## Payment
-`Payment` representa a obrigação financeira lógica do Appointment.
+## Payment / PaymentAttempt / Refund
+Payment é obrigação financeira lógica; PaymentAttempt é cada tentativa concreta no provider; Refund integral no MVP referencia Payment e PaymentAttempt confirmado. `Payment.Amount == Appointment.TotalPriceSnapshot` para SERVICE.
 
-```text
-payments
-id uuid PK
-tenant_id uuid NOT NULL
-appointment_id uuid NOT NULL FK -> appointments.id
-amount numeric(12,2) NOT NULL
-status varchar(30) NOT NULL
-payment_purpose varchar(30) NOT NULL DEFAULT 'SERVICE'
-created_at timestamptz NOT NULL
-confirmed_at timestamptz NULL
-cancelled_at timestamptz NULL
-updated_at timestamptz NOT NULL
-CHECK(amount > 0)
-UNIQUE(tenant_id,appointment_id,payment_purpose)
-```
+## Retenção e Analytics — APROVADO
+A retenção separa conteúdo efêmero de fatos comerciais. Conversation/WhatsApp, conteúdo LLM, webhook bruto e logs detalhados possuem retenção curta por categoria. Appointment, AppointmentItem/snapshots, Payment, PaymentAttempt e Refund preservam fatos necessários ao histórico operacional, financeiro e analítico conforme finalidade e obrigações aplicáveis.
 
-Para SERVICE no MVP, `Payment.Amount == Appointment.TotalPriceSnapshot`.
+O Dashboard deve suportar por Tenant/período e Location quando aplicável:
+- receita realizada/prevista e ticket médio;
+- appointments, cancelamentos, refunds e no-show;
+- serviços mais utilizados, receita e tendências por serviço;
+- desempenho por Professional: atendimentos, receita, ticket médio, cancelamentos/no-show;
+- clientes novos, recorrentes, ativos e inativos;
+- última visita concluída;
+- comparações entre períodos equivalentes;
+- tendências por Location.
 
-## PaymentAttempt
-`PaymentAttempt` representa cada tentativa concreta de cobrança no provider.
+Cliente inativo é calculado pela última visita concluída + threshold configurável pelo Tenant (baseline de produto: 60 dias). Não persistir `IsInactive` no Customer no MVP.
 
-```text
-payment_attempts
-id uuid PK
-tenant_id uuid NOT NULL
-payment_id uuid NOT NULL FK -> payments.id
-provider varchar(40) NOT NULL
-provider_payment_id varchar(160) NULL
-payment_method varchar(30) NOT NULL
-status varchar(30) NOT NULL
-idempotency_key varchar(160) NOT NULL
-checkout_reference varchar(500) NULL
-expires_at timestamptz NULL
-created_at timestamptz NOT NULL
-processed_at timestamptz NULL
-confirmed_at timestamptz NULL
-failed_at timestamptz NULL
-failure_code varchar(100) NULL
-failure_message varchar(500) NULL
-UNIQUE(tenant_id,idempotency_key)
-```
+Analytics inicialmente consulta PostgreSQL transacional. Projeções/agregações entram somente quando volume/hot paths justificarem. Não criar Data Warehouse no MVP.
 
-Índice único parcial `(provider, provider_payment_id)` quando `provider_payment_id IS NOT NULL`.
-
-Uma tentativa FAILED/EXPIRED não cria nova obrigação: Payment pode continuar PENDING e receber novo PaymentAttempt enquanto Appointment for reservável.
-
-## Refund
-Refund integral no MVP ligado ao Payment e ao PaymentAttempt confirmado que originou a transação externa. Estado final somente após confirmação do provider.
+Regra: anonimização/expurgo de PII, quando aplicável, não deve destruir fatos comerciais/agregados legítimos necessários ao histórico do Tenant.
 
 ## Anti-double-booking
 ```sql
@@ -168,42 +109,22 @@ EXCLUDE USING gist (
 )
 WHERE (status IN ('PENDING','CONFIRMED','CONFIRMED_BY_CLIENT','RESCHEDULE_REQUESTED'));
 ```
+LocationId não entra: Professional não pode estar simultaneamente em duas Locations.
 
-`LocationId` deliberadamente não entra: Professional não pode estar reservado simultaneamente em duas unidades.
-
-## Elegibilidade / hot path do Scheduling
+## Hot path Scheduling
 ```text
 Tenant + Location
-  -> LocationService
-  -> ProfessionalLocation
-  -> ProfessionalService
-  -> AvailabilityRule(Location,Professional)
-  - ScheduleBlock(Location[,Professional])
-  - Appointment ativo
-  = Slot elegível
+ -> LocationService
+ -> ProfessionalLocation
+ -> ProfessionalService
+ -> AvailabilityRule
+ - ScheduleBlock
+ - Appointment ativo
+ = Slot elegível
 ```
 
-Preço/duração são obtidos diretamente de `Service` no MVP, sem fallback/override por Location.
-
-## Estratégia de integridade Multi-Tenant — APROVADA
-
-A arquitetura adota isolamento estrutural por `TenantId` com foco simultâneo em segurança, simplicidade e performance.
-
-### Banco
-- `tenant_id` obrigatório em dados tenant-owned;
-- consultas sempre partem do TenantContext;
-- relacionamentos críticos são tenant-aware;
-- índices são tenant-scoped quando compatíveis com o padrão de consulta;
-- PostgreSQL permanece a última barreira de isolamento crítico.
-
-### Domínio / aplicação
-Coerência operacional específica entre Business, Location, Service e Professional é validada no domínio/aplicação. Não adicionar `BusinessId` indiscriminadamente a todas as FKs compostas apenas por redundância.
-
-### Regra arquitetural
-> **TenantId é a principal barreira estrutural no banco. Regras específicas de Business pertencem ao domínio. Constraints e índices adicionais entram quando entregarem benefício real de integridade, concorrência ou performance.**
-
-### Motivação de performance
-Evitar FKs/índices compostos desnecessariamente largos reduz tamanho de índices, custo de INSERT/UPDATE, pressão de memória/cache e complexidade de mapping no EF Core. Índices dos hot paths são priorizados para disponibilidade, agenda e pagamentos.
+## Estratégia Multi-Tenant — APROVADA
+TenantId é principal barreira estrutural no banco. Consultas partem do TenantContext. Coerência específica de Business fica no domínio/aplicação. Não adicionar BusinessId indiscriminadamente às FKs. Constraints/índices adicionais são orientados por integridade, concorrência e hot paths reais, equilibrando performance e simplicidade.
 
 ## Índices prioritários iniciais
 ```text
@@ -225,14 +146,9 @@ payment_attempts(tenant_id,payment_id,created_at)
 payment_attempts(provider,provider_payment_id) UNIQUE WHERE provider_payment_id IS NOT NULL
 refunds(tenant_id,payment_id)
 ```
-
-Esta lista é baseline, não obrigação de criar índices redundantes. Validar com planos de execução e métricas conforme os hot paths reais aparecerem.
-
-## Multi-tenancy e privacidade
-TenantId do contexto autenticado, Global Query Filters EF Core, validações tenant-aware, índices tenant-scoped e testes de isolamento. Mesmo documento fiscal em Tenants distintos não cria relacionamento entre as contas. RLS é evolução futura. LGPD detalhada em `docs/architecture/privacy-lgpd-v1.md`.
+Baseline; validar planos de execução/métricas antes de adicionar índices redundantes.
 
 ## Pontos antes da primeira migration
-- definir retenção de Conversation/webhooks/logs;
 - seed oficial de BusinessTypes;
 - validar combo sem nesting;
 - testes automatizados de isolamento, concorrência, hot paths e idempotência financeira.
