@@ -4,157 +4,119 @@
 > Data: 2026-09-15
 
 ## 1. Objetivo
-
-Definir os princípios e controles mínimos de privacidade e proteção de dados pessoais da Virtual Employee Platform antes da implementação.
-
-Este documento não substitui revisão jurídica. Ele transforma requisitos de privacidade em decisões arquiteturais e operacionais verificáveis.
+Definir princípios e controles mínimos de privacidade e proteção de dados pessoais da Virtual Employee Platform antes da implementação. Este documento não substitui revisão jurídica.
 
 ## 2. Princípios
-
-A plataforma adota **Privacy by Design** e **Privacy by Default** como requisitos transversais.
-
-Princípios aplicados: finalidade, adequação, necessidade/minimização, transparência, segurança e prevenção, não discriminação, responsabilização e prestação de contas.
-
-Referências oficiais: LGPD — Lei nº 13.709/2018 e orientações da ANPD.
+Privacy by Design e Privacy by Default: finalidade, adequação, necessidade/minimização, transparência, segurança, prevenção, não discriminação e responsabilização.
 
 ## 3. Papéis no tratamento
-
-Os papéis de Controlador e Operador devem ser definidos por finalidade e contexto. No atendimento do cliente final, o estabelecimento/Tenant tende a atuar como Controlador e a Virtual Employee Platform como Operador nos tratamentos executados por instrução do estabelecimento. A plataforma poderá atuar como Controlador para finalidades próprias, como cadastro e cobrança SaaS, segurança, prevenção de fraude, obrigações legais e gestão contratual.
+Controlador e Operador são definidos por finalidade/contexto. No atendimento do cliente final, estabelecimento/Tenant tende a ser Controlador e a plataforma Operador. A plataforma pode ser Controlador para cadastro/cobrança SaaS, segurança, prevenção de fraude, obrigações legais e gestão contratual.
 
 ## 4. Titulares e categorias de dados
+Proprietário: nome, contato, CPF quando necessário, autenticação e dados contratuais/billing. Profissionais: nome, contato necessário, serviços/unidades, disponibilidade e agenda. Clientes finais: nome, WhatsApp, e-mail opcional, histórico de agendamentos, conteúdo conversacional necessário e referências de pagamento.
 
-### Proprietário / usuário do estabelecimento
-Nome, e-mail, telefone, CPF quando pessoa física, autenticação/autorização e dados contratuais/billing quando necessários.
-
-### Profissionais
-Nome, contato quando necessário, vínculo com serviços/unidades, disponibilidade e agenda profissional.
-
-### Clientes finais
-Nome, telefone/WhatsApp, e-mail opcional, histórico de agendamentos, conteúdo conversacional necessário e identificadores/estado de pagamento retornados pelo gateway.
-
-### Dados fiscais — decisão aprovada
-`LegalEntity` pode representar CPF ou CNPJ. CPF é dado pessoal quando relacionado a pessoa natural.
-
-Regras:
-- CPF/CNPJ nunca é chave primária; `LegalEntity.Id` é UUID;
-- documento é normalizado e validado no backend;
-- valor recuperável é armazenado protegido/criptografado;
-- comparação e unicidade usam `DocumentFingerprint` via HMAC-SHA-256 com chave secreta da plataforma;
-- a unicidade é **tenant-scoped**: `TenantId + DocumentType + DocumentFingerprint`;
-- o mesmo CPF/CNPJ pode existir em Tenants diferentes;
-- Tenants são independentes e não existe consulta de negócio cross-tenant para informar, relacionar ou bloquear cadastros por documento fiscal;
-- um usuário não recebe indicação de que o mesmo documento está cadastrado em outro Tenant;
-- documento integral nunca é registrado em logs/traces;
-- UI mascara o documento quando a visualização completa não for necessária;
-- alterações são auditadas sem replicar o documento integral no Audit Log;
-- CPF/CNPJ não é enviado ao LLM sem necessidade explícita e autorizada.
-
-A existência do mesmo documento em Tenants diferentes **não implica identidade de usuário, propriedade compartilhada, vínculo comercial ou compartilhamento de dados**.
+### Dados fiscais — aprovado
+- `LegalEntity.Id` UUID; CPF/CNPJ nunca PK;
+- documento normalizado/validado no backend;
+- valor recuperável protegido em `DocumentEncrypted`;
+- `DocumentFingerprint` via HMAC-SHA-256;
+- unicidade tenant-scoped: `TenantId + DocumentType + DocumentFingerprint`;
+- mesmo CPF/CNPJ pode existir em Tenants distintos sem vínculo ou exposição cross-tenant;
+- não registrar documento integral em logs/traces/LLM; mascarar UI e auditar alterações sem replicar PII.
 
 ## 5. Inventário e finalidade
+Antes do go-live: DataCategory, Purpose, DataSubject, ControllerRole, LegalBasisCandidate, Source, Storage, Recipients/Subprocessors, RetentionRule, DeletionOrAnonymizationRule e SecurityClassification. Base legal é avaliada por finalidade.
 
-Antes do go-live deve existir inventário de tratamento com DataCategory, Purpose, DataSubject, ControllerRole, LegalBasisCandidate, Source, Storage, Recipients/Subprocessors, RetentionRule, DeletionOrAnonymizationRule e SecurityClassification.
-
-Consentimento não é base padrão para todo tratamento; a base legal deve ser avaliada por finalidade.
-
-## 6. Minimização de dados na IA
-
-```text
-WhatsApp / PWA
-   ↓
-Conversation Engine
-   ↓
-Context Builder + Data Minimization
-   ↓
-AI Gateway
-   ↓
-LLM Provider
-```
-
-O LLM recebe somente o contexto necessário. Não recebe CPF/CNPJ, dados de cartão, secrets ou histórico financeiro completo sem necessidade legítima para a tarefa. LLM não acessa banco diretamente. Logs de prompts/respostas devem minimizar dados pessoais e contexto conversacional terá política de retenção.
+## 6. Minimização na IA
+`Canal -> Conversation Engine -> Context Builder/Data Minimization -> AI Gateway -> LLM Provider`. Somente contexto necessário. Sem acesso direto do LLM ao banco; sem cartão, secrets ou PII fiscal por padrão.
 
 ## 7. Pagamentos
-
-A plataforma não armazena dados brutos de cartão. Hosted/tokenized checkout envia dados financeiros sensíveis diretamente ao Payment Provider; webhook validado atualiza o backend. A aplicação guarda apenas referências e estados necessários à conciliação.
+Sem dados brutos de cartão. Hosted/tokenized checkout -> Provider -> webhook validado -> backend. Persistir somente referências/estados necessários à operação, conciliação, auditoria e obrigações aplicáveis.
 
 ## 8. Segurança e isolamento
+TenantId confiável, autorização server-side, Global Query Filters + validações tenant-aware, testes de isolamento, menor privilégio, secret manager, proteção em trânsito/repouso, redação de PII, rate limiting, webhook validation, idempotência/replay protection, audit trail e acesso administrativo auditável. RLS é evolução possível.
 
-Controles mínimos:
-- `TenantId` derivado de contexto confiável;
-- autorização server-side;
-- Global Query Filters EF Core + validações tenant-aware;
-- testes automatizados de isolamento entre tenants;
-- nenhum relacionamento implícito entre Tenants por CPF/CNPJ, telefone, e-mail ou outro PII;
-- princípio do menor privilégio;
-- secrets em secret manager;
-- criptografia em trânsito e proteção em repouso;
-- mascaramento/redação de PII em logs;
-- rate limiting;
-- validação de webhooks, idempotência e proteção contra replay;
-- audit trail para operações críticas;
-- acesso administrativo auditável.
+## 9. Retenção e eliminação — DECISÃO APROVADA
 
-RLS PostgreSQL é evolução possível e não substitui os controles da aplicação.
+A política separa **conteúdo operacional/PII**, **fatos transacionais estruturados** e **histórico analítico**. Expirar conteúdo bruto não pode destruir fatos comerciais necessários à gestão do Tenant quando houver finalidade/base legítima para preservação.
 
-## 9. Retenção e eliminação
+### 9.1 Conteúdo de curta retenção
+Conversations/WhatsApp, prompts/respostas LLM, payloads brutos de webhooks e logs técnicos detalhados terão retenção curta e diferenciada. Os prazos operacionais exatos serão configuráveis por categoria e validados antes do piloto conforme necessidade técnica, provedores e requisitos legais.
 
-Nenhum dado pessoal deve possuir retenção indefinida apenas por conveniência. Cada categoria terá política considerando finalidade operacional, contrato, obrigação legal/regulatória, exercício de direitos, auditoria e minimização.
+Após expurgo do conteúdo bruto, preservar apenas metadados técnicos mínimos quando necessários, como TenantId, ProviderEventId, EventType, timestamps, status, CorrelationId e hash/referência técnica, sem manter payload pessoal por conveniência.
 
-Estratégias possíveis: exclusão física, anonimização irreversível, soft-delete quando houver motivo legítimo e retenção diferenciada para Conversations, Webhook payloads e logs.
+### 9.2 Fatos comerciais e financeiros
+Appointment, AppointmentItem, snapshots comerciais, Payment, PaymentAttempt e Refund possuem valor operacional, financeiro, histórico e analítico. Sua retenção segue finalidade comercial/contratual e obrigações aplicáveis, não o prazo curto de Conversation/Logs.
 
-Pedido de exclusão não implica exclusão automática de tudo; obrigações ou necessidades legítimas de conservação devem ser avaliadas.
+Snapshots de preço, duração e nome do serviço preservam a verdade histórica da transação mesmo que o cadastro atual do Service mude.
+
+### 9.3 Analytics e histórico gerencial
+O Dashboard deve manter capacidade de comparação histórica e tomada de decisão sem depender de conteúdo conversacional ou PII desnecessária.
+
+Métricas previstas por Tenant/período, com filtros por Location quando aplicável:
+- receita realizada e prevista;
+- ticket médio;
+- quantidade de appointments;
+- cancelamentos, refunds e no-show;
+- serviços mais utilizados e receita por serviço;
+- desempenho de profissionais: atendimentos, receita, ticket médio, cancelamentos/no-show;
+- clientes novos, recorrentes, ativos e inativos;
+- última visita concluída do cliente;
+- comparações entre períodos equivalentes;
+- tendências por serviço/profissional/location.
+
+Cliente inativo é derivado da última visita concluída e de um threshold configurável pelo Tenant (baseline de produto: 60 dias), evitando um `IsInactive` persistido que envelheça.
+
+### 9.4 Separação entre PII e fatos analíticos
+Quando juridicamente cabível, PII pode ser excluída/anonimizada sem necessariamente destruir fatos comerciais agregados ou históricos necessários à gestão. Analytics deve depender prioritariamente de dados estruturados e agregações, não de identidade pessoal ou texto de conversas.
+
+No MVP, Analytics pode consultar o PostgreSQL transacional. Agregações/projeções diárias ou mensais são evolução orientada por volume/performance; não haverá Data Warehouse prematuro.
+
+### 9.5 Regra central
+> **Dados conversacionais e técnicos possuem retenção mínima necessária; fatos comerciais e financeiros preservam a capacidade de reconstruir o histórico do negócio; anonimização/expurgo de PII não deve destruir métricas legítimas do Tenant.**
+
+Nenhum dado pessoal terá retenção indefinida apenas por conveniência. Prazos sujeitos a obrigação legal/regulatória devem ser validados antes do go-live.
 
 ## 10. Direitos do titular
-
-O MVP deve permitir processo operacional para confirmação de tratamento, acesso, correção, anonimização/bloqueio/eliminação quando aplicável, informação sobre compartilhamento, revogação de consentimento quando aplicável, oposição/requisições pertinentes e demais direitos aplicáveis. Não é obrigatório um portal completo no MVP, mas deve existir processo rastreável e capacidade técnica de localizar, corrigir, exportar, anonimizar ou eliminar dados quando cabível.
+Deve existir processo rastreável para acesso, correção, anonimização/bloqueio/eliminação quando aplicável, informação, revogação/oposição e demais direitos cabíveis. Não é obrigatório portal completo no MVP.
 
 ## 11. Solicitações de titulares
-
-Modelo conceitual futuro: `PrivacyRequest` com Id, TenantId quando aplicável, DataSubjectType, RequestType, Status, IdentityVerificationStatus, RequestedAt, DueAt, CompletedAt, Resolution e AuditReference. No MVP pode começar como processo administrativo auditável.
+`PrivacyRequest` é modelo conceitual futuro; MVP pode começar por processo administrativo auditável.
 
 ## 12. Compartilhamento e suboperadores
-
-Provedores externos devem ser inventariados por finalidade, categorias enviadas, região/local quando relevante, retenção, segurança, termos/DPA e mecanismo de exclusão/direitos. Grupos previstos: Meta/WhatsApp, LLM provider, gateway de pagamentos, billing SaaS e Azure/infraestrutura/observabilidade. Sempre enviar o mínimo necessário.
+Inventariar Meta/WhatsApp, LLM provider, gateway, billing SaaS e Azure/infraestrutura por finalidade, dados enviados, retenção, segurança e termos. Compartilhar somente o mínimo.
 
 ## 13. Observabilidade e logs
+Preferir IDs internos, TenantId, LocationId, CorrelationId, EventId, códigos e estados. Evitar CPF/CNPJ, cartão, secrets, payload integral de WhatsApp e prompts/respostas completos. Conteúdo necessário para suporte tem acesso restrito e retenção curta definida.
 
-Preferir IDs internos, TenantId, LocationId, CorrelationId, EventId, códigos de erro e estados técnicos. Evitar CPF/CNPJ integral, cartão, tokens/secrets, payload integral de WhatsApp e prompts/respostas completos por padrão. Conteúdo conversacional armazenado para suporte/auditoria deve ter acesso restrito e retenção definida.
-
-## 14. Incidentes de segurança
-
-Antes do piloto deve existir procedimento para detecção, contenção, preservação de evidências, avaliação de impacto, identificação de titulares/dados afetados, comunicação interna, análise de eventual comunicação ao controlador/titulares/ANPD e registro de decisões e ações corretivas. A decisão jurídica de notificação não deve ser automatizada apenas por regra técnica.
+## 14. Incidentes
+Antes do piloto: procedimento de detecção, contenção, evidências, impacto, titulares/dados afetados, comunicação, avaliação jurídica e ações corretivas.
 
 ## 15. Requisitos para ERD e código
-
-- entidades tenant-owned carregam `TenantId` quando aplicável;
-- `LegalEntity.DocumentEncrypted` protege o valor recuperável;
-- `LegalEntity.DocumentFingerprint` permite validação tenant-scoped sem documento em claro;
-- não existe UNIQUE global para CPF/CNPJ;
-- Location mantém endereço separado da identidade fiscal;
+- TenantId em entidades tenant-owned;
+- proteção/fingerprint fiscal tenant-scoped;
+- sem UNIQUE global CPF/CNPJ;
 - Customer não usa telefone como PK;
-- históricos usam snapshots mínimos necessários;
-- APIs não retornam PII desnecessária;
-- DTOs públicos devem ser menores que entidades persistidas quando possível;
-- endpoints administrativos usam autorização explícita;
-- auditoria registra ação, ator, alvo e timestamp sem copiar PII desnecessária.
+- snapshots mínimos preservam fatos comerciais;
+- Analytics não depende de Conversation/PII para métricas históricas;
+- expurgo de conteúdo bruto não remove automaticamente fatos transacionais legítimos;
+- APIs minimizam PII;
+- auditoria evita copiar PII.
 
 ## 16. Checklist pré-piloto
-
 - [ ] Inventário de dados pessoais aprovado
-- [ ] Finalidades e bases legais revisadas
-- [ ] Papéis Controlador/Operador documentados por fluxo
-- [ ] Política de Privacidade publicada
-- [ ] Termos/DPA com assinantes revisados
-- [ ] Lista de suboperadores/provedores registrada
-- [ ] Retenção definida para Customers, Conversations, Logs, Webhooks e Audit
+- [ ] Finalidades/bases legais revisadas
+- [ ] Papéis Controlador/Operador documentados
+- [ ] Política de Privacidade e termos/DPA revisados
+- [ ] Suboperadores registrados
+- [x] Estratégia arquitetural de retenção definida
+- [ ] Prazos operacionais/jurídicos finais por categoria validados antes do go-live
 - [ ] Processo de direitos do titular testado
 - [ ] Redação de PII em logs testada
-- [ ] Isolamento multi-tenant testado, inclusive documentos fiscais repetidos entre Tenants
-- [ ] Backup/restore testado
-- [ ] Procedimento de incidente documentado
-- [ ] Context Builder/AI Gateway validado para minimização
-- [ ] Nenhum dado bruto de cartão trafega pela aplicação
+- [ ] Isolamento multi-tenant testado
+- [ ] Backup/restore e incidente testados/documentados
+- [ ] AI Gateway validado para minimização
+- [ ] Nenhum cartão bruto trafega pela aplicação
 
 ## 17. Decisão central
-
-> **Coletar somente o necessário, usar somente para finalidade definida, compartilhar somente o mínimo, proteger por padrão e manter capacidade de atender os direitos do titular. Cada Tenant permanece uma fronteira independente, mesmo quando dados fiscais coincidem entre contas distintas.**
+> **Coletar somente o necessário, proteger por padrão e separar identidade pessoal de fatos comerciais. O histórico analítico legítimo do Tenant deve sobreviver ao expurgo de conteúdo efêmero sem transformar Analytics em repositório de PII.**
