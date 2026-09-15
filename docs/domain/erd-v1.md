@@ -1,13 +1,13 @@
 # ERD Físico v1 — PostgreSQL
 
 > Status: Draft v1 — alinhado às regras aprovadas
-> Data: 2026-09-14
+> Data: 2026-09-15
 
 ## Convenções
 PK `uuid`; instantes `timestamptz`; horários recorrentes `time`; dinheiro `numeric(12,2)`; dados tenant-owned carregam `tenant_id`. Privacy by Design: evitar duplicação de PII e exposição em logs.
 
 ## Entidades principais
-- Tenant = fronteira de propriedade, segurança e cobrança.
+- Tenant = fronteira independente de propriedade, segurança e cobrança.
 - Business = negócio/marca.
 - LegalEntity = identidade fiscal.
 - Location = unidade operacional.
@@ -26,6 +26,44 @@ Tenant
 ```
 
 `AvailabilityRule` é Professional + Location. `ScheduleBlock` sempre é Location-scoped e opcionalmente Professional-scoped.
+
+## LegalEntity / CPF-CNPJ — APROVADO
+```text
+legal_entities
+id uuid PK
+tenant_id uuid NOT NULL
+business_id uuid NOT NULL FK -> businesses.id
+entity_type varchar(20) NOT NULL          -- PERSON | COMPANY
+document_type varchar(10) NOT NULL        -- CPF | CNPJ
+document_encrypted text NOT NULL
+document_fingerprint varchar(64) NOT NULL -- HMAC-SHA-256 do documento normalizado
+country_code varchar(2) NOT NULL DEFAULT 'BR'
+legal_name varchar(200) NOT NULL
+trade_name varchar(200) NULL
+is_primary boolean NOT NULL DEFAULT true
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+```
+
+Regras aprovadas:
+- `id` UUID é a identidade técnica; CPF/CNPJ nunca é PK;
+- documento é normalizado e validado no backend antes da persistência;
+- valor recuperável fica protegido em `document_encrypted`;
+- busca/detecção de duplicidade usa `document_fingerprint`, calculado com HMAC-SHA-256 e chave secreta da plataforma;
+- duplicidade é validada somente dentro da fronteira do Tenant;
+- o mesmo CPF/CNPJ pode existir em Tenants diferentes;
+- não existe constraint nem consulta de negócio cross-tenant para impedir/revelar essa ocorrência;
+- um Tenant não recebe informação sobre cadastros existentes em outro Tenant;
+- documento integral não vai para logs, traces ou LLM e deve ser mascarado na UI quando a visualização completa não for necessária;
+- alterações são auditadas sem copiar o documento integral para o Audit Log.
+
+Unicidade lógica/física inicial:
+```text
+UNIQUE(tenant_id, document_type, document_fingerprint)
+```
+
+Essa regra preserva independência entre contas e impede duplicação acidental da mesma identidade fiscal dentro do Tenant.
 
 ## LocationService — APROVADO PARA MIGRATION 001
 ```text
@@ -165,16 +203,11 @@ Coerência operacional específica entre Business, Location, Service e Professio
 > **TenantId é a principal barreira estrutural no banco. Regras específicas de Business pertencem ao domínio. Constraints e índices adicionais entram quando entregarem benefício real de integridade, concorrência ou performance.**
 
 ### Motivação de performance
-Evitar FKs/índices compostos desnecessariamente largos reduz:
-- tamanho de índices;
-- custo de INSERT/UPDATE;
-- pressão de memória/cache;
-- complexidade de mapping no EF Core.
-
-Ao mesmo tempo, índices dos hot paths são priorizados para disponibilidade, agenda e pagamentos.
+Evitar FKs/índices compostos desnecessariamente largos reduz tamanho de índices, custo de INSERT/UPDATE, pressão de memória/cache e complexidade de mapping no EF Core. Índices dos hot paths são priorizados para disponibilidade, agenda e pagamentos.
 
 ## Índices prioritários iniciais
 ```text
+legal_entities(tenant_id,document_type,document_fingerprint) UNIQUE
 locations(tenant_id,business_id,is_active)
 location_services(tenant_id,location_id,is_active)
 location_services(tenant_id,service_id,is_active)
@@ -196,10 +229,9 @@ refunds(tenant_id,payment_id)
 Esta lista é baseline, não obrigação de criar índices redundantes. Validar com planos de execução e métricas conforme os hot paths reais aparecerem.
 
 ## Multi-tenancy e privacidade
-TenantId do contexto autenticado, Global Query Filters EF Core, validações tenant-aware, índices tenant-scoped e testes de isolamento. RLS é evolução futura. LGPD detalhada em `docs/architecture/privacy-lgpd-v1.md`.
+TenantId do contexto autenticado, Global Query Filters EF Core, validações tenant-aware, índices tenant-scoped e testes de isolamento. Mesmo documento fiscal em Tenants distintos não cria relacionamento entre as contas. RLS é evolução futura. LGPD detalhada em `docs/architecture/privacy-lgpd-v1.md`.
 
 ## Pontos antes da primeira migration
-- validar unicidade/proteção CPF/CNPJ;
 - definir retenção de Conversation/webhooks/logs;
 - seed oficial de BusinessTypes;
 - validar combo sem nesting;
