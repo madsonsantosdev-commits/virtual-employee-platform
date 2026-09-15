@@ -9,6 +9,39 @@ PK `uuid`; instantes `timestamptz`; horários recorrentes `time`; dinheiro `nume
 ## Entidades principais
 Tenant é fronteira independente de propriedade, segurança e cobrança. Business representa negócio/marca; LegalEntity identidade fiscal; Location unidade operacional. Service e Professional pertencem ao Business. Customer é Business-scoped. Appointment sempre ocorre em Location e contém 1..N AppointmentItems.
 
+## BusinessType — CATÁLOGO GLOBAL APROVADO
+`BusinessType` é catálogo global reutilizável da plataforma e não pertence a um Tenant. Todo tipo possui `code` obrigatório e único. Novos tipos descobertos durante onboarding podem tornar-se opções para futuros Tenants, com normalização, prevenção de duplicidade e mecanismo de curadoria.
+
+```text
+business_types
+id uuid PK
+code varchar(80) NOT NULL
+name varchar(120) NOT NULL
+is_system boolean NOT NULL DEFAULT false
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+UNIQUE(code)
+```
+
+Seeds oficiais iniciais:
+```text
+BARBERSHOP       -> Barbearia
+BEAUTY_SALON     -> Salão de Beleza
+NAIL_STUDIO      -> Manicure / Nail Designer
+AESTHETICS       -> Estética
+MASSAGE          -> Massagem
+PERSONAL_TRAINER -> Personal Trainer
+HAIR_STYLIST     -> Cabeleireiro(a)
+EYEBROW_LASH     -> Sobrancelhas / Cílios
+TATTOO_PIERCING  -> Tatuagem / Piercing
+OTHER            -> Outro
+```
+
+Ao informar um novo tipo, por exemplo `Podologia`, a plataforma gera um code normalizado como `PODOLOGY`/acrônimo canônico definido pela aplicação, verifica duplicidade e registra o novo BusinessType global. O onboarding posterior pode reutilizá-lo. Tipos criados dinamicamente devem passar por mecanismo de curadoria para evitar erros, testes e duplicidades semânticas no catálogo global.
+
+`BusinessType` orienta onboarding, UX, contexto da IA e Analytics da plataforma. Não deve introduzir condicionais rígidas de domínio por categoria; regras operacionais continuam derivadas de Services, Professionals, Availability e configurações.
+
 ## LegalEntity / CPF-CNPJ — APROVADO
 ```text
 legal_entities
@@ -128,6 +161,7 @@ TenantId é principal barreira estrutural no banco. Consultas partem do TenantCo
 
 ## Índices prioritários iniciais
 ```text
+business_types(code) UNIQUE
 legal_entities(tenant_id,document_type,document_fingerprint) UNIQUE
 locations(tenant_id,business_id,is_active)
 location_services(tenant_id,location_id,is_active)
@@ -149,6 +183,5 @@ refunds(tenant_id,payment_id)
 Baseline; validar planos de execução/métricas antes de adicionar índices redundantes.
 
 ## Pontos antes da primeira migration
-- seed oficial de BusinessTypes;
 - validar combo sem nesting;
 - testes automatizados de isolamento, concorrência, hot paths e idempotência financeira.
