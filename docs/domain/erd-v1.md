@@ -24,23 +24,51 @@ updated_at timestamptz NOT NULL
 UNIQUE(code)
 ```
 
-Seeds oficiais iniciais:
+Seeds oficiais iniciais: `BARBERSHOP`, `BEAUTY_SALON`, `NAIL_STUDIO`, `AESTHETICS`, `MASSAGE`, `PERSONAL_TRAINER`, `HAIR_STYLIST`, `EYEBROW_LASH`, `TATTOO_PIERCING`, `OTHER`.
+
+BusinessType orienta onboarding, UX, contexto da IA e Analytics da plataforma; não introduz condicionais rígidas de domínio por categoria.
+
+## Service e Combo — APROVADO
+`Service` representa tanto serviço simples quanto oferta comercial do tipo combo.
+
 ```text
-BARBERSHOP       -> Barbearia
-BEAUTY_SALON     -> Salão de Beleza
-NAIL_STUDIO      -> Manicure / Nail Designer
-AESTHETICS       -> Estética
-MASSAGE          -> Massagem
-PERSONAL_TRAINER -> Personal Trainer
-HAIR_STYLIST     -> Cabeleireiro(a)
-EYEBROW_LASH     -> Sobrancelhas / Cílios
-TATTOO_PIERCING  -> Tatuagem / Piercing
-OTHER            -> Outro
+services
+id uuid PK
+tenant_id uuid NOT NULL
+business_id uuid NOT NULL FK -> businesses.id
+name varchar(160) NOT NULL
+service_type varchar(20) NOT NULL -- SINGLE | COMBO
+price numeric(12,2) NOT NULL
+duration_minutes integer NOT NULL
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
 ```
 
-Ao informar um novo tipo, por exemplo `Podologia`, a plataforma gera um code normalizado como `PODOLOGY`/acrônimo canônico definido pela aplicação, verifica duplicidade e registra o novo BusinessType global. O onboarding posterior pode reutilizá-lo. Tipos criados dinamicamente devem passar por mecanismo de curadoria para evitar erros, testes e duplicidades semânticas no catálogo global.
+Composição:
+```text
+service_components
+tenant_id uuid NOT NULL
+combo_service_id uuid NOT NULL FK -> services.id
+component_service_id uuid NOT NULL FK -> services.id
+sort_order integer NOT NULL
+created_at timestamptz NOT NULL
+PK(tenant_id,combo_service_id,component_service_id)
+```
 
-`BusinessType` orienta onboarding, UX, contexto da IA e Analytics da plataforma. Não deve introduzir condicionais rígidas de domínio por categoria; regras operacionais continuam derivadas de Services, Professionals, Availability e configurações.
+Regras:
+- COMBO pode conter somente Services `SINGLE` do mesmo Business;
+- COMBO nunca pode conter outro COMBO (sem nesting/recursividade);
+- `combo_service_id != component_service_id`;
+- não há `quantity` no MVP;
+- preço e duração do COMBO são próprios e não são calculados automaticamente pela soma dos componentes;
+- componentes descrevem o conteúdo comercial do combo;
+- elegibilidade do Professional para o COMBO é explícita em `ProfessionalService`; não é inferida pela capacidade nos componentes;
+- disponibilidade na Location é explícita via `LocationService`;
+- validação de nesting e coerência de Business ocorre no domínio/aplicação; não criar trigger PostgreSQL complexa para esta regra no MVP;
+- tentativa de incluir COMBO como componente retorna `COMBO_NESTING_NOT_ALLOWED`;
+- no Appointment, um COMBO gera um único AppointmentItem com snapshots do próprio COMBO;
+- Analytics contabiliza a venda do COMBO como oferta comercial própria, sem explodir automaticamente seus componentes como vendas individuais.
 
 ## LegalEntity / CPF-CNPJ — APROVADO
 ```text
@@ -114,21 +142,9 @@ Payment é obrigação financeira lógica; PaymentAttempt é cada tentativa conc
 ## Retenção e Analytics — APROVADO
 A retenção separa conteúdo efêmero de fatos comerciais. Conversation/WhatsApp, conteúdo LLM, webhook bruto e logs detalhados possuem retenção curta por categoria. Appointment, AppointmentItem/snapshots, Payment, PaymentAttempt e Refund preservam fatos necessários ao histórico operacional, financeiro e analítico conforme finalidade e obrigações aplicáveis.
 
-O Dashboard deve suportar por Tenant/período e Location quando aplicável:
-- receita realizada/prevista e ticket médio;
-- appointments, cancelamentos, refunds e no-show;
-- serviços mais utilizados, receita e tendências por serviço;
-- desempenho por Professional: atendimentos, receita, ticket médio, cancelamentos/no-show;
-- clientes novos, recorrentes, ativos e inativos;
-- última visita concluída;
-- comparações entre períodos equivalentes;
-- tendências por Location.
+Dashboard suporta receita, appointments, cancelamentos/refunds/no-show, serviços, profissionais, clientes ativos/inativos, comparações de períodos e tendências por Location. Cliente inativo é derivado da última visita concluída + threshold configurável pelo Tenant (baseline 60 dias), sem `IsInactive` persistido.
 
-Cliente inativo é calculado pela última visita concluída + threshold configurável pelo Tenant (baseline de produto: 60 dias). Não persistir `IsInactive` no Customer no MVP.
-
-Analytics inicialmente consulta PostgreSQL transacional. Projeções/agregações entram somente quando volume/hot paths justificarem. Não criar Data Warehouse no MVP.
-
-Regra: anonimização/expurgo de PII, quando aplicável, não deve destruir fatos comerciais/agregados legítimos necessários ao histórico do Tenant.
+Analytics inicialmente consulta PostgreSQL transacional; projeções/agregações entram somente quando volume/hot paths justificarem.
 
 ## Anti-double-booking
 ```sql
@@ -163,6 +179,7 @@ TenantId é principal barreira estrutural no banco. Consultas partem do TenantCo
 ```text
 business_types(code) UNIQUE
 legal_entities(tenant_id,document_type,document_fingerprint) UNIQUE
+service_components(tenant_id,combo_service_id)
 locations(tenant_id,business_id,is_active)
 location_services(tenant_id,location_id,is_active)
 location_services(tenant_id,service_id,is_active)
@@ -183,5 +200,4 @@ refunds(tenant_id,payment_id)
 Baseline; validar planos de execução/métricas antes de adicionar índices redundantes.
 
 ## Pontos antes da primeira migration
-- validar combo sem nesting;
 - testes automatizados de isolamento, concorrência, hot paths e idempotência financeira.
