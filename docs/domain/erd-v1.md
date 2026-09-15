@@ -1,10 +1,15 @@
 # ERD Físico v1 — PostgreSQL
 
-> Status: Draft v1 — alinhado às regras aprovadas
+> Status: 🔒 FROZEN v1 — decisões estruturais aprovadas para a primeira migration
 > Data: 2026-09-15
 
 ## Convenções
 PK `uuid`; instantes `timestamptz`; horários recorrentes `time`; dinheiro `numeric(12,2)`; dados tenant-owned carregam `tenant_id`. Privacy by Design: evitar duplicação de PII e exposição em logs.
+
+### Normalização e validação de dados — APROVADO
+Dados de entrada são normalizados e validados antes da persistência. Representações canônicas adicionais são armazenadas somente quando necessárias para identidade, unicidade, busca ou segurança. Valores de apresentação são preservados quando possuem significado para o usuário. O PostgreSQL continua protegendo invariantes críticas por constraints.
+
+Exemplos: CPF/CNPJ são normalizados antes de validação/fingerprint; telefone utiliza representação canônica; codes seguem padrão canônico; nomes comerciais preservam sua representação de apresentação. Não criar colunas `NormalizedX` indiscriminadamente.
 
 ## Entidades principais
 Tenant é fronteira independente de propriedade, segurança e cobrança. Business representa negócio/marca; LegalEntity identidade fiscal; Location unidade operacional. Service e Professional pertencem ao Business. Customer é Business-scoped. Appointment sempre ocorre em Location e contém 1..N AppointmentItems.
@@ -45,7 +50,6 @@ created_at timestamptz NOT NULL
 updated_at timestamptz NOT NULL
 ```
 
-Composição:
 ```text
 service_components
 tenant_id uuid NOT NULL
@@ -56,19 +60,7 @@ created_at timestamptz NOT NULL
 PK(tenant_id,combo_service_id,component_service_id)
 ```
 
-Regras:
-- COMBO pode conter somente Services `SINGLE` do mesmo Business;
-- COMBO nunca pode conter outro COMBO (sem nesting/recursividade);
-- `combo_service_id != component_service_id`;
-- não há `quantity` no MVP;
-- preço e duração do COMBO são próprios e não são calculados automaticamente pela soma dos componentes;
-- componentes descrevem o conteúdo comercial do combo;
-- elegibilidade do Professional para o COMBO é explícita em `ProfessionalService`; não é inferida pela capacidade nos componentes;
-- disponibilidade na Location é explícita via `LocationService`;
-- validação de nesting e coerência de Business ocorre no domínio/aplicação; não criar trigger PostgreSQL complexa para esta regra no MVP;
-- tentativa de incluir COMBO como componente retorna `COMBO_NESTING_NOT_ALLOWED`;
-- no Appointment, um COMBO gera um único AppointmentItem com snapshots do próprio COMBO;
-- Analytics contabiliza a venda do COMBO como oferta comercial própria, sem explodir automaticamente seus componentes como vendas individuais.
+COMBO contém somente Services SINGLE do mesmo Business, nunca outro COMBO. Não há quantity no MVP. Preço/duração são próprios. Elegibilidade profissional e disponibilidade por Location são explícitas. No Appointment, COMBO gera um único AppointmentItem. Nesting é bloqueado no domínio/aplicação com `COMBO_NESTING_NOT_ALLOWED`.
 
 ## LegalEntity / CPF-CNPJ — APROVADO
 ```text
@@ -140,11 +132,7 @@ AppointmentItems preservam snapshots de serviço/preço/duração para verdade h
 Payment é obrigação financeira lógica; PaymentAttempt é cada tentativa concreta no provider; Refund integral no MVP referencia Payment e PaymentAttempt confirmado. `Payment.Amount == Appointment.TotalPriceSnapshot` para SERVICE.
 
 ## Retenção e Analytics — APROVADO
-A retenção separa conteúdo efêmero de fatos comerciais. Conversation/WhatsApp, conteúdo LLM, webhook bruto e logs detalhados possuem retenção curta por categoria. Appointment, AppointmentItem/snapshots, Payment, PaymentAttempt e Refund preservam fatos necessários ao histórico operacional, financeiro e analítico conforme finalidade e obrigações aplicáveis.
-
-Dashboard suporta receita, appointments, cancelamentos/refunds/no-show, serviços, profissionais, clientes ativos/inativos, comparações de períodos e tendências por Location. Cliente inativo é derivado da última visita concluída + threshold configurável pelo Tenant (baseline 60 dias), sem `IsInactive` persistido.
-
-Analytics inicialmente consulta PostgreSQL transacional; projeções/agregações entram somente quando volume/hot paths justificarem.
+Conteúdo conversacional/técnico efêmero tem retenção mínima necessária; fatos comerciais e financeiros preservam histórico legítimo do Tenant. Analytics inicialmente consulta PostgreSQL transacional e projeções/agregações entram somente quando volume/hot paths justificarem. Cliente inativo é derivado da última visita concluída + threshold configurável (baseline 60 dias), sem `IsInactive` persistido.
 
 ## Anti-double-booking
 ```sql
@@ -175,6 +163,15 @@ Tenant + Location
 ## Estratégia Multi-Tenant — APROVADA
 TenantId é principal barreira estrutural no banco. Consultas partem do TenantContext. Coerência específica de Business fica no domínio/aplicação. Não adicionar BusinessId indiscriminadamente às FKs. Constraints/índices adicionais são orientados por integridade, concorrência e hot paths reais, equilibrando performance e simplicidade.
 
+## Baseline de testes arquiteturais — APROVADO
+Invariantes críticas de isolamento, concorrência e integridade financeira exigem testes automatizados de integração contra PostgreSQL real. Regras puras de domínio usam unit tests. Hot paths possuem testes de performance mensuráveis; otimizações são orientadas por evidência.
+
+Baseline obrigatória:
+- Multi-Tenant: provar que Tenant A não lê, altera, referencia ou descobre dados tenant-owned do Tenant B; mesmo CPF/CNPJ em Tenants distintos permanece isolado;
+- Concorrência: requisições simultâneas para o mesmo Professional/período resultam em apenas um Appointment ocupante; a concorrente perde com `SLOT_UNAVAILABLE`/alternativas;
+- Scheduling: medir `availability/slots/search` com dataset representativo, registrar baseline e usar `EXPLAIN ANALYZE`/métricas antes de adicionar otimizações ou índices;
+- Financeiro: webhook duplicado e retry não duplicam processamento; `PaymentAttempt` respeita idempotency key; refund é idempotente; confirmação financeira tardia após Appointment EXPIRED não reativa agenda e dispara fluxo compensatório apropriado.
+
 ## Índices prioritários iniciais
 ```text
 business_types(code) UNIQUE
@@ -199,5 +196,5 @@ refunds(tenant_id,payment_id)
 ```
 Baseline; validar planos de execução/métricas antes de adicionar índices redundantes.
 
-## Pontos antes da primeira migration
-- testes automatizados de isolamento, concorrência, hot paths e idempotência financeira.
+## Freeze v1
+ERD v1 congelado em 2026-09-15 para implementação da primeira migration. Novas ideias não críticas entram no backlog. Alterações estruturais posteriores exigem decisão explícita e migration versionada; não reabrir o ERD v1 informalmente.
