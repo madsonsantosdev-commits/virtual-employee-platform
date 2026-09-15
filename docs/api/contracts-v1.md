@@ -1,13 +1,70 @@
 # Contratos da API v1
 
-> Status: Draft v1 — alinhado às regras aprovadas
-> Data: 2026-09-14
+> Status: Draft v1 — revisão final em andamento
+> Data: 2026-09-15
 
-Base: `/api/v1`. JSON, UUID, ISO-8601. TenantId vem do contexto confiável. Escritas críticas aceitam `Idempotency-Key`; requisições propagam `X-Correlation-Id`.
+Base: `/api/v1`. JSON, UUID, ISO-8601. `TenantId` vem exclusivamente do contexto autenticado/confiável e não é aceito do cliente como autoridade. Requisições propagam `X-Correlation-Id`.
+
+## 0. Convenções globais
+
+### Normalização e validação
+A API aceita entradas amigáveis, normaliza apenas o que for tecnicamente seguro, valida estrutura e regras antes de persistir e não corrige silenciosamente dados semanticamente inválidos.
+
+Fluxo: `Request -> Normalização segura -> Validação estrutural -> Validação de domínio -> Application/Domain -> Persistência`.
+
+- nomes/descrições: trim e normalização de espaços, preservando apresentação;
+- e-mail: trim, validação e representação apropriada para comparação;
+- telefone: representação canônica, preferencialmente E.164;
+- CPF/CNPJ: remover máscara, validar e aplicar a estratégia de proteção/fingerprint definida na arquitetura;
+- códigos canônicos de catálogo: gerados/normalizados pelo backend;
+- preço: decimal positivo e precisão monetária apropriada;
+- duração: inteiro positivo em minutos;
+- UUID: formato válido, existência e pertencimento ao contexto permitido;
+- instantes: ISO-8601 e persistência `timestamptz`;
+- horários recorrentes: hora local interpretada no timezone da `Location`;
+- enums: somente valores conhecidos pela versão da API.
+
+Normalização técnica pertence à fronteira de aplicação; invariantes de negócio permanecem no Domain/Application. PostgreSQL continua protegendo invariantes críticas.
+
+### Idempotência
+Operações críticas usam `Idempotency-Key` obrigatório: criar Appointment, reagendar, cancelar, criar nova tentativa de pagamento, solicitar Refund e criar ScheduleBlock. GETs não exigem chave.
+
+A identidade idempotente considera conceitualmente `TenantId + Operation + IdempotencyKey`, associada a hash do request e resultado. Mesma chave + mesmo payload retorna o mesmo resultado sem repetir o efeito. Mesma chave + payload diferente retorna `409 IDEMPOTENCY_CONFLICT`.
+
+Idempotência da API não substitui proteção de concorrência do banco. Webhooks usam identidade própria do provider (`Provider + ProviderEventId`). Operações em gateways também propagam chave idempotente própria quando suportado.
+
+### Problem Details e HTTP Status
+Erros seguem RFC 9457 Problem Details, estendido com `code`, `correlationId` e, quando aplicável, `errors`.
+
+```json
+{
+  "type": "https://api.virtualemployee.com/problems/slot-unavailable",
+  "title": "Horário indisponível",
+  "status": 409,
+  "code": "SLOT_UNAVAILABLE",
+  "detail": "O horário selecionado não está mais disponível.",
+  "correlationId": "01K5..."
+}
+```
+
+Convenção: `400` request estruturalmente inválido; `401` não autenticado; `403` sem autorização; `404` recurso inexistente dentro do contexto permitido; `409` concorrência/conflito de estado/idempotência; `422` validação/regra de domínio; `429` rate limit; `500` falha interna; `502/503` dependência externa quando apropriado.
+
+Tentativas de acessar recurso de outro Tenant não revelam existência e são tratadas como `404 RESOURCE_NOT_FOUND`. Respostas de erro nunca expõem stack trace, SQL, segredos ou detalhes sensíveis de providers; diagnóstico interno é correlacionado via `correlationId`/App Insights. `code` é o contrato estável para clientes; mensagens podem evoluir/localizar.
 
 ## 1. Business Types e Business
 `GET /business-types?search=bar&limit=20`
-`POST /business-types` com `{ "name": "Studio de sobrancelhas" }`.
+
+`POST /business-types`
+```json
+{"name":"Podologia"}
+```
+
+`BusinessType` é catálogo global reutilizável. O cliente não define o `code`; o backend normaliza/gera o código canônico, verifica duplicidade e permite ao Tenant continuar o onboarding. Novos tipos dinâmicos ficam sujeitos a curadoria antes de serem expostos como opção geral para outros Tenants, evitando poluição do catálogo.
+
+Exemplo de resposta:
+```json
+{"id":"<uuid>","code":"PODOLOGY","name":"Podologia","isActive":true}
+```
 
 `GET /business`, `PUT /business`. Business mantém nome, BusinessType, políticas e SlotIntervalMinutes. Endereço/timezone pertencem à Location.
 
@@ -23,7 +80,25 @@ MVP cria uma Location no onboarding, mas contratos não assumem que ela será se
 `GET /services?active=true&locationId=<uuid>`
 `POST /services`, `PUT /services/{serviceId}`.
 
-Service pertence ao Business e é a fonte comercial de preço/duração no MVP.
+Service pertence ao Business e é a fonte comercial de preço/duração no MVP. `serviceType` é `SINGLE` ou `COMBO` e é imutável após criação; cadastro incorreto deve ser desativado e recriado.
+
+SINGLE:
+```json
+{"name":"Corte Masculino","serviceType":"SINGLE","price":50.00,"durationMinutes":30}
+```
+
+COMBO:
+```json
+{
+  "name":"Corte + Barba",
+  "serviceType":"COMBO",
+  "price":80.00,
+  "durationMinutes":60,
+  "componentServiceIds":["<corte-id>","<barba-id>"]
+}
+```
+
+COMBO possui preço/duração próprios. Todos os componentes devem existir, pertencer ao mesmo Business, ser `SINGLE` e não podem ser duplicados. COMBO nunca contém outro COMBO. Violação de nesting retorna `422 COMBO_NESTING_NOT_ALLOWED`. Componentes podem ser alterados enquanto as invariantes forem preservadas; snapshots históricos de AppointmentItem permanecem autoritativos para bookings existentes.
 
 `PUT /locations/{locationId}/services/{serviceId}`
 ```json
@@ -32,9 +107,7 @@ Service pertence ao Business e é a fonte comercial de preço/duração no MVP.
 
 `LocationService` define **somente disponibilidade do Service na unidade**. A API v1 não aceita nem retorna override de preço/duração por Location.
 
-Preço/duração por unidade não fazem parte da Migration 001. Se esse requisito aparecer após validação real do produto, será introduzido explicitamente em nova migration e nova versão/evolução de contrato, preservando snapshots históricos de AppointmentItem.
-
-COMBO possui preço/duração próprios, componentes SINGLE e sem nesting.
+Preço/duração por unidade não fazem parte da Migration 001. Se esse requisito aparecer após validação real do produto, será introduzido explicitamente em nova migration/evolução de contrato, preservando snapshots históricos.
 
 ## 4. Professionals, Locations e Services
 `GET /professionals?active=true&locationId=<uuid>&serviceIds=<id1>,<id2>`
@@ -47,7 +120,7 @@ Professional pertence ao Business.
 {"locationIds":["<moema-id>","<tatuape-id>"]}
 ```
 
-`ProfessionalLocation` define onde trabalha; `ProfessionalService` define o que executa. Quando vários serviceIds forem informados, retornar somente profissionais da Location habilitados para TODOS os Services.
+`ProfessionalLocation` define onde trabalha; `ProfessionalService` define o que executa. Quando vários serviceIds forem informados, retornar somente profissionais da Location habilitados para TODOS os Services. Para COMBO, elegibilidade é explícita em `ProfessionalService`; não é inferida pelos componentes.
 
 ## 5. Availability Rules
 `GET /locations/{locationId}/professionals/{professionalId}/availability-rules`
@@ -62,7 +135,7 @@ AvailabilityRule é específica de Professional + Location. Timezone vem da Loca
 ## 6. Schedule Blocks
 `GET /schedule-blocks?locationId=<uuid>&from=<instant>&to=<instant>&professionalId=<uuid>`
 
-`POST /schedule-blocks/impact` recebe LocationId, ProfessionalId opcional e intervalo. ProfessionalId null bloqueia a Location inteira. Criar block não move appointments automaticamente.
+`POST /schedule-blocks/impact` recebe LocationId, ProfessionalId opcional e intervalo. ProfessionalId null bloqueia a Location inteira. Criar block não move appointments automaticamente. A operação de criação efetiva do block requer `Idempotency-Key`.
 
 ## 7. Customers
 `GET /customers`, `GET /customers/{id}`, `POST /customers`.
@@ -86,7 +159,7 @@ Busca: LocationService -> ProfessionalLocation -> ProfessionalService -> Availab
 ## 10. Appointments
 `GET /appointments?locationId=<uuid>`
 `GET /appointments/{appointmentId}`
-`POST /appointments` requer Idempotency-Key.
+`POST /appointments` requer `Idempotency-Key`.
 
 Create não aceita preço, duração ou EndsAt autoritativos. Backend revalida Location, Services na Location, ProfessionalLocation, ProfessionalServices, agenda, blocks e concorrência e cria snapshots comerciais.
 
@@ -94,13 +167,13 @@ Create não aceita preço, duração ou EndsAt autoritativos. Backend revalida L
 `409 SLOT_UNAVAILABLE`. Tentativa perdedora não persiste Appointment. A proteção considera o Professional globalmente dentro do Tenant, evitando reserva simultânea em duas Locations.
 
 ### Reschedule
-`POST /appointments/{id}/reschedule`. Pode mudar Location quando elegibilidade/disponibilidade forem satisfeitas. Se futura diferença comercial exigir ajuste financeiro, MVP usa cancelamento/novo booking; sem pagamento complementar/refund parcial.
+`POST /appointments/{id}/reschedule` requer `Idempotency-Key`. Pode mudar Location quando elegibilidade/disponibilidade forem satisfeitas. Se futura diferença comercial exigir ajuste financeiro, MVP usa cancelamento/novo booking; sem pagamento complementar/refund parcial.
 
 ### Cancel
-`POST /appointments/{id}/cancel` requer Idempotency-Key.
+`POST /appointments/{id}/cancel` requer `Idempotency-Key`.
 
 ## 11. Payments
-`POST /payments`
+`POST /payments` requer `Idempotency-Key` para a tentativa concreta de cobrança.
 ```json
 {"appointmentId":"<uuid>","paymentMethod":"PIX"}
 ```
@@ -110,7 +183,7 @@ Cria/resolve o Payment lógico do Appointment e uma nova tentativa de cobrança 
 Webhook validado/idempotente confirma PaymentAttempt -> Payment -> Appointment.
 
 ## 12. Refunds
-`POST /payments/{paymentId}/refunds` — integral no MVP; ligado à tentativa confirmada que originou a transação; estado final somente após provider.
+`POST /payments/{paymentId}/refunds` requer `Idempotency-Key` — integral no MVP; ligado à tentativa confirmada que originou a transação; estado final somente após provider.
 
 ## 13. Analytics
 Endpoints financeiros aceitam `locationId` opcional para visão por unidade:
@@ -148,6 +221,7 @@ PROFESSIONAL_NOT_AVAILABLE_AT_LOCATION
 PROFESSIONAL_NOT_ELIGIBLE_FOR_SERVICE
 INVALID_COMBO
 COMBO_COMPONENT_INVALID
+COMBO_NESTING_NOT_ALLOWED
 SLOT_UNAVAILABLE
 APPOINTMENT_NOT_CANCELABLE
 APPOINTMENT_NOT_RESCHEDULABLE
@@ -160,6 +234,7 @@ REFUND_NOT_ALLOWED
 REFUND_ALREADY_COMPLETED
 IDEMPOTENCY_CONFLICT
 RATE_LIMIT_EXCEEDED
+INTERNAL_ERROR
 ```
 
 ## 18. Primeira fatia vertical
@@ -179,3 +254,11 @@ POST /appointments/{id}/cancel
 ```
 
 Segunda fatia: Payments + PaymentAttempts + webhook + Refunds. Terceira: Schedule Blocks/WhatsApp/AI/Analytics/Billing/Usage.
+
+## 19. Pendências para o freeze da API v1
+Na próxima revisão fechar:
+1. contrato detalhado de Appointment e seus estados/expiração;
+2. contrato Payment -> PaymentAttempt e comportamento de múltiplas tentativas;
+3. Refund integral e pagamento confirmado após Appointment expirado;
+4. revisão final de consistência com ERD v1 congelado;
+5. após aprovação, alterar status deste documento para `FROZEN v1`.
