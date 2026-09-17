@@ -1,7 +1,7 @@
 # Contratos da API v1
 
-> Status: Draft v1 — revisão final em andamento
-> Data: 2026-09-15
+> Status: Draft v1 — conteúdo crítico aprovado; aguardando freeze final
+> Data: 2026-09-17
 
 Base: `/api/v1`. JSON, UUID, ISO-8601. `TenantId` vem exclusivamente do contexto autenticado/confiável e não é aceito do cliente como autoridade. Requisições propagam `X-Correlation-Id`.
 
@@ -27,7 +27,7 @@ Fluxo: `Request -> Normalização segura -> Validação estrutural -> Validaçã
 Normalização técnica pertence à fronteira de aplicação; invariantes de negócio permanecem no Domain/Application. PostgreSQL continua protegendo invariantes críticas.
 
 ### Idempotência
-Operações críticas usam `Idempotency-Key` obrigatório: criar Appointment, reagendar, cancelar, criar nova tentativa de pagamento, solicitar Refund e criar ScheduleBlock. GETs não exigem chave.
+Operações críticas usam `Idempotency-Key` obrigatório: criar Appointment, reagendar, cancelar, criar nova PaymentAttempt, solicitar Refund e criar ScheduleBlock. GETs não exigem chave.
 
 A identidade idempotente considera conceitualmente `TenantId + Operation + IdempotencyKey`, associada a hash do request e resultado. Mesma chave + mesmo payload retorna o mesmo resultado sem repetir o efeito. Mesma chave + payload diferente retorna `409 IDEMPOTENCY_CONFLICT`.
 
@@ -105,9 +105,7 @@ COMBO possui preço/duração próprios. Todos os componentes devem existir, per
 {"isActive":true}
 ```
 
-`LocationService` define **somente disponibilidade do Service na unidade**. A API v1 não aceita nem retorna override de preço/duração por Location.
-
-Preço/duração por unidade não fazem parte da Migration 001. Se esse requisito aparecer após validação real do produto, será introduzido explicitamente em nova migration/evolução de contrato, preservando snapshots históricos.
+`LocationService` define somente disponibilidade do Service na unidade. A API v1 não aceita nem retorna override de preço/duração por Location. Preço/duração por unidade não fazem parte da Migration 001.
 
 ## 4. Professionals, Locations e Services
 `GET /professionals?active=true&locationId=<uuid>&serviceIds=<id1>,<id2>`
@@ -159,12 +157,33 @@ Busca: LocationService -> ProfessionalLocation -> ProfessionalService -> Availab
 ## 10. Appointments
 `GET /appointments?locationId=<uuid>`
 `GET /appointments/{appointmentId}`
-`POST /appointments` requer `Idempotency-Key`.
 
-Create não aceita preço, duração ou EndsAt autoritativos. Backend revalida Location, Services na Location, ProfessionalLocation, ProfessionalServices, agenda, blocks e concorrência e cria snapshots comerciais.
+`POST /appointments` requer `Idempotency-Key`.
+```json
+{
+  "customerId":"<uuid>",
+  "locationId":"<uuid>",
+  "professionalId":"<uuid>",
+  "serviceIds":["<corte-id>","<barba-id>"],
+  "startsAt":"2026-09-20T14:00:00-03:00"
+}
+```
+
+Create não aceita preço, duração, `endsAt` ou status autoritativos. Backend revalida Customer, Location, Services na Location, ProfessionalLocation, ProfessionalServices, AvailabilityRules, ScheduleBlocks, Appointments e concorrência; calcula preço/duração/EndsAt e cria Appointment + AppointmentItems com snapshots comerciais.
+
+Resposta de criação usa `201 Created`, retorna `Location` do recurso e os valores derivados/snapshots, incluindo `status=PENDING`, `totalPrice`, `totalDurationMinutes`, `reservationExpiresAt` e items.
+
+### Pagamento integral obrigatório e expiração
+No MVP não existe sinal, adiantamento, pagamento parcial nem reservar para pagar depois. Todo Appointment criado para reserva comercial inicia `PENDING`, ocupa agenda e somente se torna `CONFIRMED` após pagamento integral confirmado pelo provider.
+
+`Payment.Amount == Appointment.TotalPriceSnapshot` para pagamento de serviço. O tempo de reserva é configurável; não é hardcoded no contrato. Ao atingir `reservationExpiresAt` sem pagamento confirmado, worker materializa `EXPIRED`, liberando o slot.
+
+Fluxo: `PENDING -> Payment -> PaymentAttempt -> webhook confirmado -> Payment CONFIRMED -> Appointment CONFIRMED`.
+
+`CONFIRMED_BY_CLIENT` representa confirmação posterior de presença pelo cliente, processada pelo backend após interpretação do canal; IA não altera estado diretamente.
 
 ### Double-booking
-`409 SLOT_UNAVAILABLE`. Tentativa perdedora não persiste Appointment. A proteção considera o Professional globalmente dentro do Tenant, evitando reserva simultânea em duas Locations.
+`409 SLOT_UNAVAILABLE`. Tentativa perdedora não persiste Appointment. A proteção considera o Professional globalmente dentro do Tenant, evitando reserva simultânea em duas Locations. Idempotência não substitui a exclusion constraint do PostgreSQL.
 
 ### Reschedule
 `POST /appointments/{id}/reschedule` requer `Idempotency-Key`. Pode mudar Location quando elegibilidade/disponibilidade forem satisfeitas. Se futura diferença comercial exigir ajuste financeiro, MVP usa cancelamento/novo booking; sem pagamento complementar/refund parcial.
@@ -172,18 +191,54 @@ Create não aceita preço, duração ou EndsAt autoritativos. Backend revalida L
 ### Cancel
 `POST /appointments/{id}/cancel` requer `Idempotency-Key`.
 
-## 11. Payments
-`POST /payments` requer `Idempotency-Key` para a tentativa concreta de cobrança.
+Estados operacionais previstos: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`, `COMPLETED`, `NO_SHOW`, `EXPIRED`. Reschedule não cria estado permanente `RESCHEDULED`; mantém histórico/evento e retorna ao estado operacional apropriado.
+
+## 11. Payments e PaymentAttempts
+Payment representa a obrigação financeira lógica do Appointment; PaymentAttempt representa cada tentativa concreta no provider. Um Payment pode possuir N PaymentAttempts.
+
+Criar nova tentativa:
+```http
+POST /appointments/{appointmentId}/payment-attempts
+Idempotency-Key: <uuid>
+```
 ```json
-{"appointmentId":"<uuid>","paymentMethod":"PIX"}
+{"paymentMethod":"PIX"}
 ```
 
-Cria/resolve o Payment lógico do Appointment e uma nova tentativa de cobrança (`PaymentAttempt`) quando permitido. Valor vem de Appointment.TotalPriceSnapshot. PIX, CREDIT_CARD, DEBIT_CARD. Sem sinal, parcial ou boleto. Checkout hospedado/tokenizado; redirect não confirma pagamento.
+Métodos permitidos para pagamento de serviço: `PIX`, `CREDIT_CARD`, `DEBIT_CARD`. Sem sinal, parcial ou boleto. O cliente nunca envia o valor. Backend valida Appointment `PENDING` e não expirado, obtém/cria o único Payment lógico SERVICE do Appointment, garante `Payment.Amount == Appointment.TotalPriceSnapshot` e cria a PaymentAttempt.
 
-Webhook validado/idempotente confirma PaymentAttempt -> Payment -> Appointment.
+Resposta de criação da tentativa usa `201 Created` e pode retornar `paymentId`, `paymentAttemptId`, `paymentMethod`, `status`, `amount`, `checkoutUrl`/referência segura e `expiresAt`. Dados de cartão nunca transitam por IA, WhatsApp ou nossa API; checkout é hospedado/tokenizado pelo provider.
+
+Uma tentativa PIX pode expirar e ser seguida por cartão ou novo PIX sem criar outro Payment. Mesma intenção repetida usa idempotência; nova escolha consciente de pagamento usa nova Idempotency-Key e nova PaymentAttempt.
+
+Estados Payment: `PENDING`, `PROCESSING`, `CONFIRMED`, `FAILED`, `CANCELLED`, `REFUNDED`.
+
+Estados PaymentAttempt: `CREATED`, `PENDING`, `PROCESSING`, `CONFIRMED`, `FAILED`, `EXPIRED`, `CANCELLED`.
+
+Somente PaymentAttempt confirmada por evento/API confiável do provider pode liquidar o Payment. Redirect de browser é informativo e nunca confirma pagamento. Se Payment já estiver confirmado, nova tentativa é rejeitada com `422 PAYMENT_ALREADY_CONFIRMED`.
+
+### Webhook e confirmação financeira
+Webhook valida autenticidade/assinatura conforme provider e é deduplicado por `Provider + ProviderEventId`. Processamento é idempotente e atualiza PaymentAttempt -> Payment -> Appointment somente quando a transição for válida.
+
+Se confirmação financeira chegar após Appointment estar `EXPIRED`, a verdade financeira é registrada (`PaymentAttempt CONFIRMED`, `Payment CONFIRMED`), mas Appointment permanece `EXPIRED`. O sistema nunca reativa o slot e dispara Refund compensatório integral.
 
 ## 12. Refunds
-`POST /payments/{paymentId}/refunds` requer `Idempotency-Key` — integral no MVP; ligado à tentativa confirmada que originou a transação; estado final somente após provider.
+`POST /payments/{paymentId}/refunds` requer `Idempotency-Key`.
+```json
+{"reason":"CUSTOMER_CANCELLATION"}
+```
+
+Refund é integral no MVP. O cliente não envia `amount`; backend determina `Refund.Amount = Payment.Amount`, que para SERVICE corresponde ao `Appointment.TotalPriceSnapshot`.
+
+Backend valida Tenant, Payment `CONFIRMED`, PaymentAttempt efetivamente `CONFIRMED`, política de cancelamento e inexistência de outro estorno integral efetivo/em processamento incompatível. Refund referencia Payment e a PaymentAttempt que originou a transação externa.
+
+Solicitação aceita retorna `202 Accepted` com estado inicial `REFUND_REQUESTED`. Processamento é assíncrono: `REFUND_REQUESTED -> REFUND_PROCESSING -> REFUNDED | REFUND_FAILED`. Nunca comunicar refund concluído antes da confirmação do provider.
+
+Cancelamento causado pelo estabelecimento segue fluxo de estorno integral quando houver pagamento. Cancelamento pelo cliente respeita política configurada; quando houver direito a estorno, ele continua integral no MVP.
+
+Retries usam a mesma Idempotency-Key e, quando disponível, idempotência do provider. O objetivo é no máximo um estorno integral efetivo, mesmo com timeout, retry ou webhook duplicado.
+
+Pagamento confirmado tardiamente após Appointment `EXPIRED` dispara este mesmo mecanismo como Refund compensatório integral; o Appointment permanece expirado.
 
 ## 13. Analytics
 Endpoints financeiros aceitam `locationId` opcional para visão por unidade:
@@ -207,7 +262,7 @@ Mensal: RECURRING_CARD ou PIX. Anual: RECURRING_CARD. Sem boleto.
 WhatsApp Adapter -> Messaging -> Conversation Engine -> AI Gateway -> Application tools -> Domain
 ```
 
-LLM não acessa EF Core/DB diretamente.
+LLM não acessa EF Core/DB diretamente e não confirma pagamento/refund.
 
 ## 17. Códigos de domínio
 ```text
@@ -253,12 +308,9 @@ POST /appointments/{id}/reschedule
 POST /appointments/{id}/cancel
 ```
 
-Segunda fatia: Payments + PaymentAttempts + webhook + Refunds. Terceira: Schedule Blocks/WhatsApp/AI/Analytics/Billing/Usage.
+Segunda fatia: Payment + PaymentAttempts + webhook + Refunds. Terceira: Schedule Blocks/WhatsApp/AI/Analytics/Billing/Usage.
 
-## 19. Pendências para o freeze da API v1
-Na próxima revisão fechar:
-1. contrato detalhado de Appointment e seus estados/expiração;
-2. contrato Payment -> PaymentAttempt e comportamento de múltiplas tentativas;
-3. Refund integral e pagamento confirmado após Appointment expirado;
-4. revisão final de consistência com ERD v1 congelado;
-5. após aprovação, alterar status deste documento para `FROZEN v1`.
+## 19. Revisão para freeze
+Conteúdo crítico de Appointment, Payment/PaymentAttempt e Refund aprovado em 2026-09-17 e confrontado com o ERD v1 congelado. Não foi identificada necessidade de alteração estrutural do ERD.
+
+Antes de marcar `FROZEN v1`, executar uma última revisão de consistência documental do contrato completo. Após o freeze, novas ideias não críticas entram no backlog; mudanças de contrato incompatíveis devem ser deliberadas/versionadas, sem reabrir informalmente a baseline v1.
