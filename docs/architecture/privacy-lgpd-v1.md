@@ -1,7 +1,7 @@
 # LGPD & Privacy Architecture v1
 
 > Status: Draft v1 — requisito pré-implementação
-> Data: 2026-09-15
+> Data: 2026-09-17
 
 ## 1. Objetivo
 Definir princípios e controles mínimos de privacidade e proteção de dados pessoais da Virtual Employee Platform antes da implementação. Este documento não substitui revisão jurídica.
@@ -10,10 +10,10 @@ Definir princípios e controles mínimos de privacidade e proteção de dados pe
 Privacy by Design e Privacy by Default: finalidade, adequação, necessidade/minimização, transparência, segurança, prevenção, não discriminação e responsabilização.
 
 ## 3. Papéis no tratamento
-Controlador e Operador são definidos por finalidade/contexto. No atendimento do cliente final, estabelecimento/Tenant tende a ser Controlador e a plataforma Operador. A plataforma pode ser Controlador para cadastro/cobrança SaaS, segurança, prevenção de fraude, obrigações legais e gestão contratual.
+Controlador e Operador são definidos por finalidade/contexto. No atendimento do Client final, estabelecimento/Tenant tende a ser Controlador e a plataforma Operador. A plataforma pode ser Controlador para cadastro/cobrança SaaS, segurança, prevenção de fraude, obrigações legais e gestão contratual.
 
 ## 4. Titulares e categorias de dados
-Proprietário: nome, contato, CPF quando necessário, autenticação e dados contratuais/billing. Profissionais: nome, contato necessário, serviços/unidades, disponibilidade e agenda. Clientes finais: nome, WhatsApp, e-mail opcional, histórico de agendamentos, conteúdo conversacional necessário e referências de pagamento.
+Customer/assinante: nome, e-mail, WhatsApp/telefone, CPF/CNPJ quando necessário, autenticação e dados contratuais/billing. Profissionais: nome, contato necessário, serviços/unidades, disponibilidade e agenda. Clients finais: nome, WhatsApp, histórico de agendamentos, conteúdo conversacional necessário e referências de pagamento. E-mail de Client não faz parte do MVP.
 
 ### Dados fiscais — aprovado
 - `LegalEntity.Id` UUID; CPF/CNPJ nunca PK;
@@ -36,9 +36,33 @@ Sem dados brutos de cartão. Hosted/tokenized checkout -> Provider -> webhook va
 ## 8. Segurança e isolamento
 TenantId confiável, autorização server-side, Global Query Filters + validações tenant-aware, testes de isolamento, menor privilégio, secret manager, proteção em trânsito/repouso, redação de PII, rate limiting, webhook validation, idempotência/replay protection, audit trail e acesso administrativo auditável. RLS é evolução possível.
 
+### 8.1 Identidade, primeiro acesso e autenticação reforçada — APROVADO
+
+O Customer/assinante deve verificar obrigatoriamente os dois canais cadastrados antes da ativação inicial da conta:
+
+`Cadastro -> verificação de e-mail -> verificação de WhatsApp/telefone por OTP -> canais verificados -> conta ativada`
+
+Estados de verificação devem ser persistidos de forma auditável, por exemplo `EmailVerifiedAt` e `PhoneVerifiedAt`, sem armazenar códigos OTP como evidência permanente.
+
+A verificação inicial dos dois canais não implica exigir dois códigos em todo login. A arquitetura deve suportar autenticação reforçada/adicional baseada no contexto para situações sensíveis, incluindo novo dispositivo, recuperação de conta, alteração de e-mail ou telefone e operações administrativas críticas.
+
+Requisitos mínimos:
+
+- OTP nunca armazenado em texto puro;
+- OTP, tokens de recuperação e secrets nunca registrados em logs/traces/LLM;
+- códigos com validade curta, uso único e proteção contra replay;
+- rate limiting e proteção contra tentativas automatizadas/brute force;
+- respostas de recuperação/autenticação não devem facilitar enumeração de contas;
+- alterações de e-mail/telefone exigem revalidação do canal e auditoria;
+- informações de contato mascaradas na UI quando apropriado;
+- eventos relevantes de autenticação/verificação devem ser auditáveis sem copiar PII desnecessária;
+- preferir provedor de identidade confiável para autenticação, OTP e mecanismos criptográficos em vez de implementação própria.
+
+O número usado para segurança do Customer pertence ao perfil do assinante. Isso é conceitualmente separado dos números WhatsApp dos Clients atendidos pelo estabelecimento.
+
 ## 9. Retenção e eliminação — DECISÃO APROVADA
 
-A política separa **conteúdo operacional/PII**, **fatos transacionais estruturados** e **histórico analítico**. Expirar conteúdo bruto não pode destruir fatos comerciais necessários à gestão do Tenant quando houver finalidade/base legítima para preservação.
+A política separa conteúdo operacional/PII, fatos transacionais estruturados e histórico analítico. Expirar conteúdo bruto não pode destruir fatos comerciais necessários à gestão do Tenant quando houver finalidade/base legítima para preservação.
 
 ### 9.1 Conteúdo de curta retenção
 Conversations/WhatsApp, prompts/respostas LLM, payloads brutos de webhooks e logs técnicos detalhados terão retenção curta e diferenciada. Os prazos operacionais exatos serão configuráveis por categoria e validados antes do piloto conforme necessidade técnica, provedores e requisitos legais.
@@ -53,27 +77,17 @@ Snapshots de preço, duração e nome do serviço preservam a verdade histórica
 ### 9.3 Analytics e histórico gerencial
 O Dashboard deve manter capacidade de comparação histórica e tomada de decisão sem depender de conteúdo conversacional ou PII desnecessária.
 
-Métricas previstas por Tenant/período, com filtros por Location quando aplicável:
-- receita realizada e prevista;
-- ticket médio;
-- quantidade de appointments;
-- cancelamentos, refunds e no-show;
-- serviços mais utilizados e receita por serviço;
-- desempenho de profissionais: atendimentos, receita, ticket médio, cancelamentos/no-show;
-- clientes novos, recorrentes, ativos e inativos;
-- última visita concluída do cliente;
-- comparações entre períodos equivalentes;
-- tendências por serviço/profissional/location.
+Métricas previstas por Tenant/período, com filtros por Location quando aplicável: receita realizada e prevista; ticket médio; appointments; cancelamentos/refunds/no-show; serviços; desempenho de profissionais; clientes novos/recorrentes/ativos/inativos; última visita concluída; comparações de períodos; tendências.
 
-Cliente inativo é derivado da última visita concluída e de um threshold configurável pelo Tenant (baseline de produto: 60 dias), evitando um `IsInactive` persistido que envelheça.
+Cliente inativo é derivado da última visita concluída e de um threshold configurável pelo Tenant (baseline de produto: 60 dias), evitando `IsInactive` persistido.
 
 ### 9.4 Separação entre PII e fatos analíticos
 Quando juridicamente cabível, PII pode ser excluída/anonimizada sem necessariamente destruir fatos comerciais agregados ou históricos necessários à gestão. Analytics deve depender prioritariamente de dados estruturados e agregações, não de identidade pessoal ou texto de conversas.
 
-No MVP, Analytics pode consultar o PostgreSQL transacional. Agregações/projeções diárias ou mensais são evolução orientada por volume/performance; não haverá Data Warehouse prematuro.
+No MVP, Analytics pode consultar PostgreSQL transacional. Agregações/projeções são evolução orientada por volume/performance; sem Data Warehouse prematuro.
 
 ### 9.5 Regra central
-> **Dados conversacionais e técnicos possuem retenção mínima necessária; fatos comerciais e financeiros preservam a capacidade de reconstruir o histórico do negócio; anonimização/expurgo de PII não deve destruir métricas legítimas do Tenant.**
+> Dados conversacionais e técnicos possuem retenção mínima necessária; fatos comerciais e financeiros preservam a capacidade de reconstruir o histórico do negócio; anonimização/expurgo de PII não deve destruir métricas legítimas do Tenant.
 
 Nenhum dado pessoal terá retenção indefinida apenas por conveniência. Prazos sujeitos a obrigação legal/regulatória devem ser validados antes do go-live.
 
@@ -84,10 +98,10 @@ Deve existir processo rastreável para acesso, correção, anonimização/bloque
 `PrivacyRequest` é modelo conceitual futuro; MVP pode começar por processo administrativo auditável.
 
 ## 12. Compartilhamento e suboperadores
-Inventariar Meta/WhatsApp, LLM provider, gateway, billing SaaS e Azure/infraestrutura por finalidade, dados enviados, retenção, segurança e termos. Compartilhar somente o mínimo.
+Inventariar Meta/WhatsApp, LLM provider, gateway, billing SaaS, provedor de identidade e Azure/infraestrutura por finalidade, dados enviados, retenção, segurança e termos. Compartilhar somente o mínimo.
 
 ## 13. Observabilidade e logs
-Preferir IDs internos, TenantId, LocationId, CorrelationId, EventId, códigos e estados. Evitar CPF/CNPJ, cartão, secrets, payload integral de WhatsApp e prompts/respostas completos. Conteúdo necessário para suporte tem acesso restrito e retenção curta definida.
+Preferir IDs internos, TenantId, LocationId, CorrelationId, EventId, códigos e estados. Evitar CPF/CNPJ, OTP, tokens de recuperação, cartão, secrets, payload integral de WhatsApp e prompts/respostas completos. Conteúdo necessário para suporte tem acesso restrito e retenção curta definida.
 
 ## 14. Incidentes
 Antes do piloto: procedimento de detecção, contenção, evidências, impacto, titulares/dados afetados, comunicação, avaliação jurídica e ações corretivas.
@@ -96,7 +110,9 @@ Antes do piloto: procedimento de detecção, contenção, evidências, impacto, 
 - TenantId em entidades tenant-owned;
 - proteção/fingerprint fiscal tenant-scoped;
 - sem UNIQUE global CPF/CNPJ;
-- Customer não usa telefone como PK;
+- Client não usa telefone como PK;
+- Customer mantém e-mail e telefone/WhatsApp verificados para identidade/acesso;
+- OTP/tokens de recuperação não persistidos/logados em texto puro;
 - snapshots mínimos preservam fatos comerciais;
 - Analytics não depende de Conversation/PII para métricas históricas;
 - expurgo de conteúdo bruto não remove automaticamente fatos transacionais legítimos;
@@ -110,13 +126,15 @@ Antes do piloto: procedimento de detecção, contenção, evidências, impacto, 
 - [ ] Política de Privacidade e termos/DPA revisados
 - [ ] Suboperadores registrados
 - [x] Estratégia arquitetural de retenção definida
+- [x] Baseline de verificação de e-mail + WhatsApp do Customer definida
+- [ ] Provedor de identidade/OTP selecionado e threat model validado
 - [ ] Prazos operacionais/jurídicos finais por categoria validados antes do go-live
 - [ ] Processo de direitos do titular testado
-- [ ] Redação de PII em logs testada
+- [ ] Redação de PII/OTP/tokens em logs testada
 - [ ] Isolamento multi-tenant testado
 - [ ] Backup/restore e incidente testados/documentados
 - [ ] AI Gateway validado para minimização
 - [ ] Nenhum cartão bruto trafega pela aplicação
 
 ## 17. Decisão central
-> **Coletar somente o necessário, proteger por padrão e separar identidade pessoal de fatos comerciais. O histórico analítico legítimo do Tenant deve sobreviver ao expurgo de conteúdo efêmero sem transformar Analytics em repositório de PII.**
+> Coletar somente o necessário, proteger por padrão e separar identidade pessoal de fatos comerciais. O histórico analítico legítimo do Tenant deve sobreviver ao expurgo de conteúdo efêmero sem transformar Analytics em repositório de PII.
