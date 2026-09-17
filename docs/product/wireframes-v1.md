@@ -1,13 +1,13 @@
 # Wireframes PWA v1
 
-> Status: APROVADO — baseline funcional do MVP
+> Status: 🔒 FROZEN v1 — baseline funcional e visual aprovada para implementação
 > Data: 2026-09-17
 
 ## 1. Objetivo
 
 Definir a experiência mobile-first da PWA usada pelo proprietário/gestor do estabelecimento. O cliente final opera pelo WhatsApp, sem necessidade de instalar aplicativo ou manter conta administrativa.
 
-A identidade visual, nome e logo do produto ainda não estão definidos. Os wireframes usam identidade neutra até decisão futura de branding.
+A identidade visual, nome e logo do produto ainda não estão definidos. Os wireframes usam identidade neutra até decisão futura de branding. O mockup consolidado aprovado em 2026-09-17 é referência visual da baseline; detalhes cosméticos podem evoluir sem alterar os contratos funcionais congelados neste documento.
 
 ## 2. Telas principais aprovadas
 
@@ -174,6 +174,10 @@ Client não depende de foto para Agenda ou Dashboard. O MVP não cria upload/Blo
 - identidade visual/nome/logo definidos posteriormente;
 - simplicidade e automação antes de amplitude de ERP.
 
-## 13. Próximo passo
+## 13. Freeze v1
 
-Com as telas funcionais principais aprovadas, a próxima etapa é consolidar os mockups visuais finais e congelar `Wireframes v1`, seguida da conversão da baseline em Features, User Stories e Tasks do backlog MVP.
+Esta baseline está congelada para o primeiro ciclo de implementação. Alterações estruturais de fluxo, escopo ou regra de negócio devem ser registradas explicitamente e avaliadas contra ERD/API/domínio antes de modificar a baseline. Ajustes puramente visuais que não alterem comportamento podem evoluir durante a implementação.
+
+## 14. Próximo passo
+
+Converter a baseline aprovada em `EPIC -> Feature -> User Story -> Task` no Backlog MVP e, na sequência, iniciar a Solution .NET e a Migration 001.
