@@ -1,80 +1,55 @@
 # Wireframes PWA v1
 
-> Status: APROVADO — baseline visual inicial do MVP
+> Status: APROVADO — baseline funcional do MVP
 > Data: 2026-09-17
 
 ## 1. Objetivo
 
-Definir a experiência mobile-first da PWA usada pelo proprietário/gestor do estabelecimento. O cliente final continua operando prioritariamente pelo WhatsApp, sem necessidade de instalar aplicativo ou criar uma experiência administrativa própria.
+Definir a experiência mobile-first da PWA usada pelo proprietário/gestor do estabelecimento. O cliente final opera pelo WhatsApp, sem necessidade de instalar aplicativo ou manter conta administrativa.
 
-A identidade visual, nome e logo do produto ainda não estão definidos. Os wireframes devem usar identidade neutra até decisão futura de branding.
+A identidade visual, nome e logo do produto ainda não estão definidos. Os wireframes usam identidade neutra até decisão futura de branding.
 
-## 2. Direção visual aprovada
-
-Layout clean, mobile-first, com hierarquia visual simples, cards de leitura rápida, navegação inferior e foco nas informações que exigem atenção do proprietário.
-
-Primeiras telas aprovadas como direção:
+## 2. Telas principais aprovadas
 
 1. Onboarding
 2. Início / Dashboard
 3. Agenda
 4. Financeiro
+5. Serviços
+6. Clientes
+7. Configurações
 
-Próximas telas a detalhar: Serviços, Clientes e Configurações.
+Layout clean, mobile-first, cards de leitura rápida, navegação simples e foco nas informações que exigem atenção do proprietário.
 
 ## 3. Onboarding
 
-Mensagem orientada a resultado: configurar o negócio e o funcionário virtual com poucos passos.
-
 Fluxo conceitual:
 
-`Dados do negócio -> Serviços e preços -> Profissionais e horários -> WhatsApp -> Meios de pagamento -> Teste -> Ativação`
+`Criação da conta -> Verificação de e-mail -> Verificação de WhatsApp -> Dados do negócio -> Serviços e preços -> Profissionais e horários -> Conexão WhatsApp do negócio -> Meios de pagamento -> Teste -> Ativação`
 
-A experiência deve evitar aparência de ERP e apresentar a configuração como treinamento/configuração do funcionário virtual.
+A experiência deve evitar aparência de ERP e apresentar a configuração como configuração/treinamento do funcionário virtual.
 
-## 4. Início / Dashboard
+### 3.1 Segurança no primeiro acesso — aprovado
 
-O Dashboard deve priorizar leitura rápida do dia:
-
-- faturamento realizado;
-- quantidade de agendamentos;
-- receita prevista;
-- ticket médio;
-- próximos agendamentos;
-- acompanhamentos automáticos relevantes;
-- acesso conversacional ao funcionário virtual.
-
-O proprietário deve conseguir perguntar, por exemplo: `Como está meu dia?`.
-
-## 5. Agenda
-
-A Agenda apresenta somente dados essenciais do cliente e do atendimento. Fotos de clientes ficam fora do MVP.
-
-Dados principais por horário:
-
-- horário;
-- nome do cliente;
-- serviço/serviços;
-- valor;
-- status.
-
-Quando necessário, identificação visual do cliente pode usar iniciais geradas pela interface, sem exigir imagem persistida.
-
-Fotos podem ser consideradas futuramente para Professional, pois fazem sentido como informação cadastrada/controlada pelo estabelecimento. Isso não implica PhotoUrl de Customer no modelo MVP.
-
-A Agenda permite filtros por data e profissional e deve distinguir visualmente estados como confirmado, aguardando pagamento e horário disponível.
-
-## 6. Pagamento pendente — regra de UX aprovada
-
-Todos os agendamentos comerciais exigem pagamento integral para confirmação. Portanto, a interface nunca deve comunicar que existe Appointment confirmado aguardando pagamento.
+O Customer (assinante/proprietário) informa e-mail e número de WhatsApp no cadastro. Antes da ativação da conta, ambos devem ser verificados.
 
 Fluxo:
 
-`Appointment PENDING -> reserva temporária -> pagamento integral -> webhook do provider -> Payment CONFIRMED -> Appointment CONFIRMED`
+`Customer cria conta -> verifica e-mail -> verifica WhatsApp por OTP -> canais verificados -> conta ativada -> onboarding`
 
-Enquanto o pagamento não foi confirmado, o horário permanece temporariamente reservado até `reservationExpiresAt`.
+A interface deve registrar os estados de verificação, conceitualmente `EmailVerifiedAt` e `PhoneVerifiedAt`, sem expor detalhes técnicos ao usuário.
 
-Exemplo aprovado para o Dashboard:
+A validação inicial dos dois canais não significa exigir dois códigos em todo login. Autenticação reforçada deve poder ser solicitada em situações sensíveis, como novo dispositivo, recuperação de conta, alteração de e-mail/telefone ou operações administrativas críticas.
+
+Códigos OTP não podem ser armazenados em texto puro nem aparecer em logs. O mecanismo de autenticação/verificação deve preferencialmente ser delegado a um provedor de identidade confiável, evitando implementação criptográfica própria.
+
+## 4. Início / Dashboard
+
+Prioriza faturamento realizado, agendamentos, receita prevista, ticket médio, próximos atendimentos, acompanhamentos automáticos e acesso conversacional ao funcionário virtual.
+
+Pagamento pendente normal é acompanhamento, não ação manual do proprietário.
+
+Exemplo:
 
 ```text
 1 pagamento pendente
@@ -82,61 +57,123 @@ João • Corte + Barba • 14:00
 Reserva expira em 6 min.
 ```
 
-O texto `cliente não confirmou o pagamento` não deve ser usado. O cliente realiza o pagamento; a confirmação financeira é responsabilidade do provider/webhook.
+A área `Precisa de ação` fica reservada a exceções que realmente exigem decisão/intervenção humana.
 
-Se o prazo terminar sem confirmação:
+## 5. Agenda
 
-`PENDING -> reservationExpiresAt -> EXPIRED -> horário liberado automaticamente`
+Apresenta horário, nome do cliente, serviço/serviços, valor e status. Fotos de clientes ficam fora do MVP. A interface permite filtros por data e profissional e distingue confirmado, aguardando pagamento e horário disponível.
 
-## 7. Acompanhamento versus ação necessária
+## 6. Pagamento pendente
 
-Pagamento pendente normal é acompanhamento e não deve exigir intervenção do proprietário. O funcionário virtual/sistema acompanha a reserva e libera o horário automaticamente quando ela expira.
+Todos os agendamentos comerciais exigem pagamento integral para confirmação:
 
-A área `Precisa de ação` fica reservada a exceções que realmente necessitam decisão ou intervenção, por exemplo:
+`Appointment PENDING -> reserva temporária -> pagamento integral -> webhook do provider -> Payment CONFIRMED -> Appointment CONFIRMED`
 
-- indisponibilidade de profissional afetando clientes;
-- refund que falhou após tentativas automáticas;
-- integração crítica indisponível;
-- outra exceção operacional que o backend não possa resolver automaticamente dentro das regras aprovadas.
+`reservationExpiresAt` governa a reserva. Sem confirmação até o prazo:
 
-Princípio de UX:
+`PENDING -> EXPIRED -> horário liberado automaticamente`
 
-> O proprietário deve enxergar o que está acontecendo, mas só deve ser interrompido quando realmente precisar decidir alguma coisa.
+O texto `cliente não confirmou o pagamento` não deve ser usado; a confirmação financeira é responsabilidade do provider/webhook.
 
-## 8. Financeiro
+## 7. Financeiro
 
-A tela financeira prioriza visão objetiva:
+Prioriza recebido, previsto, estornos, agendamentos pagos, ticket médio, métodos de pagamento, filtros por período e relatório/exportação quando aplicável.
 
-- recebido no período;
-- previsto;
-- estornos;
-- agendamentos pagos;
-- ticket médio;
-- distribuição por forma de pagamento;
-- período/filtros;
-- relatório/exportação quando aplicável.
+Métodos do serviço no MVP: PIX, cartão de crédito e cartão de débito. Não existe sinal, adiantamento, pagamento parcial ou boleto.
 
-Métodos de pagamento do serviço no MVP: PIX, cartão de crédito e cartão de débito. Não existe sinal, adiantamento, pagamento parcial ou boleto.
+## 8. Serviços
 
-## 9. Fotos e privacidade
+Lista simples com nome, preço, duração, tipo Serviço/Combo, status e profissionais habilitados.
 
-Customer não depende de foto para Agenda ou Dashboard. O MVP não deve criar upload, Blob Storage ou tratamento de imagem de cliente apenas para composição visual da interface.
+Cadastro/edição usa linguagem do estabelecimento. Detalhes técnicos como `LocationService` e `ProfessionalService` não são expostos. Em cenário de uma única Location ativa, a unidade pode ser inferida pela UX.
 
-A integração oficial do WhatsApp não deve ser tratada como fonte arquitetural de foto do cliente. Identidade operacional do Customer permanece baseada nos dados necessários ao atendimento, especialmente nome, telefone/WhatsApp e histórico.
+Combo permite selecionar apenas componentes SINGLE. Combo não contém Combo; a própria interface não oferece combos como componentes e o backend preserva a regra.
 
-## 10. Princípios consolidados
+## 9. Clientes
+
+Client (cliente do estabelecimento) mantém somente os dados necessários ao atendimento: nome, WhatsApp e observação opcional. Não há e-mail no cadastro do Client no MVP.
+
+Toda interação operacional com o Client ocorre via WhatsApp: atendimento, agendamento, confirmação, pagamento, lembrete, reagendamento, cancelamento e avisos.
+
+A tela pode apresentar última visita, quantidade de atendimentos, valor histórico realizado e inatividade derivada da última visita `COMPLETED`. Não persistir `IsInactive`.
+
+Customer (assinante da plataforma) é diferente de Client e mantém e-mail e WhatsApp em seu perfil para identidade, segurança, acesso e billing da plataforma.
+
+## 10. Configurações
+
+Estrutura aprovada:
+
+- Meu perfil
+- Meu negócio
+- Unidade
+- Horários
+- Agendamentos
+- Pagamentos
+- WhatsApp
+- Funcionário virtual
+- Notificações
+- Minha assinatura
+- Ajuda
+
+### 10.1 Meu perfil / Segurança e acesso
+
+Exibe e-mail e WhatsApp do Customer com estado de verificação, além de acesso às funções de segurança.
+
+Exemplo conceitual:
+
+```text
+Segurança e acesso
+────────────────────────────
+E-mail
+mad***@gmail.com       ✓ Verificado
+
+WhatsApp
+(11) *****-1234       ✓ Verificado
+
+Verificação em duas etapas
+● Ativa
+
+Dispositivos conectados       ›
+Alterar senha                  ›
+```
+
+Informações sensíveis devem ser mascaradas na interface quando apropriado.
+
+### 10.2 Horários e agendamentos
+
+A UX fala em horários, antecedência, intervalo dos horários e política de cancelamento. Conceitos internos como `AvailabilityRule` e estados técnicos permanecem no backend.
+
+### 10.3 Pagamentos
+
+Mostra conexão do gateway e meios habilitados. Não armazena/exibe dados brutos de cartão e não oferece configuração de sinal ou pagamento parcial.
+
+### 10.4 WhatsApp e Funcionário virtual
+
+WhatsApp mostra conexão, número e saúde do canal. Funcionário virtual configura comportamento de atendimento dentro das permissões e regras do backend. A IA nunca ganha autoridade financeira ou de domínio por configuração de interface.
+
+### 10.5 Minha assinatura
+
+Representa SaaS Billing da plataforma e permanece separado dos pagamentos dos Clients ao estabelecimento.
+
+## 11. Fotos e privacidade
+
+Client não depende de foto para Agenda ou Dashboard. O MVP não cria upload/Blob Storage de foto de Client apenas para UI. A integração do WhatsApp não é fonte arquitetural de foto do Client.
+
+## 12. Princípios consolidados
 
 - mobile-first;
-- cliente final no WhatsApp;
-- proprietário na PWA + comandos administrativos via WhatsApp;
+- Client final no WhatsApp;
+- Customer na PWA + WhatsApp administrativo;
+- e-mail somente para perfil/identidade/segurança/billing do Customer;
+- verificação obrigatória de e-mail + WhatsApp do Customer no primeiro acesso;
+- autenticação reforçada para situações sensíveis;
 - dados essenciais antes de elementos decorativos;
-- nenhuma dependência de foto de Customer;
-- estados financeiros coerentes com Payment/PaymentAttempt;
+- nenhuma dependência de foto de Client;
 - pagamento pendente é acompanhamento automático;
-- alertas críticos somente quando ação humana for realmente necessária;
-- identidade visual/nome/logo serão definidos posteriormente;
+- alertas críticos somente quando ação humana for necessária;
+- identidade visual/nome/logo definidos posteriormente;
 - simplicidade e automação antes de amplitude de ERP.
 
-## 11. Próximo detalhamento
+## 13. Próximo passo
 
-Detalhar fluxos e estados das telas Serviços, Clientes e Configurações e, em seguida, converter a baseline aprovada em Features, User Stories e Tasks do backlog MVP.
+Com as telas funcionais principais aprovadas, a próxima etapa é consolidar os mockups visuais finais e congelar `Wireframes v1`, seguida da conversão da baseline em Features, User Stories e Tasks do backlog MVP.
