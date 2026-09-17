@@ -1,6 +1,6 @@
 # Contratos da API v1
 
-> Status: Draft v1 — conteúdo crítico aprovado; aguardando freeze final
+> Status: 🔒 FROZEN v1 — contratos aprovados para implementação
 > Data: 2026-09-17
 
 Base: `/api/v1`. JSON, UUID, ISO-8601. `TenantId` vem exclusivamente do contexto autenticado/confiável e não é aceito do cliente como autoridade. Requisições propagam `X-Correlation-Id`.
@@ -310,7 +310,7 @@ POST /appointments/{id}/cancel
 
 Segunda fatia: Payment + PaymentAttempts + webhook + Refunds. Terceira: Schedule Blocks/WhatsApp/AI/Analytics/Billing/Usage.
 
-## 19. Revisão para freeze
-Conteúdo crítico de Appointment, Payment/PaymentAttempt e Refund aprovado em 2026-09-17 e confrontado com o ERD v1 congelado. Não foi identificada necessidade de alteração estrutural do ERD.
+## 19. Freeze v1
+API Contracts v1 congelado em 2026-09-17 após aprovação dos contratos críticos de Appointment, Payment/PaymentAttempt e Refund e revisão de consistência com o ERD v1 congelado. Não foi identificada necessidade de alteração estrutural do ERD.
 
-Antes de marcar `FROZEN v1`, executar uma última revisão de consistência documental do contrato completo. Após o freeze, novas ideias não críticas entram no backlog; mudanças de contrato incompatíveis devem ser deliberadas/versionadas, sem reabrir informalmente a baseline v1.
+Novas ideias não críticas entram no backlog. Mudanças incompatíveis posteriores exigem decisão explícita e evolução/versionamento do contrato; não reabrir informalmente a baseline v1.
