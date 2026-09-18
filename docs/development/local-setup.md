@@ -15,6 +15,30 @@ A versão do SDK .NET é definida pelo arquivo `global.json`.
 
 O PostgreSQL local é executado através do `docker-compose.yml`.
 
+### Configurar variáveis locais do Docker
+
+O arquivo `.env` é utilizado apenas para configurações locais do Docker Compose e não deve ser versionado.
+
+Crie o arquivo local a partir do exemplo:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Depois, defina uma senha local no arquivo `.env`:
+
+```text
+POSTGRES_PASSWORD=YOUR_LOCAL_POSTGRES_PASSWORD
+```
+
+Substitua `YOUR_LOCAL_POSTGRES_PASSWORD` por uma senha utilizada apenas no ambiente local de desenvolvimento.
+
+O arquivo `.env` está protegido pelo `.gitignore` e não deve ser adicionado ao Git.
+
+### Iniciar o PostgreSQL
+
+Execute:
+
 ```powershell
 docker compose up -d postgres
 ```
@@ -22,7 +46,7 @@ docker compose up -d postgres
 Verifique se o container está saudável:
 
 ```powershell
-docker ps
+docker compose ps
 ```
 
 São utilizados bancos separados:
@@ -36,7 +60,9 @@ Os testes de integração não devem utilizar o banco de desenvolvimento.
 
 Credenciais não devem ser armazenadas em `appsettings.Development.json`.
 
-Utilize .NET User Secrets:
+A aplicação utiliza .NET User Secrets para armazenar a connection string do ambiente local.
+
+Configure utilizando:
 
 ```powershell
 # Substitua YOUR_CONNECTION_STRING pelo valor do seu ambiente.
@@ -46,9 +72,11 @@ dotnet user-secrets set `
   --project .\src\VirtualEmployee.Api
 ```
 
+O valor configurado através de User Secrets permanece fora do repositório Git.
+
 ## Banco de testes
 
-Caso ainda não exista:
+Caso o banco de testes ainda não exista, crie utilizando:
 
 ```powershell
 docker exec -it virtual-employee-postgres `
@@ -56,7 +84,7 @@ docker exec -it virtual-employee-postgres `
   -c "CREATE DATABASE virtual_employee_tests;"
 ```
 
-Configure a connection string dos testes na sessão do terminal:
+Configure a connection string dos testes através de uma variável de ambiente na sessão do terminal:
 
 ```powershell
 # Substitua YOUR_TEST_CONNECTION_STRING pelo valor do seu ambiente.
@@ -65,11 +93,11 @@ $env:TEST_DATABASE_CONNECTION_STRING="YOUR_TEST_CONNECTION_STRING"
 
 A variável existe somente na sessão atual do PowerShell.
 
-Nenhuma credencial deve ser armazenada no código dos testes.
+Nenhuma credencial deve ser armazenada diretamente no código dos testes.
 
 ## Entity Framework Core
 
-Criar migration:
+### Criar migration
 
 ```powershell
 dotnet ef migrations add <MigrationName> `
@@ -79,7 +107,7 @@ dotnet ef migrations add <MigrationName> `
   --output-dir Persistence\Migrations
 ```
 
-Aplicar migrations:
+### Aplicar migrations
 
 ```powershell
 dotnet ef database update `
@@ -92,17 +120,27 @@ Os testes de integração utilizam migrations reais do EF Core em vez de `Ensure
 
 ## Build
 
+Para compilar toda a solution:
+
 ```powershell
 dotnet build VirtualEmployee.slnx
 ```
 
 ## Testes de integração
 
+Para executar somente os testes de integração:
+
 ```powershell
 dotnet test .\tests\VirtualEmployee.IntegrationTests\VirtualEmployee.IntegrationTests.csproj
 ```
 
+Os testes de integração utilizam o banco `virtual_employee_tests`.
+
+A variável `TEST_DATABASE_CONNECTION_STRING` deve estar configurada antes da execução.
+
 ## Todos os testes
+
+Para executar todos os projetos de teste da solution:
 
 ```powershell
 dotnet test VirtualEmployee.slnx
@@ -110,6 +148,22 @@ dotnet test VirtualEmployee.slnx
 
 ## Segurança
 
-Nunca versionar credenciais, connection strings contendo senhas, tokens, API keys, secrets de provedores externos ou arquivos `.env` locais.
+Nunca versionar:
+
+- credenciais;
+- connection strings contendo senhas;
+- tokens;
+- API keys;
+- secrets de provedores externos;
+- arquivos `.env` locais;
+- certificados ou chaves privadas.
 
 Secrets devem ser fornecidos através do mecanismo apropriado para cada ambiente.
+
+Para desenvolvimento local:
+
+- Docker Compose utiliza `.env`;
+- a aplicação .NET utiliza User Secrets;
+- testes de integração utilizam `TEST_DATABASE_CONNECTION_STRING`.
+
+O arquivo `.env.example` documenta apenas as variáveis necessárias e não deve conter credenciais reais.
