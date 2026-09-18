@@ -29,6 +29,7 @@ O produto é um **funcionário virtual** que atende clientes pelo WhatsApp, conh
 - [Scheduling Domain](docs/domain/scheduling.md)
 - [Contratos API v1](docs/api/contracts-v1.md)
 - [ADRs](docs/architecture/adr/)
+- [Setup de Desenvolvimento Local](docs/development/local-setup.md)
 
 ## Diagramas de Arquitetura
 
@@ -39,5 +40,26 @@ Os diagramas oficiais da arquitetura são mantidos no Eraser e complementam a do
 O workspace contém, entre outros artefatos, as visões **Macro Architecture** e **High-Level Architecture**. Novos diagramas, como C4 System Context, C4 Container, fluxos de pagamento e modelo de dados, devem permanecer organizados nesse mesmo workspace.
 
 ## Status
+
+MVP em implementação.
+
+### Foundation
+
+- [x] Solution .NET 10
+- [x] Estrutura Domain / Application / Infrastructure / API
+- [x] Projetos de testes
+- [x] PostgreSQL 18 via Docker
+- [x] EF Core + Npgsql
+- [x] AppDbContext
+- [x] Primeira entidade persistida (`Tenant`)
+- [x] Migration inicial
+- [x] Banco separado para testes de integração
+- [x] Primeiro teste de integração com PostgreSQL real
+- [ ] Multi-Tenancy / Tenant Isolation
+- [ ] Business / Location
+- [ ] Scheduling
+- [ ] Payments
+- [ ] WhatsApp / AI
+- [ ] PWA
 
 Projeto em fase de fechamento pré-implementação do MVP: ERD/API, privacidade/LGPD, wireframes essenciais e backlog antes da estrutura inicial da Solution .NET.
