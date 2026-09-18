@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VirtualEmployee.Api/VirtualEmployee.Api.csproj" />
+    <Project Path="src/VirtualEmployee.Application/VirtualEmployee.Application.csproj" />
+    <Project Path="src/VirtualEmployee.Domain/VirtualEmployee.Domain.csproj" />
+    <Project Path="src/VirtualEmployee.Infrastructure/VirtualEmployee.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VirtualEmployee.Application.Tests/VirtualEmployee.Application.Tests.csproj" />
+    <Project Path="tests/VirtualEmployee.ArchitectureTests/VirtualEmployee.ArchitectureTests.csproj" />
+    <Project Path="tests/VirtualEmployee.Domain.Tests/VirtualEmployee.Domain.Tests.csproj" />
+    <Project Path="tests/VirtualEmployee.IntegrationTests/VirtualEmployee.IntegrationTests.csproj" />
+  </Folder>
+</Solution>
