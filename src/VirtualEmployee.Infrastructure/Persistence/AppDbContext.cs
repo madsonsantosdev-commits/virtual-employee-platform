@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualEmployee.Domain.Tenants;
-
+using VirtualEmployee.Domain.Businesses;
 namespace VirtualEmployee.Infrastructure.Persistence;
 
 public sealed class AppDbContext : DbContext
@@ -11,6 +11,7 @@ public sealed class AppDbContext : DbContext
     }
 
     public DbSet<Tenant> Tenants => Set<Tenant>();
+    public DbSet<Business> Businesses => Set<Business>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
