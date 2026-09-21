@@ -1,8 +1,8 @@
-using VirtualEmployee.Infrastructure.Tenancy;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualEmployee.Application.Common.Tenancy;
 using VirtualEmployee.Infrastructure;
+using VirtualEmployee.Infrastructure.Tenancy;
 
 namespace VirtualEmployee.IntegrationTests.Tenancy;
 
@@ -12,6 +12,8 @@ public sealed class TenantContextTests
     public void TenantId_WhenNotInitialized_ShouldThrow()
     {
         var context = new TenantContext();
+
+        Assert.False(context.IsInitialized);
 
         Assert.Throws<InvalidOperationException>(
             () => context.TenantId);
@@ -25,6 +27,7 @@ public sealed class TenantContextTests
 
         context.Initialize(tenantId);
 
+        Assert.True(context.IsInitialized);
         Assert.Equal(tenantId, context.TenantId);
     }
 
@@ -38,6 +41,7 @@ public sealed class TenantContextTests
         Assert.Throws<InvalidOperationException>(
             () => context.Initialize(Guid.NewGuid()));
     }
+
     [Fact]
     public void ScopedContracts_ShouldShareSameTenantContext()
     {
@@ -66,6 +70,7 @@ public sealed class TenantContextTests
 
         initializer.Initialize(tenantId);
 
+        Assert.True(context.IsInitialized);
         Assert.Equal(tenantId, context.TenantId);
     }
 }

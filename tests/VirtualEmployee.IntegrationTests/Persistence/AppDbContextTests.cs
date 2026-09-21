@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Infrastructure.Persistence;
+using VirtualEmployee.Infrastructure.Tenancy;
 
 namespace VirtualEmployee.IntegrationTests.Persistence;
 
@@ -18,7 +19,12 @@ public sealed class AppDbContextTests
             .UseNpgsql(connectionString)
             .Options;
 
-        await using var dbContext = new AppDbContext(options);
+        var tenantContext = new TenantContext();
+        tenantContext.Initialize(Guid.NewGuid());
+
+        await using var dbContext = new AppDbContext(
+            options,
+            tenantContext);
 
         await dbContext.Database.MigrateAsync();
 

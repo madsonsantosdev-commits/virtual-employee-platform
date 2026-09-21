@@ -12,6 +12,8 @@ public sealed class TenantContext :
         _tenantId ?? throw new InvalidOperationException(
             "Tenant context has not been initialized.");
 
+    public bool IsInitialized => _tenantId.HasValue;
+
     public void Initialize(Guid tenantId)
     {
         if (tenantId == Guid.Empty)
