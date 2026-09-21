@@ -2,11 +2,17 @@ using VirtualEmployee.Application.Common.Tenancy;
 
 namespace VirtualEmployee.Infrastructure.Tenancy;
 
-public sealed class TenantContext : ITenantContext
+public sealed class TenantContext :
+    ITenantContext,
+    ITenantContextInitializer
 {
-    public Guid TenantId { get; }
+    private Guid? _tenantId;
 
-    public TenantContext(Guid tenantId)
+    public Guid TenantId =>
+        _tenantId ?? throw new InvalidOperationException(
+            "Tenant context has not been initialized.");
+
+    public void Initialize(Guid tenantId)
     {
         if (tenantId == Guid.Empty)
         {
@@ -15,6 +21,12 @@ public sealed class TenantContext : ITenantContext
                 nameof(tenantId));
         }
 
-        TenantId = tenantId;
+        if (_tenantId.HasValue)
+        {
+            throw new InvalidOperationException(
+                "Tenant context has already been initialized.");
+        }
+
+        _tenantId = tenantId;
     }
 }
