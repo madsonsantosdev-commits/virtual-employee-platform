@@ -2,30 +2,34 @@ using Microsoft.EntityFrameworkCore;
 using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
+using VirtualEmployee.IntegrationTests.Infrastructure;
 
 namespace VirtualEmployee.IntegrationTests.Persistence;
 
+[Collection(PostgreSqlCollection.Name)]
 public sealed class AppDbContextTests
 {
+    private readonly PostgreSqlFixture _fixture;
+
+    public AppDbContextTests(PostgreSqlFixture fixture)
+    {
+        _fixture = fixture;
+    }
+
     [Fact]
     public async Task ShouldPersistAndRetrieveTenant()
     {
-        var connectionString =
-            Environment.GetEnvironmentVariable("TEST_DATABASE_CONNECTION_STRING")
-            ?? throw new InvalidOperationException(
-                "Environment variable 'TEST_DATABASE_CONNECTION_STRING' was not configured.");
-
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(connectionString)
+            .UseNpgsql(_fixture.ConnectionString)
             .Options;
 
+        // Tenant é a raiz do isolamento e não exige
+        // um TenantContext inicializado.
         var tenantContext = new TenantContext();
 
         await using var dbContext = new AppDbContext(
             options,
             tenantContext);
-
-        await dbContext.Database.MigrateAsync();
 
         var tenant = new Tenant(
             Guid.NewGuid(),
@@ -40,10 +44,16 @@ public sealed class AppDbContextTests
         var persistedTenant = await dbContext.Tenants
             .SingleAsync(x => x.Id == tenant.Id);
 
-        Assert.Equal(tenant.Id, persistedTenant.Id);
-        Assert.Equal("Integration Test Tenant", persistedTenant.Name);
+        Assert.Equal(
+            tenant.Id,
+            persistedTenant.Id);
+
+        Assert.Equal(
+            "Integration Test Tenant",
+            persistedTenant.Name);
 
         dbContext.Tenants.Remove(persistedTenant);
+
         await dbContext.SaveChangesAsync();
     }
 }
