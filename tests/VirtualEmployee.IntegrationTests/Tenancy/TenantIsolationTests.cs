@@ -252,7 +252,67 @@ public sealed class TenantIsolationTests
             "Cross-tenant data modification is not allowed.",
             exception.Message);
     }
+    [Fact]
+    public async Task BusinessById_FromAnotherTenant_ShouldNotBeFound()
+    {
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+        var businessBId = Guid.NewGuid();
 
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(GetConnectionString())
+            .Options;
+
+        await using (var setupContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            setupContext.Tenants.AddRange(
+                new Tenant(tenantAId, "Tenant A"),
+                new Tenant(tenantBId, "Tenant B"));
+
+            setupContext.Businesses.Add(
+                new Business(
+                    businessBId,
+                    tenantBId,
+                    "Business B"));
+
+            await setupContext.SaveChangesAsync();
+        }
+
+        await using (var tenantAContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            var business = await tenantAContext.Businesses
+                .SingleOrDefaultAsync(x => x.Id == businessBId);
+
+            Assert.Null(business);
+        }
+
+        await using (var cleanupContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            var business = await cleanupContext.Businesses
+                .SingleAsync(x => x.Id == businessBId);
+
+            cleanupContext.Businesses.Remove(business);
+            await cleanupContext.SaveChangesAsync();
+        }
+
+        await using (var cleanupTenantContext = new AppDbContext(
+            options,
+            new TenantContext()))
+        {
+            var tenants = await cleanupTenantContext.Tenants
+                .Where(x => x.Id == tenantAId || x.Id == tenantBId)
+                .ToListAsync();
+
+            cleanupTenantContext.Tenants.RemoveRange(tenants);
+            await cleanupTenantContext.SaveChangesAsync();
+        }
+    }
     private static string GetConnectionString()
     {
         return Environment.GetEnvironmentVariable(
