@@ -20,7 +20,6 @@ public sealed class AppDbContextTests
             .Options;
 
         var tenantContext = new TenantContext();
-        tenantContext.Initialize(Guid.NewGuid());
 
         await using var dbContext = new AppDbContext(
             options,

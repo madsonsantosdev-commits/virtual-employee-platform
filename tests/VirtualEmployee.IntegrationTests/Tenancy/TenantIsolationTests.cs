@@ -11,11 +11,7 @@ public sealed class TenantIsolationTests
     [Fact]
     public async Task Businesses_ShouldBeIsolatedByTenant()
     {
-        var connectionString =
-            Environment.GetEnvironmentVariable(
-                "TEST_DATABASE_CONNECTION_STRING")
-            ?? throw new InvalidOperationException(
-                "Environment variable 'TEST_DATABASE_CONNECTION_STRING' was not configured.");
+        var connectionString = GetConnectionString();
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseNpgsql(connectionString)
@@ -39,11 +35,8 @@ public sealed class TenantIsolationTests
             tenantB.Id,
             "Business B");
 
-        var tenantContextA = new TenantContext();
-        tenantContextA.Initialize(tenantA.Id);
-
-        var tenantContextB = new TenantContext();
-        tenantContextB.Initialize(tenantB.Id);
+        var tenantContextA = CreateTenantContext(tenantA.Id);
+        var tenantContextB = CreateTenantContext(tenantB.Id);
 
         // Cria os tenants e o Business A usando Tenant A.
         await using (var dbContext = new AppDbContext(
@@ -80,6 +73,7 @@ public sealed class TenantIsolationTests
                 .ToListAsync();
 
             Assert.Single(businesses);
+
             Assert.Equal(
                 businessA.Id,
                 businesses[0].Id);
@@ -98,6 +92,7 @@ public sealed class TenantIsolationTests
                 .ToListAsync();
 
             Assert.Single(businesses);
+
             Assert.Equal(
                 businessB.Id,
                 businesses[0].Id);
@@ -175,8 +170,83 @@ public sealed class TenantIsolationTests
 
         dbContext.Businesses.Add(businessB);
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => dbContext.SaveChangesAsync());
+        var exception =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => dbContext.SaveChangesAsync());
+
+        Assert.Equal(
+            "Cross-tenant data modification is not allowed.",
+            exception.Message);
+    }
+
+    [Fact]
+    public async Task SaveChanges_WithModifiedBusinessFromAnotherTenant_ShouldThrow()
+    {
+        var connectionString = GetConnectionString();
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(connectionString)
+            .Options;
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+
+        var tenantContextA = CreateTenantContext(tenantAId);
+
+        await using var dbContext = new AppDbContext(
+            options,
+            tenantContextA);
+
+        var businessB = new Business(
+            Guid.NewGuid(),
+            tenantBId,
+            "Business B");
+
+        dbContext.Attach(businessB);
+
+        dbContext.Entry(businessB).State =
+            EntityState.Modified;
+
+        var exception =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => dbContext.SaveChangesAsync());
+
+        Assert.Equal(
+            "Cross-tenant data modification is not allowed.",
+            exception.Message);
+    }
+
+    [Fact]
+    public async Task SaveChanges_WithDeletedBusinessFromAnotherTenant_ShouldThrow()
+    {
+        var connectionString = GetConnectionString();
+
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(connectionString)
+            .Options;
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+
+        var tenantContextA = CreateTenantContext(tenantAId);
+
+        await using var dbContext = new AppDbContext(
+            options,
+            tenantContextA);
+
+        var businessB = new Business(
+            Guid.NewGuid(),
+            tenantBId,
+            "Business B");
+
+        dbContext.Attach(businessB);
+
+        dbContext.Entry(businessB).State =
+            EntityState.Deleted;
+
+        var exception =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => dbContext.SaveChangesAsync());
 
         Assert.Equal(
             "Cross-tenant data modification is not allowed.",
@@ -197,37 +267,5 @@ public sealed class TenantIsolationTests
         context.Initialize(tenantId);
 
         return context;
-    }
-
-    private static async Task CleanupAsync(
-        DbContextOptions<AppDbContext> options,
-        TenantContext tenantContext,
-        Guid tenantAId,
-        Guid tenantBId,
-        Guid businessAId,
-        Guid businessBId)
-    {
-        await using var dbContext = new AppDbContext(
-            options,
-            tenantContext);
-
-        var businesses = await dbContext.Businesses
-            .IgnoreQueryFilters()
-            .Where(x =>
-                x.Id == businessAId ||
-                x.Id == businessBId)
-            .ToListAsync();
-
-        dbContext.Businesses.RemoveRange(businesses);
-
-        var tenants = await dbContext.Tenants
-            .Where(x =>
-                x.Id == tenantAId ||
-                x.Id == tenantBId)
-            .ToListAsync();
-
-        dbContext.Tenants.RemoveRange(tenants);
-
-        await dbContext.SaveChangesAsync();
     }
 }

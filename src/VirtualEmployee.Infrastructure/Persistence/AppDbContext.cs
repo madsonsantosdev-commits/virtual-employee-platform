@@ -56,14 +56,20 @@ public sealed class AppDbContext : DbContext
 
     private void ValidateTenantOwnership()
     {
-        var tenantId = CurrentTenantId;
-
         var entries = ChangeTracker
             .Entries<ITenantScoped>()
             .Where(entry =>
                 entry.State is EntityState.Added
                     or EntityState.Modified
-                    or EntityState.Deleted);
+                    or EntityState.Deleted)
+            .ToList();
+
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        var tenantId = CurrentTenantId;
 
         foreach (var entry in entries)
         {
