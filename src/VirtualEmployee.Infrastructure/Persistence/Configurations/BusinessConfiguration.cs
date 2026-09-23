@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using VirtualEmployee.Domain.Businesses;
-
 namespace VirtualEmployee.Infrastructure.Persistence.Configurations;
 
 public sealed class BusinessConfiguration : IEntityTypeConfiguration<Business>
@@ -20,7 +19,8 @@ public sealed class BusinessConfiguration : IEntityTypeConfiguration<Business>
         builder.Property(x => x.TenantId)
             .HasColumnName("tenant_id")
             .HasColumnType("uuid")
-            .IsRequired();
+            .IsRequired()
+            .IsConcurrencyToken();
 
         builder.Property(x => x.Name)
             .HasColumnName("name")

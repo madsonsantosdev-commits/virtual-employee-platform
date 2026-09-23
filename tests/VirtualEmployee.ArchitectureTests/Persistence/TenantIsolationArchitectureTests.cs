@@ -9,7 +9,7 @@ namespace VirtualEmployee.ArchitectureTests.Persistence;
 public sealed class TenantIsolationArchitectureTests
 {
     [Fact]
-    public void TenantScopedEntities_ShouldHaveQueryFilter()
+    public void TenantScopedEntities_ShouldHaveIsolationSafeguards()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseNpgsql(
@@ -36,6 +36,17 @@ public sealed class TenantIsolationArchitectureTests
                 entityType.GetDeclaredQueryFilters().Any(),
                 $"Entity '{entityType.ClrType.Name}' implements " +
                 $"{nameof(ITenantScoped)} but does not have a query filter.");
+
+            var tenantIdProperty = entityType.FindProperty(
+                nameof(ITenantScoped.TenantId));
+
+            Assert.NotNull(tenantIdProperty);
+
+            Assert.True(
+                tenantIdProperty.IsConcurrencyToken,
+                $"Entity '{entityType.ClrType.Name}' implements " +
+                $"{nameof(ITenantScoped)} but its TenantId is not configured " +
+                "as a concurrency token.");
         }
     }
 
