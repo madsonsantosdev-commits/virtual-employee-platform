@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualEmployee.Domain.Businesses;
 using VirtualEmployee.Domain.BusinessTypes;
+using VirtualEmployee.Domain.Locations;
 using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
@@ -11,6 +12,12 @@ namespace VirtualEmployee.IntegrationTests.Tenancy;
 [Collection(PostgreSqlCollection.Name)]
 public sealed class TenantIsolationTests
 {
+    private static readonly DateTimeOffset BusinessCreatedAt =
+        new(2026, 9, 23, 12, 0, 0, TimeSpan.Zero);
+
+    private static readonly DateTimeOffset LocationCreatedAt =
+        new(2026, 9, 24, 12, 0, 0, TimeSpan.Zero);
+
     private readonly PostgreSqlFixture _fixture;
 
     public TenantIsolationTests(PostgreSqlFixture fixture)
@@ -18,12 +25,14 @@ public sealed class TenantIsolationTests
         _fixture = fixture;
     }
 
+    // =========================================================
+    // Business
+    // =========================================================
+
     [Fact]
     public async Task Businesses_ShouldBeIsolatedByTenant()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(_fixture.ConnectionString)
-            .Options;
+        var options = CreateOptions();
 
         var tenantA = new Tenant(
             Guid.NewGuid(),
@@ -46,7 +55,6 @@ public sealed class TenantIsolationTests
         var tenantContextA = CreateTenantContext(tenantA.Id);
         var tenantContextB = CreateTenantContext(tenantB.Id);
 
-        // Cria os tenants e o Business A usando Tenant A.
         await using (var dbContext = new AppDbContext(
             options,
             tenantContextA))
@@ -60,7 +68,6 @@ public sealed class TenantIsolationTests
             await dbContext.SaveChangesAsync();
         }
 
-        // Business B é criado usando Tenant B.
         await using (var dbContext = new AppDbContext(
             options,
             tenantContextB))
@@ -70,7 +77,6 @@ public sealed class TenantIsolationTests
             await dbContext.SaveChangesAsync();
         }
 
-        // Tenant A só pode enxergar Business A.
         await using (var dbContext = new AppDbContext(
             options,
             tenantContextA))
@@ -78,18 +84,17 @@ public sealed class TenantIsolationTests
             var businesses = await dbContext.Businesses
                 .ToListAsync();
 
-            Assert.Single(businesses);
+            var business = Assert.Single(businesses);
 
             Assert.Equal(
                 businessA.Id,
-                businesses[0].Id);
+                business.Id);
 
             Assert.Equal(
                 tenantA.Id,
-                businesses[0].TenantId);
+                business.TenantId);
         }
 
-        // Tenant B só pode enxergar Business B.
         await using (var dbContext = new AppDbContext(
             options,
             tenantContextB))
@@ -97,75 +102,44 @@ public sealed class TenantIsolationTests
             var businesses = await dbContext.Businesses
                 .ToListAsync();
 
-            Assert.Single(businesses);
+            var business = Assert.Single(businesses);
 
             Assert.Equal(
                 businessB.Id,
-                businesses[0].Id);
+                business.Id);
 
             Assert.Equal(
                 tenantB.Id,
-                businesses[0].TenantId);
+                business.TenantId);
         }
 
-        // Remove Business A dentro do Tenant A.
-        await using (var dbContext = new AppDbContext(
+        await RemoveBusinessAsync(
             options,
-            tenantContextA))
-        {
-            var business = await dbContext.Businesses
-                .SingleAsync(x => x.Id == businessA.Id);
+            tenantA.Id,
+            businessA.Id);
 
-            dbContext.Businesses.Remove(business);
-
-            await dbContext.SaveChangesAsync();
-        }
-
-        // Remove Business B dentro do Tenant B.
-        await using (var dbContext = new AppDbContext(
+        await RemoveBusinessAsync(
             options,
-            tenantContextB))
-        {
-            var business = await dbContext.Businesses
-                .SingleAsync(x => x.Id == businessB.Id);
+            tenantB.Id,
+            businessB.Id);
 
-            dbContext.Businesses.Remove(business);
-
-            await dbContext.SaveChangesAsync();
-        }
-
-        // Tenant é a raiz do isolamento e não é ITenantScoped.
-        await using (var dbContext = new AppDbContext(
+        await RemoveTenantsAsync(
             options,
-            tenantContextA))
-        {
-            var tenants = await dbContext.Tenants
-                .Where(x =>
-                    x.Id == tenantA.Id ||
-                    x.Id == tenantB.Id)
-                .ToListAsync();
-
-            dbContext.Tenants.RemoveRange(tenants);
-
-            await dbContext.SaveChangesAsync();
-        }
+            tenantA.Id,
+            tenantB.Id);
     }
 
     [Fact]
     public async Task SaveChanges_WithBusinessFromAnotherTenant_ShouldThrow()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(_fixture.ConnectionString)
-            .Options;
+        var options = CreateOptions();
 
         var tenantAId = Guid.NewGuid();
         var tenantBId = Guid.NewGuid();
 
-        var tenantContextA = CreateTenantContext(tenantAId);
-
         await using var dbContext = new AppDbContext(
             options,
-            tenantContextA);
+            CreateTenantContext(tenantAId));
 
         var businessB = CreateBusiness(
             Guid.NewGuid(),
@@ -186,18 +160,14 @@ public sealed class TenantIsolationTests
     [Fact]
     public async Task SaveChanges_WithModifiedBusinessFromAnotherTenant_ShouldThrow()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(_fixture.ConnectionString)
-            .Options;
+        var options = CreateOptions();
 
         var tenantAId = Guid.NewGuid();
         var tenantBId = Guid.NewGuid();
 
-        var tenantContextA = CreateTenantContext(tenantAId);
-
         await using var dbContext = new AppDbContext(
             options,
-            tenantContextA);
+            CreateTenantContext(tenantAId));
 
         var businessB = CreateBusiness(
             Guid.NewGuid(),
@@ -221,18 +191,14 @@ public sealed class TenantIsolationTests
     [Fact]
     public async Task SaveChanges_WithDeletedBusinessFromAnotherTenant_ShouldThrow()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(_fixture.ConnectionString)
-            .Options;
+        var options = CreateOptions();
 
         var tenantAId = Guid.NewGuid();
         var tenantBId = Guid.NewGuid();
 
-        var tenantContextA = CreateTenantContext(tenantAId);
-
         await using var dbContext = new AppDbContext(
             options,
-            tenantContextA);
+            CreateTenantContext(tenantAId));
 
         var businessB = CreateBusiness(
             Guid.NewGuid(),
@@ -256,13 +222,11 @@ public sealed class TenantIsolationTests
     [Fact]
     public async Task BusinessById_FromAnotherTenant_ShouldNotBeFound()
     {
+        var options = CreateOptions();
+
         var tenantAId = Guid.NewGuid();
         var tenantBId = Guid.NewGuid();
         var businessBId = Guid.NewGuid();
-
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(_fixture.ConnectionString)
-            .Options;
 
         await using (var setupContext = new AppDbContext(
             options,
@@ -286,51 +250,32 @@ public sealed class TenantIsolationTests
             CreateTenantContext(tenantAId)))
         {
             var business = await tenantAContext.Businesses
-                .SingleOrDefaultAsync(x => x.Id == businessBId);
+                .SingleOrDefaultAsync(
+                    x => x.Id == businessBId);
 
             Assert.Null(business);
         }
 
-        await using (var cleanupContext = new AppDbContext(
+        await RemoveBusinessAsync(
             options,
-            CreateTenantContext(tenantBId)))
-        {
-            var business = await cleanupContext.Businesses
-                .SingleAsync(x => x.Id == businessBId);
+            tenantBId,
+            businessBId);
 
-            cleanupContext.Businesses.Remove(business);
-
-            await cleanupContext.SaveChangesAsync();
-        }
-
-        await using (var cleanupTenantContext = new AppDbContext(
+        await RemoveTenantsAsync(
             options,
-            new TenantContext()))
-        {
-            var tenants = await cleanupTenantContext.Tenants
-                .Where(x =>
-                    x.Id == tenantAId ||
-                    x.Id == tenantBId)
-                .ToListAsync();
-
-            cleanupTenantContext.Tenants.RemoveRange(tenants);
-
-            await cleanupTenantContext.SaveChangesAsync();
-        }
+            tenantAId,
+            tenantBId);
     }
 
     [Fact]
     public async Task Update_WithForgedTenantId_ShouldNotModifyAnotherTenantBusiness()
     {
+        var options = CreateOptions();
+
         var tenantAId = Guid.NewGuid();
         var tenantBId = Guid.NewGuid();
         var businessBId = Guid.NewGuid();
 
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(_fixture.ConnectionString)
-            .Options;
-
-        // Arrange: Business pertence realmente ao Tenant B.
         await using (var setupContext = new AppDbContext(
             options,
             CreateTenantContext(tenantBId)))
@@ -348,8 +293,8 @@ public sealed class TenantIsolationTests
             await setupContext.SaveChangesAsync();
         }
 
-        // Attack: Tenant A cria uma entidade desconectada usando
-        // o Id do Business B, mas informa TenantId = Tenant A.
+        // Tenant A knows the Id of Business B and forges TenantId
+        // using its own tenant.
         await using (var tenantAContext = new AppDbContext(
             options,
             CreateTenantContext(tenantAId)))
@@ -368,15 +313,15 @@ public sealed class TenantIsolationTests
                 () => tenantAContext.SaveChangesAsync());
         }
 
-        // Verifica o estado físico ignorando o Query Filter
-        // exclusivamente para validar a barreira de segurança.
+        // Verify the physical state without relying on the query filter.
         await using (var verificationContext = new AppDbContext(
             options,
             CreateTenantContext(tenantBId)))
         {
             var business = await verificationContext.Businesses
                 .IgnoreQueryFilters()
-                .SingleAsync(x => x.Id == businessBId);
+                .SingleAsync(
+                    x => x.Id == businessBId);
 
             Assert.Equal(
                 "Business B",
@@ -387,46 +332,26 @@ public sealed class TenantIsolationTests
                 business.TenantId);
         }
 
-        await using (var cleanupContext = new AppDbContext(
+        await RemoveBusinessAsync(
             options,
-            CreateTenantContext(tenantBId)))
-        {
-            var business = await cleanupContext.Businesses
-                .SingleAsync(x => x.Id == businessBId);
+            tenantBId,
+            businessBId);
 
-            cleanupContext.Businesses.Remove(business);
-
-            await cleanupContext.SaveChangesAsync();
-        }
-
-        await using (var cleanupTenantContext = new AppDbContext(
+        await RemoveTenantsAsync(
             options,
-            new TenantContext()))
-        {
-            var tenants = await cleanupTenantContext.Tenants
-                .Where(x =>
-                    x.Id == tenantAId ||
-                    x.Id == tenantBId)
-                .ToListAsync();
-
-            cleanupTenantContext.Tenants.RemoveRange(tenants);
-
-            await cleanupTenantContext.SaveChangesAsync();
-        }
+            tenantAId,
+            tenantBId);
     }
 
     [Fact]
     public async Task Delete_WithForgedTenantId_ShouldNotDeleteAnotherTenantBusiness()
     {
+        var options = CreateOptions();
+
         var tenantAId = Guid.NewGuid();
         var tenantBId = Guid.NewGuid();
         var businessBId = Guid.NewGuid();
 
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(_fixture.ConnectionString)
-            .Options;
-
-        // Arrange: Business pertence realmente ao Tenant B.
         await using (var setupContext = new AppDbContext(
             options,
             CreateTenantContext(tenantBId)))
@@ -444,8 +369,8 @@ public sealed class TenantIsolationTests
             await setupContext.SaveChangesAsync();
         }
 
-        // Tenant A tenta excluir o Business do Tenant B
-        // utilizando uma entidade desconectada com TenantId forjado.
+        // Tenant A attempts to delete Business B using a detached
+        // entity with a forged TenantId.
         await using (var tenantAContext = new AppDbContext(
             options,
             CreateTenantContext(tenantAId)))
@@ -464,15 +389,15 @@ public sealed class TenantIsolationTests
                 () => tenantAContext.SaveChangesAsync());
         }
 
-        // Verifica o estado físico ignorando o Query Filter
-        // exclusivamente para validar a barreira de segurança.
+        // Verify the physical state without relying on the query filter.
         await using (var verificationContext = new AppDbContext(
             options,
             CreateTenantContext(tenantBId)))
         {
             var business = await verificationContext.Businesses
                 .IgnoreQueryFilters()
-                .SingleOrDefaultAsync(x => x.Id == businessBId);
+                .SingleOrDefaultAsync(
+                    x => x.Id == businessBId);
 
             Assert.NotNull(business);
 
@@ -484,6 +409,457 @@ public sealed class TenantIsolationTests
                 "Business B",
                 business.Name);
         }
+
+        await RemoveBusinessAsync(
+            options,
+            tenantBId,
+            businessBId);
+
+        await RemoveTenantsAsync(
+            options,
+            tenantAId,
+            tenantBId);
+    }
+
+    // =========================================================
+    // Location
+    // =========================================================
+
+    [Fact]
+    public async Task Locations_ShouldBeIsolatedByTenant()
+    {
+        var options = CreateOptions();
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+
+        var businessAId = Guid.NewGuid();
+        var businessBId = Guid.NewGuid();
+
+        var locationAId = Guid.NewGuid();
+        var locationBId = Guid.NewGuid();
+
+        await using (var tenantAContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            tenantAContext.Tenants.AddRange(
+                new Tenant(tenantAId, "Tenant A"),
+                new Tenant(tenantBId, "Tenant B"));
+
+            tenantAContext.Businesses.Add(
+                CreateBusiness(
+                    businessAId,
+                    tenantAId,
+                    "Business A"));
+
+            await tenantAContext.SaveChangesAsync();
+        }
+
+        await using (var tenantBContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            tenantBContext.Businesses.Add(
+                CreateBusiness(
+                    businessBId,
+                    tenantBId,
+                    "Business B"));
+
+            await tenantBContext.SaveChangesAsync();
+        }
+
+        await using (var tenantAContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            tenantAContext.Locations.Add(
+                CreateLocation(
+                    locationAId,
+                    tenantAId,
+                    businessAId,
+                    "Location A"));
+
+            await tenantAContext.SaveChangesAsync();
+        }
+
+        await using (var tenantBContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            tenantBContext.Locations.Add(
+                CreateLocation(
+                    locationBId,
+                    tenantBId,
+                    businessBId,
+                    "Location B"));
+
+            await tenantBContext.SaveChangesAsync();
+        }
+
+        await using (var tenantAContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            var locations = await tenantAContext.Locations
+                .Where(x =>
+                    x.Id == locationAId ||
+                    x.Id == locationBId)
+                .ToListAsync();
+
+            var location = Assert.Single(locations);
+
+            Assert.Equal(
+                locationAId,
+                location.Id);
+
+            Assert.Equal(
+                tenantAId,
+                location.TenantId);
+        }
+
+        await using (var tenantBContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            var locations = await tenantBContext.Locations
+                .Where(x =>
+                    x.Id == locationAId ||
+                    x.Id == locationBId)
+                .ToListAsync();
+
+            var location = Assert.Single(locations);
+
+            Assert.Equal(
+                locationBId,
+                location.Id);
+
+            Assert.Equal(
+                tenantBId,
+                location.TenantId);
+        }
+
+        await RemoveLocationAsync(
+            options,
+            tenantAId,
+            locationAId);
+
+        await RemoveLocationAsync(
+            options,
+            tenantBId,
+            locationBId);
+
+        await RemoveBusinessAsync(
+            options,
+            tenantAId,
+            businessAId);
+
+        await RemoveBusinessAsync(
+            options,
+            tenantBId,
+            businessBId);
+
+        await RemoveTenantsAsync(
+            options,
+            tenantAId,
+            tenantBId);
+    }
+
+    [Fact]
+    public async Task SaveChanges_WithLocationFromAnotherTenant_ShouldThrow()
+    {
+        var options = CreateOptions();
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+
+        await using var dbContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId));
+
+        var locationB = CreateLocation(
+            Guid.NewGuid(),
+            tenantBId,
+            Guid.NewGuid(),
+            "Location B");
+
+        dbContext.Locations.Add(locationB);
+
+        var exception =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => dbContext.SaveChangesAsync());
+
+        Assert.Equal(
+            "Cross-tenant data modification is not allowed.",
+            exception.Message);
+    }
+
+    [Fact]
+    public async Task Update_WithForgedTenantId_ShouldNotModifyAnotherTenantLocation()
+    {
+        var options = CreateOptions();
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+
+        var businessBId = Guid.NewGuid();
+        var locationBId = Guid.NewGuid();
+
+        await using (var setupContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            setupContext.Tenants.AddRange(
+                new Tenant(tenantAId, "Tenant A"),
+                new Tenant(tenantBId, "Tenant B"));
+
+            setupContext.Businesses.Add(
+                CreateBusiness(
+                    businessBId,
+                    tenantBId,
+                    "Business B"));
+
+            setupContext.Locations.Add(
+                CreateLocation(
+                    locationBId,
+                    tenantBId,
+                    businessBId,
+                    "Location B"));
+
+            await setupContext.SaveChangesAsync();
+        }
+
+        // Tenant A knows Location B's Id and forges TenantId
+        // using its own tenant.
+        await using (var tenantAContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            var forgedLocation = CreateLocation(
+                locationBId,
+                tenantAId,
+                businessBId,
+                "Forged Location");
+
+            tenantAContext.Attach(forgedLocation);
+
+            tenantAContext.Entry(forgedLocation).State =
+                EntityState.Modified;
+
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+                () => tenantAContext.SaveChangesAsync());
+        }
+
+        // Verify the physical state without relying on the query filter.
+        await using (var verificationContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            var location = await verificationContext.Locations
+                .IgnoreQueryFilters()
+                .SingleAsync(
+                    x => x.Id == locationBId);
+
+            Assert.Equal(
+                locationBId,
+                location.Id);
+
+            Assert.Equal(
+                tenantBId,
+                location.TenantId);
+
+            Assert.Equal(
+                "Location B",
+                location.Name);
+        }
+
+        await RemoveLocationAsync(
+            options,
+            tenantBId,
+            locationBId);
+
+        await RemoveBusinessAsync(
+            options,
+            tenantBId,
+            businessBId);
+
+        await RemoveTenantsAsync(
+            options,
+            tenantAId,
+            tenantBId);
+    }
+
+    [Fact]
+    public async Task Delete_WithForgedTenantId_ShouldNotDeleteAnotherTenantLocation()
+    {
+        var options = CreateOptions();
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+
+        var businessBId = Guid.NewGuid();
+        var locationBId = Guid.NewGuid();
+
+        await using (var setupContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            setupContext.Tenants.AddRange(
+                new Tenant(tenantAId, "Tenant A"),
+                new Tenant(tenantBId, "Tenant B"));
+
+            setupContext.Businesses.Add(
+                CreateBusiness(
+                    businessBId,
+                    tenantBId,
+                    "Business B"));
+
+            setupContext.Locations.Add(
+                CreateLocation(
+                    locationBId,
+                    tenantBId,
+                    businessBId,
+                    "Location B"));
+
+            await setupContext.SaveChangesAsync();
+        }
+
+        // Tenant A attempts to delete Location B using a detached
+        // entity with a forged TenantId.
+        await using (var tenantAContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            var forgedLocation = CreateLocation(
+                locationBId,
+                tenantAId,
+                businessBId,
+                "Forged Location");
+
+            tenantAContext.Attach(forgedLocation);
+
+            tenantAContext.Entry(forgedLocation).State =
+                EntityState.Deleted;
+
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+                () => tenantAContext.SaveChangesAsync());
+        }
+
+        // Verify the physical state without relying on the query filter.
+        await using (var verificationContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            var location = await verificationContext.Locations
+                .IgnoreQueryFilters()
+                .SingleOrDefaultAsync(
+                    x => x.Id == locationBId);
+
+            Assert.NotNull(location);
+
+            Assert.Equal(
+                tenantBId,
+                location.TenantId);
+
+            Assert.Equal(
+                "Location B",
+                location.Name);
+        }
+
+        await RemoveLocationAsync(
+            options,
+            tenantBId,
+            locationBId);
+
+        await RemoveBusinessAsync(
+            options,
+            tenantBId,
+            businessBId);
+
+        await RemoveTenantsAsync(
+            options,
+            tenantAId,
+            tenantBId);
+    }
+
+    [Fact]
+    public async Task Insert_LocationReferencingBusinessFromAnotherTenant_ShouldThrow()
+    {
+        var options = CreateOptions();
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+
+        var businessBId = Guid.NewGuid();
+        var locationAId = Guid.NewGuid();
+
+        await using (var setupContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantBId)))
+        {
+            setupContext.Tenants.AddRange(
+                new Tenant(tenantAId, "Tenant A"),
+                new Tenant(tenantBId, "Tenant B"));
+
+            setupContext.Businesses.Add(
+                CreateBusiness(
+                    businessBId,
+                    tenantBId,
+                    "Business B"));
+
+            await setupContext.SaveChangesAsync();
+        }
+
+        // A Location pertence ao Tenant A, portanto passa pela
+        // validação do TenantContext. Porém, ela referencia um
+        // Business pertencente ao Tenant B.
+        await using (var tenantAContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            var invalidLocation = CreateLocation(
+                locationAId,
+                tenantAId,
+                businessBId,
+                "Invalid Location");
+
+            tenantAContext.Locations.Add(invalidLocation);
+
+            await Assert.ThrowsAsync<DbUpdateException>(
+                () => tenantAContext.SaveChangesAsync());
+        }
+
+        // Confirma fisicamente que a Location não foi persistida.
+        await using (var verificationContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            var locationExists = await verificationContext.Locations
+                .IgnoreQueryFilters()
+                .AnyAsync(x => x.Id == locationAId);
+
+            Assert.False(locationExists);
+        }
+
+        await RemoveBusinessAsync(
+            options,
+            tenantBId,
+            businessBId);
+
+        await RemoveTenantsAsync(
+            options,
+            tenantAId,
+            tenantBId);
+    }
+    // =========================================================
+    // Helpers
+    // =========================================================
+
+    private DbContextOptions<AppDbContext> CreateOptions()
+    {
+        return new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(_fixture.ConnectionString)
+            .Options;
     }
 
     private static Business CreateBusiness(
@@ -496,17 +872,94 @@ public sealed class TenantIsolationTests
             tenantId,
             BusinessTypeIds.Barbershop,
             name,
-            new DateTimeOffset(
-                2026, 9, 23,
-                12, 0, 0,
-                TimeSpan.Zero));
+            BusinessCreatedAt);
+    }
+
+    private static Location CreateLocation(
+        Guid id,
+        Guid tenantId,
+        Guid businessId,
+        string name)
+    {
+        return new Location(
+            id,
+            tenantId,
+            businessId,
+            name,
+            "BR",
+            "America/Sao_Paulo",
+            LocationCreatedAt);
     }
 
     private static TenantContext CreateTenantContext(Guid tenantId)
     {
         var context = new TenantContext();
+
         context.Initialize(tenantId);
 
         return context;
+    }
+
+    private static async Task RemoveLocationAsync(
+        DbContextOptions<AppDbContext> options,
+        Guid tenantId,
+        Guid locationId)
+    {
+        await using var dbContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantId));
+
+        var location = await dbContext.Locations
+            .SingleOrDefaultAsync(
+                x => x.Id == locationId);
+
+        if (location is null)
+        {
+            return;
+        }
+
+        dbContext.Locations.Remove(location);
+
+        await dbContext.SaveChangesAsync();
+    }
+
+    private static async Task RemoveBusinessAsync(
+        DbContextOptions<AppDbContext> options,
+        Guid tenantId,
+        Guid businessId)
+    {
+        await using var dbContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantId));
+
+        var business = await dbContext.Businesses
+            .SingleOrDefaultAsync(
+                x => x.Id == businessId);
+
+        if (business is null)
+        {
+            return;
+        }
+
+        dbContext.Businesses.Remove(business);
+
+        await dbContext.SaveChangesAsync();
+    }
+
+    private static async Task RemoveTenantsAsync(
+        DbContextOptions<AppDbContext> options,
+        params Guid[] tenantIds)
+    {
+        await using var dbContext = new AppDbContext(
+            options,
+            new TenantContext());
+
+        var tenants = await dbContext.Tenants
+            .Where(x => tenantIds.Contains(x.Id))
+            .ToListAsync();
+
+        dbContext.Tenants.RemoveRange(tenants);
+
+        await dbContext.SaveChangesAsync();
     }
 }
