@@ -3,6 +3,7 @@ using VirtualEmployee.Application.Common.Tenancy;
 using VirtualEmployee.Domain.Businesses;
 using VirtualEmployee.Domain.Common;
 using VirtualEmployee.Domain.Tenants;
+using VirtualEmployee.Domain.BusinessTypes;
 
 namespace VirtualEmployee.Infrastructure.Persistence;
 
@@ -20,6 +21,8 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<Business> Businesses => Set<Business>();
+
+    public DbSet<BusinessType> BusinessTypes => Set<BusinessType>();
 
     public Guid CurrentTenantId => _tenantContext.TenantId;
 

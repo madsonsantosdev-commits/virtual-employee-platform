@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualEmployee.Domain.Businesses;
+using VirtualEmployee.Domain.BusinessTypes;
 using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
@@ -32,12 +33,12 @@ public sealed class TenantIsolationTests
             Guid.NewGuid(),
             "Tenant B");
 
-        var businessA = new Business(
+        var businessA = CreateBusiness(
             Guid.NewGuid(),
             tenantA.Id,
             "Business A");
 
-        var businessB = new Business(
+        var businessB = CreateBusiness(
             Guid.NewGuid(),
             tenantB.Id,
             "Business B");
@@ -166,7 +167,7 @@ public sealed class TenantIsolationTests
             options,
             tenantContextA);
 
-        var businessB = new Business(
+        var businessB = CreateBusiness(
             Guid.NewGuid(),
             tenantBId,
             "Business B");
@@ -198,7 +199,7 @@ public sealed class TenantIsolationTests
             options,
             tenantContextA);
 
-        var businessB = new Business(
+        var businessB = CreateBusiness(
             Guid.NewGuid(),
             tenantBId,
             "Business B");
@@ -233,7 +234,7 @@ public sealed class TenantIsolationTests
             options,
             tenantContextA);
 
-        var businessB = new Business(
+        var businessB = CreateBusiness(
             Guid.NewGuid(),
             tenantBId,
             "Business B");
@@ -272,7 +273,7 @@ public sealed class TenantIsolationTests
                 new Tenant(tenantBId, "Tenant B"));
 
             setupContext.Businesses.Add(
-                new Business(
+                CreateBusiness(
                     businessBId,
                     tenantBId,
                     "Business B"));
@@ -339,7 +340,7 @@ public sealed class TenantIsolationTests
                 new Tenant(tenantBId, "Tenant B"));
 
             setupContext.Businesses.Add(
-                new Business(
+                CreateBusiness(
                     businessBId,
                     tenantBId,
                     "Business B"));
@@ -353,7 +354,7 @@ public sealed class TenantIsolationTests
             options,
             CreateTenantContext(tenantAId)))
         {
-            var forgedBusiness = new Business(
+            var forgedBusiness = CreateBusiness(
                 businessBId,
                 tenantAId,
                 "Forged Business");
@@ -385,7 +386,8 @@ public sealed class TenantIsolationTests
                 tenantBId,
                 business.TenantId);
         }
-                await using (var cleanupContext = new AppDbContext(
+
+        await using (var cleanupContext = new AppDbContext(
             options,
             CreateTenantContext(tenantBId)))
         {
@@ -434,7 +436,7 @@ public sealed class TenantIsolationTests
                 new Tenant(tenantBId, "Tenant B"));
 
             setupContext.Businesses.Add(
-                new Business(
+                CreateBusiness(
                     businessBId,
                     tenantBId,
                     "Business B"));
@@ -448,7 +450,7 @@ public sealed class TenantIsolationTests
             options,
             CreateTenantContext(tenantAId)))
         {
-            var forgedBusiness = new Business(
+            var forgedBusiness = CreateBusiness(
                 businessBId,
                 tenantAId,
                 "Forged Business");
@@ -482,6 +484,22 @@ public sealed class TenantIsolationTests
                 "Business B",
                 business.Name);
         }
+    }
+
+    private static Business CreateBusiness(
+        Guid id,
+        Guid tenantId,
+        string name)
+    {
+        return new Business(
+            id,
+            tenantId,
+            BusinessTypeIds.Barbershop,
+            name,
+            new DateTimeOffset(
+                2026, 9, 23,
+                12, 0, 0,
+                TimeSpan.Zero));
     }
 
     private static TenantContext CreateTenantContext(Guid tenantId)
