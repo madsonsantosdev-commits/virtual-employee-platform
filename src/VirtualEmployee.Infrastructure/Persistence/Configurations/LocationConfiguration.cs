@@ -1,16 +1,16 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using VirtualEmployee.Domain.Businesses;
-using VirtualEmployee.Domain.BusinessTypes;
+using VirtualEmployee.Domain.Locations;
 using VirtualEmployee.Domain.Tenants;
 
 namespace VirtualEmployee.Infrastructure.Persistence.Configurations;
 
-public sealed class BusinessConfiguration : IEntityTypeConfiguration<Business>
+public sealed class LocationConfiguration : IEntityTypeConfiguration<Location>
 {
-    public void Configure(EntityTypeBuilder<Business> builder)
+    public void Configure(EntityTypeBuilder<Location> builder)
     {
-        builder.ToTable("businesses");
+        builder.ToTable("locations");
 
         builder.HasKey(x => x.Id);
 
@@ -25,8 +25,8 @@ public sealed class BusinessConfiguration : IEntityTypeConfiguration<Business>
             .IsRequired()
             .IsConcurrencyToken();
 
-        builder.Property(x => x.BusinessTypeId)
-            .HasColumnName("business_type_id")
+        builder.Property(x => x.BusinessId)
+            .HasColumnName("business_id")
             .HasColumnType("uuid")
             .IsRequired();
 
@@ -35,9 +35,22 @@ public sealed class BusinessConfiguration : IEntityTypeConfiguration<Business>
             .HasMaxLength(200)
             .IsRequired();
 
-        builder.Property(x => x.SlotIntervalMinutes)
-            .HasColumnName("slot_interval_minutes")
-            .HasDefaultValue(15)
+        builder.Property(x => x.Phone)
+            .HasColumnName("phone")
+            .HasMaxLength(30);
+
+        builder.Property(x => x.Address)
+            .HasColumnName("address")
+            .HasMaxLength(500);
+
+        builder.Property(x => x.CountryCode)
+            .HasColumnName("country_code")
+            .HasMaxLength(2)
+            .IsRequired();
+
+        builder.Property(x => x.Timezone)
+            .HasColumnName("timezone")
+            .HasMaxLength(100)
             .IsRequired();
 
         builder.Property(x => x.IsActive)
@@ -60,13 +73,25 @@ public sealed class BusinessConfiguration : IEntityTypeConfiguration<Business>
             .HasForeignKey(x => x.TenantId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasOne<BusinessType>()
+        builder.HasOne<Business>()
             .WithMany()
-            .HasForeignKey(x => x.BusinessTypeId)
+            .HasForeignKey(x => new
+            {
+                x.TenantId,
+                x.BusinessId
+            })
+            .HasPrincipalKey(x => new
+            {
+                x.TenantId,
+                x.Id
+            })
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasIndex(x => x.TenantId);
-
-        builder.HasIndex(x => x.BusinessTypeId);
+        builder.HasIndex(x => new
+        {
+            x.TenantId,
+            x.BusinessId,
+            x.IsActive
+        });
     }
 }

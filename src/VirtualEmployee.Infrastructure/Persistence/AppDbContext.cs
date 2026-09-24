@@ -3,7 +3,8 @@ using VirtualEmployee.Application.Common.Tenancy;
 using VirtualEmployee.Domain.Businesses;
 using VirtualEmployee.Domain.Common;
 using VirtualEmployee.Domain.Tenants;
-
+using VirtualEmployee.Domain.BusinessTypes;
+using VirtualEmployee.Domain.Locations;
 namespace VirtualEmployee.Infrastructure.Persistence;
 
 public sealed class AppDbContext : DbContext
@@ -20,7 +21,8 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<Business> Businesses => Set<Business>();
-
+    public DbSet<Location> Locations => Set<Location>();
+    public DbSet<BusinessType> BusinessTypes => Set<BusinessType>();
     public Guid CurrentTenantId => _tenantContext.TenantId;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -32,9 +34,12 @@ public sealed class AppDbContext : DbContext
             .HasQueryFilter(
                 business => business.TenantId == CurrentTenantId);
 
+        modelBuilder.Entity<Location>()
+            .HasQueryFilter(
+                location => location.TenantId == CurrentTenantId);
+
         base.OnModelCreating(modelBuilder);
     }
-
     public override int SaveChanges(
         bool acceptAllChangesOnSuccess)
     {
