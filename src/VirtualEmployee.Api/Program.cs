@@ -1,43 +1,46 @@
+using VirtualEmployee.Api.Endpoints;
+using VirtualEmployee.Api.Middleware;
+using VirtualEmployee.Application.Locations.GetLocations;
 using VirtualEmployee.Infrastructure;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+// OpenAPI
 builder.Services.AddOpenApi();
+
+// Application use cases
+builder.Services.AddScoped<GetLocationsHandler>();
+
+// Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
+    // OpenAPI document:
+    // /openapi/v1.json
     app.MapOpenApi();
+
+    // Swagger UI:
+    // /swagger
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint(
+            "/openapi/v1.json",
+            "Virtual Employee API v1");
+
+        options.DocumentTitle = "Virtual Employee API";
+    });
+
+    // Temporary tenant resolution for local development.
+    app.UseMiddleware<DevelopmentTenantMiddleware>();
 }
 
 app.UseHttpsRedirection();
 
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
+app.MapLocationsEndpoints();
 
 app.Run();
 
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
+public partial class Program;

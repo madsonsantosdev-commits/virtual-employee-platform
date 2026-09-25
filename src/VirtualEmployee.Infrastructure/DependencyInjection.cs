@@ -4,6 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Application.Common.Tenancy;
 using VirtualEmployee.Infrastructure.Tenancy;
+using VirtualEmployee.Application.Locations;
+using VirtualEmployee.Infrastructure.Locations;
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -26,6 +28,8 @@ public static class DependencyInjection
 
         services.AddScoped<ITenantContextInitializer>(serviceProvider =>
             serviceProvider.GetRequiredService<TenantContext>());
+
+        services.AddScoped<ILocationReadService, LocationReadService>();
 
         return services;
     }
