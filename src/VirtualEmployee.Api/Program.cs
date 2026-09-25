@@ -10,6 +10,7 @@ builder.Services.AddOpenApi();
 
 // Application use cases
 builder.Services.AddScoped<GetLocationsHandler>();
+builder.Services.AddScoped<GetLocationByIdHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
