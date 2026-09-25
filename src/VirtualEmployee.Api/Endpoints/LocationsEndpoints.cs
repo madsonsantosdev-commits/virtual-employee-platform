@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using VirtualEmployee.Application.Locations;
+using VirtualEmployee.Application.Locations.CreateLocation;
 using VirtualEmployee.Application.Locations.GetLocations;
 
 namespace VirtualEmployee.Api.Endpoints;
@@ -63,6 +64,63 @@ public static class LocationsEndpoints
             .Produces(
                 StatusCodes.Status404NotFound);
 
+        group.MapPost(
+            "/",
+            async (
+                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                CreateLocationRequest request,
+                CreateLocationHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                if (request.BusinessId == Guid.Empty ||
+                    string.IsNullOrWhiteSpace(request.Name) ||
+                    string.IsNullOrWhiteSpace(request.CountryCode) ||
+                    string.IsNullOrWhiteSpace(request.Timezone))
+                {
+                    return Results.Problem(
+                        statusCode: StatusCodes.Status400BadRequest,
+                        title: "Invalid location request",
+                        detail:
+                            "BusinessId, name, countryCode and timezone are required.");
+                }
+
+                var command = new CreateLocationCommand(
+                    request.BusinessId,
+                    request.Name,
+                    request.CountryCode,
+                    request.Timezone,
+                    request.Phone,
+                    request.Address);
+
+                var location = await handler.HandleAsync(
+                    command,
+                    cancellationToken);
+
+                return location is null
+                    ? Results.NotFound()
+                    : Results.Created(
+                        $"/api/v1/locations/{location.Id}",
+                        location);
+            })
+            .WithName("CreateLocation")
+            .WithSummary("Cria uma unidade")
+            .WithDescription(
+                "Cria uma unidade para um Business pertencente ao tenant atual. " +
+                "Business inexistente ou pertencente a outro tenant retorna 404. " +
+                "O TenantId é obtido do contexto da requisição e não do payload. " +
+                "O header X-Tenant-Id é temporário e utilizado apenas durante o desenvolvimento.")
+            .Produces<LocationResponse>(StatusCodes.Status201Created)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status404NotFound);
+
         return endpoints;
     }
 }
+
+public sealed record CreateLocationRequest(
+    Guid BusinessId,
+    string Name,
+    string CountryCode,
+    string Timezone,
+    string? Phone,
+    string? Address);

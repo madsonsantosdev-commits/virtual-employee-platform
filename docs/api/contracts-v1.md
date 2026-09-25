@@ -80,6 +80,32 @@ Durante o desenvolvimento local, `X-Tenant-Id` é utilizado temporariamente para
 Implementado. Retorna a Location quando ela pertence ao tenant atual. Location inexistente ou pertencente a outro tenant retorna `404 Not Found`, sem revelar a existência de recursos cross-tenant. A consulta utiliza o `TenantContext` e o Global Query Filter do EF Core.
 
 `POST /locations`
+Implementado. Cria uma nova Location vinculada a um Business pertencente ao tenant atual.
+
+O `TenantId` não é aceito no payload. Ele é obtido do `TenantContext`, cuja autoridade em produção deverá vir do contexto autenticado/confiável. Durante o desenvolvimento local, o header temporário `X-Tenant-Id` inicializa esse contexto.
+
+Request:
+
+```json
+{
+  "businessId": "<uuid>",
+  "name": "Unidade Moema",
+  "phone": "+5511999999999",
+  "address": "Av. Exemplo, 100",
+  "countryCode": "BR",
+  "timezone": "America/Sao_Paulo"
+}
+```
+
+`phone` e `address` são opcionais. `businessId`, `name`, `countryCode` e `timezone` são obrigatórios.
+
+Responses:
+- `201 Created`: Location criada. A resposta contém a Location e o header `Location` aponta para `/api/v1/locations/{locationId}`.
+- `400 Bad Request`: request estruturalmente inválido.
+- `404 Not Found`: Business inexistente ou pertencente a outro tenant. Os dois casos são indistinguíveis externamente para não revelar recursos cross-tenant.
+
+A verificação do Business utiliza o `TenantContext` e o Global Query Filter do EF Core. O backend gera o `LocationId`, define o `TenantId` e controla `IsActive`, `CreatedAt` e `UpdatedAt`.
+
 `PUT /locations/{locationId}`
 
 MVP cria uma Location no onboarding, mas contratos não assumem que ela será sempre única.

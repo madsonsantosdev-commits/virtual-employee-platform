@@ -20,7 +20,6 @@ public static class DependencyInjection
 
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(connectionString));
-
         services.AddScoped<TenantContext>();
 
         services.AddScoped<ITenantContext>(serviceProvider =>
@@ -30,6 +29,7 @@ public static class DependencyInjection
             serviceProvider.GetRequiredService<TenantContext>());
 
         services.AddScoped<ILocationReadService, LocationReadService>();
+        services.AddScoped<ILocationWriteService, LocationWriteService>();
 
         return services;
     }

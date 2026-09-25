@@ -1,5 +1,6 @@
 using VirtualEmployee.Api.Endpoints;
 using VirtualEmployee.Api.Middleware;
+using VirtualEmployee.Application.Locations.CreateLocation;
 using VirtualEmployee.Application.Locations.GetLocations;
 using VirtualEmployee.Infrastructure;
 
@@ -11,6 +12,7 @@ builder.Services.AddOpenApi();
 // Application use cases
 builder.Services.AddScoped<GetLocationsHandler>();
 builder.Services.AddScoped<GetLocationByIdHandler>();
+builder.Services.AddScoped<CreateLocationHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
