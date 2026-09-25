@@ -194,6 +194,9 @@ public sealed class LocationsEndpointsTests
             .WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment("Development");
+                builder.UseSetting(
+                    "ConnectionStrings:Database",
+                    _fixture.ConnectionString);
 
                 builder.ConfigureTestServices(services =>
                 {
