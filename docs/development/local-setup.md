@@ -125,6 +125,12 @@ Para compilar toda a solution:
 ```powershell
 dotnet build VirtualEmployee.slnx
 ```
+# API local, OpenAPI e Swagger
+
+Execute a API localmente com:
+
+```powershell
+dotnet run --project .\src\VirtualEmployee.Api
 
 ## Testes de integração
 

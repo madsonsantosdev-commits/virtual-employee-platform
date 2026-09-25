@@ -70,6 +70,12 @@ Exemplo de resposta:
 
 ## 2. Locations
 `GET /locations?active=true`
+A implementação inicial de `GET /locations` retorna as Locations visíveis no contexto tenant-scoped atual. `TenantId` não é exposto no response.
+
+A leitura utiliza o `TenantContext` e o Global Query Filter do EF Core. O `TenantId` autoritativo deve vir de contexto autenticado/confiável.
+
+Durante o desenvolvimento local, `X-Tenant-Id` é utilizado temporariamente para inicializar o `TenantContext`. Esse mecanismo existe somente em `Development`, não representa autenticação e não deve ser utilizado como autoridade de Tenant em produção.
+
 `GET /locations/{locationId}`
 `POST /locations`
 `PUT /locations/{locationId}`
