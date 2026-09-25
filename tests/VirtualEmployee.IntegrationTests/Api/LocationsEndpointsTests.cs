@@ -188,6 +188,156 @@ public sealed class LocationsEndpointsTests
             body);
     }
 
+    [Fact]
+public async Task GetLocationById_ShouldReturnLocationFromCurrentTenant()
+{
+    var tenantAId = Guid.NewGuid();
+    var tenantBId = Guid.NewGuid();
+
+    var businessAId = Guid.NewGuid();
+    var businessBId = Guid.NewGuid();
+
+    var locationAId = Guid.NewGuid();
+    var locationBId = Guid.NewGuid();
+
+    await SeedAsync(
+        tenantAId,
+        tenantBId,
+        businessAId,
+        businessBId,
+        locationAId,
+        locationBId);
+
+    try
+    {
+        await using var factory = CreateFactory();
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Add(
+            "X-Tenant-Id",
+            tenantAId.ToString());
+
+        var response = await client.GetAsync(
+            $"/api/v1/locations/{locationAId}");
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            response.StatusCode);
+
+        var location =
+            await response.Content
+                .ReadFromJsonAsync<LocationResponse>();
+
+        Assert.NotNull(location);
+
+        Assert.Equal(
+            locationAId,
+            location.Id);
+
+        Assert.Equal(
+            businessAId,
+            location.BusinessId);
+
+        Assert.Equal(
+            "Location A",
+            location.Name);
+    }
+    finally
+    {
+        await CleanupAsync(
+            tenantAId,
+            tenantBId,
+            businessAId,
+            businessBId,
+            locationAId,
+            locationBId);
+    }
+}
+
+[Fact]
+public async Task GetLocationById_FromAnotherTenant_ShouldReturnNotFound()
+{
+    var tenantAId = Guid.NewGuid();
+    var tenantBId = Guid.NewGuid();
+
+    var businessAId = Guid.NewGuid();
+    var businessBId = Guid.NewGuid();
+
+    var locationAId = Guid.NewGuid();
+    var locationBId = Guid.NewGuid();
+
+    await SeedAsync(
+        tenantAId,
+        tenantBId,
+        businessAId,
+        businessBId,
+        locationAId,
+        locationBId);
+
+    try
+    {
+        var options = CreateOptions();
+
+        await using (var verificationContext = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId)))
+        {
+            var persistedLocation =
+                await verificationContext.Locations
+                    .IgnoreQueryFilters()
+                    .SingleOrDefaultAsync(
+                        x => x.Id == locationBId);
+
+            Assert.NotNull(persistedLocation);
+
+            Assert.Equal(
+                tenantBId,
+                persistedLocation.TenantId);
+        }
+
+        await using var factory = CreateFactory();
+        using var client = factory.CreateClient();
+
+        client.DefaultRequestHeaders.Add(
+            "X-Tenant-Id",
+            tenantAId.ToString());
+
+        var response = await client.GetAsync(
+            $"/api/v1/locations/{locationBId}");
+
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            response.StatusCode);
+    }
+    finally
+    {
+        await CleanupAsync(
+            tenantAId,
+            tenantBId,
+            businessAId,
+            businessBId,
+            locationAId,
+            locationBId);
+    }
+}
+
+[Fact]
+public async Task GetLocationById_WithUnknownId_ShouldReturnNotFound()
+{
+    await using var factory = CreateFactory();
+    using var client = factory.CreateClient();
+
+    client.DefaultRequestHeaders.Add(
+        "X-Tenant-Id",
+        Guid.NewGuid().ToString());
+
+    var response = await client.GetAsync(
+        $"/api/v1/locations/{Guid.NewGuid()}");
+
+    Assert.Equal(
+        HttpStatusCode.NotFound,
+        response.StatusCode);
+}
     private WebApplicationFactory<Program> CreateFactory()
     {
         return new WebApplicationFactory<Program>()

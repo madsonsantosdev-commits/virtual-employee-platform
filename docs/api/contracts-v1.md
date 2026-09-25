@@ -77,6 +77,8 @@ A leitura utiliza o `TenantContext` e o Global Query Filter do EF Core. O `Tenan
 Durante o desenvolvimento local, `X-Tenant-Id` é utilizado temporariamente para inicializar o `TenantContext`. Esse mecanismo existe somente em `Development`, não representa autenticação e não deve ser utilizado como autoridade de Tenant em produção.
 
 `GET /locations/{locationId}`
+Implementado. Retorna a Location quando ela pertence ao tenant atual. Location inexistente ou pertencente a outro tenant retorna `404 Not Found`, sem revelar a existência de recursos cross-tenant. A consulta utiliza o `TenantContext` e o Global Query Filter do EF Core.
+
 `POST /locations`
 `PUT /locations/{locationId}`
 

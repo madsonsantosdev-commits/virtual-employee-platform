@@ -30,4 +30,23 @@ public sealed class LocationReadService : ILocationReadService
                 location.IsActive))
             .ToListAsync(cancellationToken);
     }
+
+    public Task<LocationResponse?> GetByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        return _dbContext.Locations
+            .AsNoTracking()
+            .Where(location => location.Id == id)
+            .Select(location => new LocationResponse(
+                location.Id,
+                location.BusinessId,
+                location.Name,
+                location.Phone,
+                location.Address,
+                location.CountryCode,
+                location.Timezone,
+                location.IsActive))
+            .SingleOrDefaultAsync(cancellationToken);
+    }
 }
