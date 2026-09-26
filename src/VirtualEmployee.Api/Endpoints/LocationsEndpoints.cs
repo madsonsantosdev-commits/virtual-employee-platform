@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using VirtualEmployee.Application.Locations;
 using VirtualEmployee.Application.Locations.CreateLocation;
 using VirtualEmployee.Application.Locations.GetLocations;
+using VirtualEmployee.Application.Locations.UpdateLocation;
 
 namespace VirtualEmployee.Api.Endpoints;
 
@@ -113,6 +114,54 @@ public static class LocationsEndpoints
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status404NotFound);
 
+        group.MapPut(
+            "/{id:guid}",
+            async (
+                Guid id,
+                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                UpdateLocationRequest request,
+                UpdateLocationHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                if (string.IsNullOrWhiteSpace(request.Name) ||
+                    string.IsNullOrWhiteSpace(request.CountryCode) ||
+                    string.IsNullOrWhiteSpace(request.Timezone))
+                {
+                    return Results.Problem(
+                        statusCode: StatusCodes.Status400BadRequest,
+                        title: "Invalid location request",
+                        detail:
+                            "Name, countryCode and timezone are required.");
+                }
+
+                var command = new UpdateLocationCommand(
+                    id,
+                    request.Name,
+                    request.CountryCode,
+                    request.Timezone,
+                    request.IsActive,
+                    request.Phone,
+                    request.Address);
+
+                var location = await handler.HandleAsync(
+                    command,
+                    cancellationToken);
+
+                return location is null
+                    ? Results.NotFound()
+                    : Results.Ok(location);
+            })
+            .WithName("UpdateLocation")
+            .WithSummary("Atualiza uma unidade")
+            .WithDescription(
+                "Atualiza os dados operacionais de uma unidade pertencente ao tenant atual. " +
+                "Location inexistente ou pertencente a outro tenant retorna 404. " +
+                "TenantId e BusinessId não podem ser alterados. " +
+                "O header X-Tenant-Id é temporário e utilizado apenas durante o desenvolvimento.")
+            .Produces<LocationResponse>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status404NotFound);
+
         return endpoints;
     }
 }
@@ -122,5 +171,13 @@ public sealed record CreateLocationRequest(
     string Name,
     string CountryCode,
     string Timezone,
+    string? Phone,
+    string? Address);
+
+public sealed record UpdateLocationRequest(
+    string Name,
+    string CountryCode,
+    string Timezone,
+    bool IsActive,
     string? Phone,
     string? Address);
