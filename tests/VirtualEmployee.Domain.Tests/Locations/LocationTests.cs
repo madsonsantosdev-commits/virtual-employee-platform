@@ -144,6 +144,196 @@ public sealed class LocationTests
     }
 
     [Fact]
+    public void Update_WithValidData_ShouldUpdateOperationalFields()
+    {
+        var location = new Location(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "Unidade Centro",
+            "BR",
+            "America/Sao_Paulo",
+            CreatedAt,
+            "+5511999999999",
+            "Av. Paulista, 1000");
+
+        var updatedAt =
+            new DateTimeOffset(
+                2026,
+                9,
+                25,
+                12,
+                0,
+                0,
+                TimeSpan.Zero);
+
+        location.Update(
+            "Unidade Moema",
+            "US",
+            "America/New_York",
+            false,
+            updatedAt,
+            "+12125551234",
+            "5th Avenue, 100");
+
+        Assert.Equal("Unidade Moema", location.Name);
+        Assert.Equal("+12125551234", location.Phone);
+        Assert.Equal("5th Avenue, 100", location.Address);
+        Assert.Equal("US", location.CountryCode);
+        Assert.Equal("America/New_York", location.Timezone);
+        Assert.False(location.IsActive);
+        Assert.Equal(updatedAt, location.UpdatedAt);
+    }
+
+    [Fact]
+    public void Update_ShouldNormalizeValues()
+    {
+        var location = new Location(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "Unidade Centro",
+            "BR",
+            "America/Sao_Paulo",
+            CreatedAt);
+
+        var updatedAt =
+            new DateTimeOffset(
+                2026,
+                9,
+                25,
+                12,
+                0,
+                0,
+                TimeSpan.Zero);
+
+        location.Update(
+            "  Unidade Moema  ",
+            " br ",
+            "  America/Sao_Paulo  ",
+            true,
+            updatedAt,
+            "  +5511987654321  ",
+            "  Av. Exemplo, 100  ");
+
+        Assert.Equal("Unidade Moema", location.Name);
+        Assert.Equal("BR", location.CountryCode);
+        Assert.Equal("America/Sao_Paulo", location.Timezone);
+        Assert.Equal("+5511987654321", location.Phone);
+        Assert.Equal("Av. Exemplo, 100", location.Address);
+    }
+
+    [Fact]
+    public void Update_WithBlankOptionalValues_ShouldStoreNull()
+    {
+        var location = new Location(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "Unidade Centro",
+            "BR",
+            "America/Sao_Paulo",
+            CreatedAt,
+            "+5511999999999",
+            "Av. Paulista, 1000");
+
+        location.Update(
+            "Unidade Centro",
+            "BR",
+            "America/Sao_Paulo",
+            true,
+            CreatedAt.AddDays(1),
+            " ",
+            null);
+
+        Assert.Null(location.Phone);
+        Assert.Null(location.Address);
+    }
+
+    [Fact]
+    public void Update_WithEmptyName_ShouldThrow()
+    {
+        var location = CreateLocation();
+
+        Assert.Throws<ArgumentException>(() =>
+            location.Update(
+                " ",
+                "BR",
+                "America/Sao_Paulo",
+                true,
+                CreatedAt.AddDays(1)));
+    }
+
+    [Fact]
+    public void Update_WithEmptyCountryCode_ShouldThrow()
+    {
+        var location = CreateLocation();
+
+        Assert.Throws<ArgumentException>(() =>
+            location.Update(
+                "Unidade Centro",
+                " ",
+                "America/Sao_Paulo",
+                true,
+                CreatedAt.AddDays(1)));
+    }
+
+    [Fact]
+    public void Update_WithEmptyTimezone_ShouldThrow()
+    {
+        var location = CreateLocation();
+
+        Assert.Throws<ArgumentException>(() =>
+            location.Update(
+                "Unidade Centro",
+                "BR",
+                " ",
+                true,
+                CreatedAt.AddDays(1)));
+    }
+
+    [Fact]
+    public void Update_ShouldPreserveStructuralFields()
+    {
+        var id = Guid.NewGuid();
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+
+        var location = new Location(
+            id,
+            tenantId,
+            businessId,
+            "Unidade Centro",
+            "BR",
+            "America/Sao_Paulo",
+            CreatedAt);
+
+        location.Update(
+            "Unidade Atualizada",
+            "BR",
+            "America/Sao_Paulo",
+            false,
+            CreatedAt.AddDays(1));
+
+        Assert.Equal(id, location.Id);
+        Assert.Equal(tenantId, location.TenantId);
+        Assert.Equal(businessId, location.BusinessId);
+        Assert.Equal(CreatedAt, location.CreatedAt);
+    }
+
+    private static Location CreateLocation()
+    {
+        return new Location(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "Unidade Centro",
+            "BR",
+            "America/Sao_Paulo",
+            CreatedAt);
+    }
+
+    [Fact]
     public void Constructor_WithBlankOptionalValues_ShouldStoreNull()
     {
         var location = new Location(

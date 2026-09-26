@@ -56,6 +56,73 @@ public sealed class Location : ITenantScoped
                 nameof(businessId));
         }
 
+        ValidateRequiredFields(
+            name,
+            countryCode,
+            timezone);
+
+        Id = id;
+        TenantId = tenantId;
+        BusinessId = businessId;
+
+        ApplyOperationalData(
+            name,
+            countryCode,
+            timezone,
+            phone,
+            address);
+
+        IsActive = true;
+
+        CreatedAt = createdAt;
+        UpdatedAt = createdAt;
+    }
+
+    public void Update(
+        string name,
+        string countryCode,
+        string timezone,
+        bool isActive,
+        DateTimeOffset updatedAt,
+        string? phone = null,
+        string? address = null)
+    {
+        ValidateRequiredFields(
+            name,
+            countryCode,
+            timezone);
+
+        ApplyOperationalData(
+            name,
+            countryCode,
+            timezone,
+            phone,
+            address);
+
+        IsActive = isActive;
+        UpdatedAt = updatedAt;
+    }
+
+    private void ApplyOperationalData(
+        string name,
+        string countryCode,
+        string timezone,
+        string? phone,
+        string? address)
+    {
+        Name = name.Trim();
+        Phone = NormalizeOptional(phone);
+        Address = NormalizeOptional(address);
+
+        CountryCode = countryCode.Trim().ToUpperInvariant();
+        Timezone = timezone.Trim();
+    }
+
+    private static void ValidateRequiredFields(
+        string name,
+        string countryCode,
+        string timezone)
+    {
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new ArgumentException(
@@ -76,22 +143,6 @@ public sealed class Location : ITenantScoped
                 "Timezone cannot be empty.",
                 nameof(timezone));
         }
-
-        Id = id;
-        TenantId = tenantId;
-        BusinessId = businessId;
-
-        Name = name.Trim();
-        Phone = NormalizeOptional(phone);
-        Address = NormalizeOptional(address);
-
-        CountryCode = countryCode.Trim().ToUpperInvariant();
-        Timezone = timezone.Trim();
-
-        IsActive = true;
-
-        CreatedAt = createdAt;
-        UpdatedAt = createdAt;
     }
 
     private static string? NormalizeOptional(string? value)

@@ -108,6 +108,33 @@ A verificação do Business utiliza o `TenantContext` e o Global Query Filter do
 
 `PUT /locations/{locationId}`
 
+Implementado. Atualiza os dados operacionais de uma Location pertencente ao tenant atual.
+
+O `TenantId`, `BusinessId`, `LocationId` e `CreatedAt` não são aceitos no payload e não podem ser alterados por esta operação. O `TenantId` autoritativo continua vindo do `TenantContext`. Durante o desenvolvimento local, o header temporário `X-Tenant-Id` inicializa esse contexto.
+
+Request:
+
+```json
+{
+  "name": "Unidade Vila Mariana",
+  "phone": "+5511987654321",
+  "address": "Rua Domingos de Morais, 1600",
+  "countryCode": "BR",
+  "timezone": "America/Sao_Paulo",
+  "isActive": true
+}
+
+```
+
+`name`, `countryCode`, `timezone` e `isActive` compõem os dados atualizáveis obrigatórios da operação. `phone` e `address` são opcionais. O Domain normaliza os dados operacionais antes da persistência.
+
+Responses:
+- `200 OK`: Location atualizada e retornada.
+- `400 Bad Request`: request estruturalmente inválido.
+- `404 Not Found`: Location inexistente ou pertencente a outro tenant. Os dois casos são indistinguíveis externamente para não revelar recursos cross-tenant.
+
+A atualização busca a Location através do `TenantContext` e do Global Query Filter do EF Core. `BusinessId` permanece imutável nesta operação. `UpdatedAt` é controlado pelo backend e atualizado quando a alteração é persistida.
+
 MVP cria uma Location no onboarding, mas contratos não assumem que ela será sempre única.
 
 ## 3. Services, Combos e disponibilidade por Location

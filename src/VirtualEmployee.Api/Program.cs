@@ -1,7 +1,8 @@
-using VirtualEmployee.Api.Endpoints;
-using VirtualEmployee.Api.Middleware;
 using VirtualEmployee.Application.Locations.CreateLocation;
 using VirtualEmployee.Application.Locations.GetLocations;
+using VirtualEmployee.Application.Locations.UpdateLocation;
+using VirtualEmployee.Api.Endpoints;
+using VirtualEmployee.Api.Middleware;
 using VirtualEmployee.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -13,6 +14,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddScoped<GetLocationsHandler>();
 builder.Services.AddScoped<GetLocationByIdHandler>();
 builder.Services.AddScoped<CreateLocationHandler>();
+builder.Services.AddScoped<UpdateLocationHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);

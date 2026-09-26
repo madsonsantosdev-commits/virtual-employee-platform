@@ -25,6 +25,16 @@ public sealed class LocationWriteService : ILocationWriteService
                 cancellationToken);
     }
 
+    public Task<Location?> GetByIdAsync(
+        Guid locationId,
+        CancellationToken cancellationToken = default)
+    {
+        return _dbContext.Locations
+            .SingleOrDefaultAsync(
+                location => location.Id == locationId,
+                cancellationToken);
+    }
+
     public async Task AddAsync(
         Location location,
         CancellationToken cancellationToken = default)
@@ -32,5 +42,11 @@ public sealed class LocationWriteService : ILocationWriteService
         _dbContext.Locations.Add(location);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public Task SaveChangesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return _dbContext.SaveChangesAsync(cancellationToken);
     }
 }

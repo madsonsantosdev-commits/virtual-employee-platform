@@ -763,6 +763,382 @@ public sealed class LocationsEndpointsTests
             });
     }
 
+    [Fact]
+    public async Task UpdateLocation_WithLocationFromCurrentTenant_ShouldReturnOk()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+
+        var options = CreateOptions();
+
+        try
+        {
+            await using (var seedContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId)))
+            {
+                seedContext.Tenants.Add(
+                    new Tenant(
+                        tenantId,
+                        "Update Location Tenant"));
+
+                seedContext.Businesses.Add(
+                    CreateBusiness(
+                        businessId,
+                        tenantId,
+                        "Update Location Business"));
+
+                await seedContext.SaveChangesAsync();
+
+                seedContext.Locations.Add(
+                    CreateLocation(
+                        locationId,
+                        tenantId,
+                        businessId,
+                        "Unidade Original"));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            var response = await client.PutAsJsonAsync(
+                $"/api/v1/locations/{locationId}",
+                new
+                {
+                    name = "  Unidade Atualizada  ",
+                    countryCode = " br ",
+                    timezone = "  America/Sao_Paulo  ",
+                    isActive = false,
+                    phone = "  +5511987654321  ",
+                    address = "  Av. Exemplo, 200  "
+                });
+
+            Assert.Equal(
+                HttpStatusCode.OK,
+                response.StatusCode);
+
+            var location =
+                await response.Content.ReadFromJsonAsync<LocationResponse>();
+
+            Assert.NotNull(location);
+            Assert.Equal(locationId, location.Id);
+            Assert.Equal(businessId, location.BusinessId);
+            Assert.Equal("Unidade Atualizada", location.Name);
+            Assert.Equal("+5511987654321", location.Phone);
+            Assert.Equal("Av. Exemplo, 200", location.Address);
+            Assert.Equal("BR", location.CountryCode);
+            Assert.Equal("America/Sao_Paulo", location.Timezone);
+            Assert.False(location.IsActive);
+
+            await using var verificationContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId));
+
+            var persistedLocation =
+                await verificationContext.Locations
+                    .SingleAsync(x => x.Id == locationId);
+
+            Assert.Equal(tenantId, persistedLocation.TenantId);
+            Assert.Equal(businessId, persistedLocation.BusinessId);
+            Assert.Equal("Unidade Atualizada", persistedLocation.Name);
+            Assert.Equal("+5511987654321", persistedLocation.Phone);
+            Assert.Equal("Av. Exemplo, 200", persistedLocation.Address);
+            Assert.Equal("BR", persistedLocation.CountryCode);
+            Assert.Equal(
+                "America/Sao_Paulo",
+                persistedLocation.Timezone);
+            Assert.False(persistedLocation.IsActive);
+            Assert.Equal(CreatedAt, persistedLocation.CreatedAt);
+            Assert.True(persistedLocation.UpdatedAt > CreatedAt);
+        }
+        finally
+        {
+            await RemoveLocationAsync(
+                options,
+                tenantId,
+                locationId);
+
+            await RemoveBusinessAsync(
+                options,
+                tenantId,
+                businessId);
+
+            await RemoveTenantAsync(
+                options,
+                tenantId);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateLocation_WithUnknownId_ShouldReturnNotFound()
+    {
+        var tenantId = Guid.NewGuid();
+        var options = CreateOptions();
+
+        try
+        {
+            await using (var seedContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId)))
+            {
+                seedContext.Tenants.Add(
+                    new Tenant(
+                        tenantId,
+                        "Unknown Location Tenant"));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            var response = await client.PutAsJsonAsync(
+                $"/api/v1/locations/{Guid.NewGuid()}",
+                new
+                {
+                    name = "Unidade Inexistente",
+                    countryCode = "BR",
+                    timezone = "America/Sao_Paulo",
+                    isActive = true,
+                    phone = (string?)null,
+                    address = (string?)null
+                });
+
+            Assert.Equal(
+                HttpStatusCode.NotFound,
+                response.StatusCode);
+        }
+        finally
+        {
+            await RemoveTenantAsync(
+                options,
+                tenantId);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateLocation_WithLocationFromAnotherTenant_ShouldReturnNotFoundAndPreserveLocation()
+    {
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+        var businessBId = Guid.NewGuid();
+        var locationBId = Guid.NewGuid();
+
+        var options = CreateOptions();
+
+        try
+        {
+            await using (var seedContext = new AppDbContext(
+                options,
+                new TenantContext()))
+            {
+                seedContext.Tenants.AddRange(
+                    new Tenant(
+                        tenantAId,
+                        "Update Tenant A"),
+                    new Tenant(
+                        tenantBId,
+                        "Update Tenant B"));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using (var tenantBContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantBId)))
+            {
+                tenantBContext.Businesses.Add(
+                    CreateBusiness(
+                        businessBId,
+                        tenantBId,
+                        "Business B"));
+
+                await tenantBContext.SaveChangesAsync();
+
+                tenantBContext.Locations.Add(
+                    CreateLocation(
+                        locationBId,
+                        tenantBId,
+                        businessBId,
+                        "Location B"));
+
+                await tenantBContext.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantAId.ToString());
+
+            var response = await client.PutAsJsonAsync(
+                $"/api/v1/locations/{locationBId}",
+                new
+                {
+                    name = "Location Invadida",
+                    countryCode = "US",
+                    timezone = "America/New_York",
+                    isActive = false,
+                    phone = "+12125551234",
+                    address = "Cross Tenant Address"
+                });
+
+            Assert.Equal(
+                HttpStatusCode.NotFound,
+                response.StatusCode);
+
+            await using var verificationContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantAId));
+
+            var persistedLocation =
+                await verificationContext.Locations
+                    .IgnoreQueryFilters()
+                    .SingleAsync(x => x.Id == locationBId);
+
+            Assert.Equal(tenantBId, persistedLocation.TenantId);
+            Assert.Equal(businessBId, persistedLocation.BusinessId);
+            Assert.Equal("Location B", persistedLocation.Name);
+            Assert.Null(persistedLocation.Phone);
+            Assert.Null(persistedLocation.Address);
+            Assert.Equal("BR", persistedLocation.CountryCode);
+            Assert.Equal(
+                "America/Sao_Paulo",
+                persistedLocation.Timezone);
+            Assert.True(persistedLocation.IsActive);
+            Assert.Equal(CreatedAt, persistedLocation.CreatedAt);
+            Assert.Equal(CreatedAt, persistedLocation.UpdatedAt);
+        }
+        finally
+        {
+            await RemoveLocationAsync(
+                options,
+                tenantBId,
+                locationBId);
+
+            await RemoveBusinessAsync(
+                options,
+                tenantBId,
+                businessBId);
+
+            await RemoveTenantAsync(
+                options,
+                tenantAId);
+
+            await RemoveTenantAsync(
+                options,
+                tenantBId);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateLocation_WithInvalidRequest_ShouldReturnBadRequestAndPreserveLocation()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+
+        var options = CreateOptions();
+
+        try
+        {
+            await using (var seedContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId)))
+            {
+                seedContext.Tenants.Add(
+                    new Tenant(
+                        tenantId,
+                        "Invalid Update Tenant"));
+
+                seedContext.Businesses.Add(
+                    CreateBusiness(
+                        businessId,
+                        tenantId,
+                        "Invalid Update Business"));
+
+                await seedContext.SaveChangesAsync();
+
+                seedContext.Locations.Add(
+                    CreateLocation(
+                        locationId,
+                        tenantId,
+                        businessId,
+                        "Unidade Original"));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            var response = await client.PutAsJsonAsync(
+                $"/api/v1/locations/{locationId}",
+                new
+                {
+                    name = " ",
+                    countryCode = "BR",
+                    timezone = "America/Sao_Paulo",
+                    isActive = false,
+                    phone = "+5511987654321",
+                    address = "Endereço alterado"
+                });
+
+            Assert.Equal(
+                HttpStatusCode.BadRequest,
+                response.StatusCode);
+
+            await using var verificationContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId));
+
+            var persistedLocation =
+                await verificationContext.Locations
+                    .SingleAsync(x => x.Id == locationId);
+
+            Assert.Equal("Unidade Original", persistedLocation.Name);
+            Assert.Null(persistedLocation.Phone);
+            Assert.Null(persistedLocation.Address);
+            Assert.Equal("BR", persistedLocation.CountryCode);
+            Assert.Equal(
+                "America/Sao_Paulo",
+                persistedLocation.Timezone);
+            Assert.True(persistedLocation.IsActive);
+            Assert.Equal(CreatedAt, persistedLocation.UpdatedAt);
+        }
+        finally
+        {
+            await RemoveLocationAsync(
+                options,
+                tenantId,
+                locationId);
+
+            await RemoveBusinessAsync(
+                options,
+                tenantId,
+                businessId);
+
+            await RemoveTenantAsync(
+                options,
+                tenantId);
+        }
+    }
     private async Task SeedAsync(
         Guid tenantAId,
         Guid tenantBId,
