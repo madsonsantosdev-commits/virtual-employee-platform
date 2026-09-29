@@ -22,6 +22,8 @@ Definir o modelo de domínio inicial da Virtual Employee Platform antes da imple
 13. Double-booking é impedido por validação transacional + constraint PostgreSQL.
 14. Um Appointment pode conter um ou mais serviços, mas possui um único Professional no MVP.
 15. Privacy by Design: coletar, persistir, expor e compartilhar somente os dados necessários à finalidade.
+16. Usuários internos possuem identidade individual; autorização é tenant/business-scoped e baseada em permissões, sem compartilhamento da conta OWNER.
+17. Caixa operacional e financeiro gerencial são capacidades distintas: recepção pode registrar pagamento presencial sem obter acesso a relatórios financeiros.
 
 ---
 
@@ -34,6 +36,18 @@ Fronteira lógica de propriedade, isolamento de dados, segurança e cobrança do
 Representa o negócio/marca operado pelo Tenant. Mantém políticas comerciais como cancelamento/refund e granularidade de início de agenda (`SlotIntervalMinutes`, default 15).
 
 No MVP a experiência inicial será simples: 1 Tenant -> 1 Business -> 1 Location. O modelo suporta 1 Business -> N Locations.
+
+### BusinessUser e acesso operacional
+Um Business pode possuir múltiplos usuários internos, sempre vinculados a identidades individuais. O vínculo conceitual `BusinessUser` associa identidade, Tenant/Business, papel e estado de acesso.
+
+Papéis predefinidos do MVP:
+- `OWNER`: titular da conta, acesso integral e autoridade sobre dados sensíveis da conta, segurança, usuários e titularidade;
+- `MANAGER`: gestão operacional e acesso financeiro, sem permissão para alterar e-mail/telefone do titular, recuperação ou titularidade;
+- `RECEPTIONIST`: agenda, Clients e caixa operacional, sem acesso ao financeiro gerencial ou configurações sensíveis.
+
+A autorização deve ser expressa por capabilities/permissões (ex.: `appointments.manage`, `clients.manage`, `cash.manage`, `financial.read`) para evitar regras de negócio espalhadas por comparação direta de role. No MVP, os conjuntos de permissões podem permanecer predefinidos, sem editor customizável.
+
+Toda ação sensível ou financeira executada por usuário interno deve registrar ator e contexto na trilha de auditoria.
 
 ### BusinessType
 Classificação do negócio. Tipos oficiais possuem escopo global; tipos customizados pertencem ao Tenant. Unicidade customizada é tenant-scoped.
@@ -204,7 +218,13 @@ Preserva auditoria operacional. Registrar mudança necessária sem copiar PII de
 ---
 
 ## Payment e Refund
-Payment integral via PIX, CREDIT_CARD ou DEBIT_CARD. `Payment.Amount == Appointment.TotalPriceSnapshot`. Checkout hospedado/tokenizado; dados brutos de cartão não trafegam pela aplicação; confirmação apenas por webhook/API confiável.
+Payment continua integral: `Payment.Amount == Appointment.TotalPriceSnapshot`.
+
+Dois canais operacionais são previstos:
+- `ONLINE`: PIX, CREDIT_CARD ou DEBIT_CARD via checkout hospedado/tokenizado; dados brutos de cartão não trafegam pela aplicação; confirmação financeira vem de webhook/API confiável do provider;
+- `IN_PERSON`: pagamento recebido no estabelecimento e registrado por usuário autenticado com permissão de caixa. Métodos previstos: PIX, CREDIT_CARD, DEBIT_CARD e CASH. A plataforma pode apenas registrar o pagamento realizado externamente (por exemplo, maquininha física), sem processar a transação.
+
+Pagamento presencial exige auditoria do ator que o registrou. IA/Conversation não pode confirmar pagamento presencial.
 
 Refund integral e assíncrono. Nunca comunicar REFUNDED antes da confirmação do gateway.
 
@@ -264,6 +284,7 @@ Consultar disponibilidade não garante vaga. CreateAppointment revalida e constr
 ```text
 Tenant -> Business
 Business -> BusinessType
+Business -> BusinessUsers -> Identity/Role/Permissions
 Business -> LegalEntities
 Business -> Locations
 Location -> LegalEntity (opcional)
