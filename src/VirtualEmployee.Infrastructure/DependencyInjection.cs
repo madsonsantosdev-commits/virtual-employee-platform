@@ -1,11 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using VirtualEmployee.Infrastructure.Persistence;
+using VirtualEmployee.Application.Businesses;
 using VirtualEmployee.Application.Common.Tenancy;
-using VirtualEmployee.Infrastructure.Tenancy;
 using VirtualEmployee.Application.Locations;
+using VirtualEmployee.Infrastructure.Businesses;
 using VirtualEmployee.Infrastructure.Locations;
+using VirtualEmployee.Infrastructure.Persistence;
+using VirtualEmployee.Infrastructure.Tenancy;
+
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -20,6 +23,7 @@ public static class DependencyInjection
 
         services.AddDbContext<AppDbContext>(options =>
             options.UseNpgsql(connectionString));
+
         services.AddScoped<TenantContext>();
 
         services.AddScoped<ITenantContext>(serviceProvider =>
@@ -30,6 +34,8 @@ public static class DependencyInjection
 
         services.AddScoped<ILocationReadService, LocationReadService>();
         services.AddScoped<ILocationWriteService, LocationWriteService>();
+        services.AddScoped<IBusinessReadService, BusinessReadService>();
+        services.AddScoped<IBusinessWriteService, BusinessWriteService>();
 
         return services;
     }

@@ -25,6 +25,51 @@ public sealed class Business : ITenantScoped
         DateTimeOffset createdAt,
         int slotIntervalMinutes = 15)
     {
+        ValidateRequiredFields(
+            id,
+            tenantId,
+            businessTypeId);
+
+        ApplyOperationalData(
+            businessTypeId,
+            name,
+            slotIntervalMinutes);
+
+        Id = id;
+        TenantId = tenantId;
+        IsActive = true;
+        CreatedAt = createdAt;
+        UpdatedAt = createdAt;
+    }
+
+    public void Update(
+        Guid businessTypeId,
+        string name,
+        int slotIntervalMinutes,
+        bool isActive,
+        DateTimeOffset updatedAt)
+    {
+        if (businessTypeId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "Business type id cannot be empty.",
+                nameof(businessTypeId));
+        }
+
+        ApplyOperationalData(
+            businessTypeId,
+            name,
+            slotIntervalMinutes);
+
+        IsActive = isActive;
+        UpdatedAt = updatedAt;
+    }
+
+    private static void ValidateRequiredFields(
+        Guid id,
+        Guid tenantId,
+        Guid businessTypeId)
+    {
         if (id == Guid.Empty)
         {
             throw new ArgumentException(
@@ -39,6 +84,19 @@ public sealed class Business : ITenantScoped
                 nameof(tenantId));
         }
 
+        if (businessTypeId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "Business type id cannot be empty.",
+                nameof(businessTypeId));
+        }
+    }
+
+    private void ApplyOperationalData(
+        Guid businessTypeId,
+        string name,
+        int slotIntervalMinutes)
+    {
         if (businessTypeId == Guid.Empty)
         {
             throw new ArgumentException(
@@ -60,13 +118,8 @@ public sealed class Business : ITenantScoped
                 "Slot interval must be greater than zero.");
         }
 
-        Id = id;
-        TenantId = tenantId;
         BusinessTypeId = businessTypeId;
         Name = name.Trim();
         SlotIntervalMinutes = slotIntervalMinutes;
-        IsActive = true;
-        CreatedAt = createdAt;
-        UpdatedAt = createdAt;
     }
 }

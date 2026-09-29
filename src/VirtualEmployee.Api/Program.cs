@@ -1,6 +1,8 @@
 using VirtualEmployee.Application.Locations.CreateLocation;
 using VirtualEmployee.Application.Locations.GetLocations;
 using VirtualEmployee.Application.Locations.UpdateLocation;
+using VirtualEmployee.Application.Businesses.GetBusiness;
+using VirtualEmployee.Application.Businesses.UpdateBusiness;
 using VirtualEmployee.Api.Endpoints;
 using VirtualEmployee.Api.Middleware;
 using VirtualEmployee.Infrastructure;
@@ -15,7 +17,8 @@ builder.Services.AddScoped<GetLocationsHandler>();
 builder.Services.AddScoped<GetLocationByIdHandler>();
 builder.Services.AddScoped<CreateLocationHandler>();
 builder.Services.AddScoped<UpdateLocationHandler>();
-
+builder.Services.AddScoped<GetBusinessHandler>();
+builder.Services.AddScoped<UpdateBusinessHandler>();
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
 
@@ -45,6 +48,7 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 
 app.MapLocationsEndpoints();
+app.MapBusinessEndpoints();
 
 app.Run();
 

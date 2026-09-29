@@ -66,7 +66,24 @@ Exemplo de resposta:
 {"id":"<uuid>","code":"PODOLOGY","name":"Podologia","isActive":true}
 ```
 
-`GET /business`, `PUT /business`. Business mantém nome, BusinessType, políticas e SlotIntervalMinutes. Endereço/timezone pertencem à Location.
+`GET /business`
+
+Implementado. Retorna o Business pertencente ao tenant atual.
+
+O `TenantId` não é aceito como parâmetro ou autoridade do cliente. A consulta utiliza o `TenantContext` e o Global Query Filter do EF Core. Business inexistente para o tenant atual retorna `404 Not Found`.
+
+Durante o desenvolvimento local, `X-Tenant-Id` é utilizado temporariamente para inicializar o `TenantContext`. Esse mecanismo existe somente em `Development`, não representa autenticação e não deve ser utilizado como autoridade de Tenant em produção.
+
+Response:
+
+```json
+{
+  "id": "<uuid>",
+  "businessTypeId": "<uuid>",
+  "name": "Barbearia Exemplo",
+  "slotIntervalMinutes": 15,
+  "isActive": true
+}
 
 ## 2. Locations
 `GET /locations?active=true`
