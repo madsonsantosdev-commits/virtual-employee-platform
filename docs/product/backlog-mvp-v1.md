@@ -308,9 +308,34 @@ Permitir que o Customer crie e proteja sua conta, tenha e-mail e WhatsApp verifi
 - [ ] Testar ausência de descoberta por filtros/listagens
 - [ ] Validar barreiras PostgreSQL previstas no ERD
 
-## Feature 02.6 — Segurança e acesso na PWA
+## Feature 02.6 — Usuários internos, papéis e permissões
 
-### US-02.6.1 — Exibir estado de segurança
+### US-02.6.1 — Operar o Business com identidade própria
+
+**Como** titular do Business  
+**Quero** conceder acesso individual a gerente e recepcionista  
+**Para** que cada pessoa opere somente as capacidades necessárias sem compartilhar minhas credenciais.
+
+**Critérios de aceite**
+- papéis MVP: `OWNER`, `MANAGER`, `RECEPTIONIST`;
+- autorização é tenant/business-scoped;
+- OWNER possui acesso integral e controla dados sensíveis/titularidade;
+- MANAGER acessa operação e financeiro, mas não altera e-mail/telefone do titular, recuperação ou titularidade;
+- RECEPTIONIST acessa agenda, Clients e caixa, sem financeiro gerencial;
+- ações relevantes registram o ator;
+- backend autoriza por permissions/capabilities, mesmo com papéis predefinidos.
+
+**Tasks**
+- [ ] Modelar vínculo BusinessUser/identidade
+- [ ] Definir matriz de capabilities por papel
+- [ ] Implementar policies de autorização
+- [ ] Implementar gestão básica de usuários internos pelo OWNER
+- [ ] Auditar ações administrativas e financeiras
+- [ ] Testar escalonamento indevido e acesso cross-tenant
+
+## Feature 02.7 — Segurança e acesso na PWA
+
+### US-02.7.1 — Exibir estado de segurança
 
 **Como** Customer  
 **Quero** visualizar meus canais verificados e configurações de acesso  
@@ -328,6 +353,32 @@ Permitir que o Customer crie e proteja sua conta, tenha e-mail e WhatsApp verifi
 - [ ] Integrar ações suportadas pelo provider
 - [ ] Implementar tela conforme Wireframes v1
 
+## Feature 02.8 — Caixa operacional presencial
+
+### US-02.8.1 — Registrar atendimento e pagamento presencial
+
+**Como** recepcionista ou usuário autorizado  
+**Quero** consultar/criar agendamentos e registrar o pagamento integral recebido no estabelecimento  
+**Para** atender clientes walk-in ou que marcam horário diretamente no local.
+
+**Critérios de aceite**
+- usa o mesmo Scheduling/Appointment da agenda online;
+- permite localizar/cadastrar Client e criar Appointment presencial;
+- pagamento presencial é integral e associado ao Appointment;
+- métodos presenciais previstos: PIX, CREDIT_CARD, DEBIT_CARD e CASH;
+- registro identifica canal `IN_PERSON` e usuário que confirmou o recebimento;
+- recepcionista não obtém acesso ao financeiro gerencial por possuir acesso ao caixa;
+- IA não confirma pagamento presencial;
+- não inclui estoque, sangria/suprimento, TEF, emissão fiscal ou conciliação bancária.
+
+**Tasks**
+- [ ] Definir contrato de caixa operacional
+- [ ] Integrar walk-in ao fluxo de Scheduling
+- [ ] Modelar canal/método do pagamento presencial
+- [ ] Exigir capability `cash.manage`
+- [ ] Registrar auditoria do operador
+- [ ] Testar separação entre caixa e `financial.read`
+
 ## Definition of Done — EPIC 02
 
 - Customer consegue criar conta;
@@ -336,6 +387,8 @@ Permitir que o Customer crie e proteja sua conta, tenha e-mail e WhatsApp verifi
 - step-up existe para cenários sensíveis suportados;
 - TenantContext é server-side e confiável;
 - testes provam isolamento cross-tenant;
+- OWNER, MANAGER e RECEPTIONIST operam com identidades individuais e capabilities compatíveis;
+- caixa operacional permanece separado do financeiro gerencial;
 - OTP/PII/secrets não vazam em logs.
 
 ---
