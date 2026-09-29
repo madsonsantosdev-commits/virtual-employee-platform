@@ -61,7 +61,9 @@ O funcionário virtual deverá ser capaz de:
 - lidar com indisponibilidades do estabelecimento;
 - sugerir alternativas de reagendamento;
 - processar cancelamentos conforme as regras configuradas;
-- auxiliar o proprietário com consultas administrativas e financeiras.
+- auxiliar o proprietário com consultas administrativas e financeiras;
+- permitir operação interna por usuários autorizados do estabelecimento, com acesso compatível com sua função;
+- permitir atendimento presencial/walk-in, criação de agendamento no local e registro de pagamento presencial.
 
 ## 7. Pagamentos de serviços
 
@@ -75,9 +77,23 @@ Métodos previstos:
 
 Não haverá sinal, pagamento parcial ou valor negociado pela IA.
 
+Além do checkout online, o MVP poderá registrar pagamentos presenciais recebidos pelo estabelecimento. O caixa operacional não transforma a plataforma em um PDV/ERP completo: sua finalidade é registrar o pagamento integral associado ao atendimento/agendamento. Pagamentos presenciais podem ser registrados como Pix, crédito, débito ou dinheiro por usuário autenticado e autorizado. A plataforma não processa necessariamente a maquininha física; nesse caso registra o fato financeiro informado pelo operador, com trilha de auditoria.
+
 O dinheiro referente ao serviço pertence ao estabelecimento. A plataforma não deve custodiar esses valores. O gateway de pagamento processa a transação e o backend confirma o resultado através de webhook validado.
 
-## 8. Assinatura SaaS
+## 8. Usuários internos e controle de acesso
+
+Um Business pode ser operado por múltiplos usuários, cada um com identidade própria. Credenciais do titular não devem ser compartilhadas.
+
+Papéis predefinidos do MVP:
+
+- `OWNER`: titular da conta/Business, com acesso integral, inclusive dados sensíveis da conta, segurança e gestão de usuários;
+- `MANAGER`: administra agenda, clientes, caixa, financeiro, relatórios e configurações operacionais, mas não pode assumir controle da conta nem alterar e-mail/telefone do titular ou mecanismos de recuperação/titularidade;
+- `RECEPTIONIST`: opera agenda, clientes e caixa; não possui acesso ao financeiro gerencial nem a configurações sensíveis da conta.
+
+A autorização deve ser orientada por permissões/capabilities, mesmo que o MVP exponha apenas papéis predefinidos. Toda autorização continua tenant/business-scoped e ações relevantes são auditáveis.
+
+## 9. Assinatura SaaS
 
 A cobrança da assinatura da plataforma é financeiramente independente dos pagamentos dos clientes dos estabelecimentos.
 
@@ -88,7 +104,7 @@ Modelo definido:
 - sem boleto;
 - sem taxa própria da plataforma por agendamento.
 
-## 9. Inteligência Artificial
+## 10. Inteligência Artificial
 
 A IA é uma camada de interpretação e experiência conversacional.
 
@@ -98,7 +114,7 @@ Regra central:
 
 A IA não deve acessar diretamente o banco de dados, inventar disponibilidade, definir preços, confirmar pagamentos ou executar estornos diretamente.
 
-## 10. Diferenciais
+## 11. Diferenciais
 
 - WhatsApp-first;
 - onboarding simples;
@@ -111,13 +127,14 @@ A IA não deve acessar diretamente o banco de dados, inventar disponibilidade, d
 - preço previsível, sem taxa própria por agendamento;
 - foco em simplicidade em vez de ERP completo.
 
-## 11. Fora do MVP
+## 12. Fora do MVP
 
 Não fazem parte do MVP:
 
 - estoque;
 - folha de pagamento;
 - ERP completo;
+- PDV completo, controle de estoque, sangria/suprimento, TEF, emissão fiscal ou conciliação bancária;
 - marketplace;
 - aplicativo mobile nativo;
 - contabilidade;
@@ -128,6 +145,6 @@ Não fazem parte do MVP:
 - Kubernetes;
 - arquitetura prematura de microsserviços.
 
-## 12. Métrica de sucesso do produto
+## 13. Métrica de sucesso do produto
 
 O MVP será bem-sucedido quando um pequeno estabelecimento conseguir configurar o funcionário virtual, receber clientes pelo WhatsApp e realizar o ciclo completo de atendimento — descoberta do serviço, agendamento, pagamento, confirmação, alteração/cancelamento e acompanhamento — com baixa necessidade de intervenção manual do proprietário ou da plataforma.
