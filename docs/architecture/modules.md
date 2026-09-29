@@ -32,6 +32,8 @@ Responsável por:
 - tenants;
 - associação usuário-tenant;
 - papéis e permissões;
+- vínculos BusinessUser;
+- capabilities de autorização tenant/business-scoped;
 - contexto do tenant atual.
 
 Não é responsável por:
@@ -51,6 +53,7 @@ Expõe contratos como:
 - `GetCurrentTenant()`
 - `GetCurrentUser()`
 - `HasPermission()`
+- `GetCurrentBusinessUser()`
 - `IsTenantActive()`
 
 ---
@@ -517,7 +520,31 @@ Não decide plano comercial nem bloqueio automaticamente sem regra explícita do
 
 ---
 
-### 3.15 Audit & Observability
+### 3.15 Cashier / Caixa operacional
+
+Capacidade operacional para registrar atendimento e pagamento presencial sem transformar a plataforma em um PDV/ERP.
+
+Responsável por:
+- suportar fluxo walk-in usando o mesmo Scheduling;
+- permitir que usuário autorizado consulte/crie Appointment presencial;
+- registrar pagamento integral recebido no estabelecimento;
+- registrar método e canal do pagamento;
+- preservar ator, timestamp e contexto para auditoria.
+
+Não é responsável por:
+- financeiro gerencial e analytics;
+- estoque;
+- sangria/suprimento;
+- TEF;
+- emissão fiscal;
+- conciliação bancária;
+- processamento de cartão de maquininha externa.
+
+Autorização baseline: `OWNER`, `MANAGER` e `RECEPTIONIST` podem receber capabilities de caixa; acesso ao financeiro gerencial permanece separado.
+
+A confirmação de pagamento presencial é ação humana autenticada/autorizada. Conversation/AI Gateway não pode executá-la autonomamente.
+
+### 3.16 Audit & Observability
 
 Capacidade transversal responsável por:
 
