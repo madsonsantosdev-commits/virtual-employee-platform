@@ -8,7 +8,8 @@ using VirtualEmployee.Infrastructure.Businesses;
 using VirtualEmployee.Infrastructure.Locations;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
-
+using VirtualEmployee.Application.Services;
+using VirtualEmployee.Infrastructure.Services;
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -36,6 +37,10 @@ public static class DependencyInjection
         services.AddScoped<ILocationWriteService, LocationWriteService>();
         services.AddScoped<IBusinessReadService, BusinessReadService>();
         services.AddScoped<IBusinessWriteService, BusinessWriteService>();
+        services.AddScoped<ILocationReadService, LocationReadService>();
+        services.AddScoped<ILocationWriteService, LocationWriteService>();
+        services.AddScoped<IServiceReadService, ServiceReadService>();
+        services.AddScoped<IServiceWriteService, ServiceWriteService>();
 
         return services;
     }
