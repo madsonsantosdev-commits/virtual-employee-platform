@@ -10,12 +10,20 @@ using VirtualEmployee.Application.LocationServices.GetLocationServices;
 using VirtualEmployee.Application.LocationServices.ReplaceLocationServices;
 using VirtualEmployee.Api.Endpoints;
 using VirtualEmployee.Api.Middleware;
+using VirtualEmployee.Api.Serialization;
 using VirtualEmployee.Infrastructure;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenAPI
 builder.Services.AddOpenApi();
+
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(
+        new JsonStringEnumConverter(new UpperCaseJsonNamingPolicy()));
+});
 
 // Application use cases
 builder.Services.AddScoped<GetLocationsHandler>();
