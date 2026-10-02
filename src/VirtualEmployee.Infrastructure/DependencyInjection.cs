@@ -4,12 +4,15 @@ using Microsoft.Extensions.DependencyInjection;
 using VirtualEmployee.Application.Businesses;
 using VirtualEmployee.Application.Common.Tenancy;
 using VirtualEmployee.Application.Locations;
+using VirtualEmployee.Application.LocationServices;
+using VirtualEmployee.Application.Services;
 using VirtualEmployee.Infrastructure.Businesses;
 using VirtualEmployee.Infrastructure.Locations;
+using VirtualEmployee.Infrastructure.LocationServices;
 using VirtualEmployee.Infrastructure.Persistence;
-using VirtualEmployee.Infrastructure.Tenancy;
-using VirtualEmployee.Application.Services;
 using VirtualEmployee.Infrastructure.Services;
+using VirtualEmployee.Infrastructure.Tenancy;
+
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -33,14 +36,22 @@ public static class DependencyInjection
         services.AddScoped<ITenantContextInitializer>(serviceProvider =>
             serviceProvider.GetRequiredService<TenantContext>());
 
-        services.AddScoped<ILocationReadService, LocationReadService>();
-        services.AddScoped<ILocationWriteService, LocationWriteService>();
         services.AddScoped<IBusinessReadService, BusinessReadService>();
         services.AddScoped<IBusinessWriteService, BusinessWriteService>();
+
         services.AddScoped<ILocationReadService, LocationReadService>();
         services.AddScoped<ILocationWriteService, LocationWriteService>();
+
         services.AddScoped<IServiceReadService, ServiceReadService>();
         services.AddScoped<IServiceWriteService, ServiceWriteService>();
+
+        services.AddScoped<
+            ILocationServiceReadService,
+            LocationServiceReadService>();
+
+        services.AddScoped<
+            ILocationServiceWriteService,
+            LocationServiceWriteService>();
 
         return services;
     }

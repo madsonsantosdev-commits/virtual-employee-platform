@@ -6,6 +6,8 @@ using VirtualEmployee.Application.Businesses.UpdateBusiness;
 using VirtualEmployee.Application.Services.CreateService;
 using VirtualEmployee.Application.Services.GetServices;
 using VirtualEmployee.Application.Services.UpdateService;
+using VirtualEmployee.Application.LocationServices.GetLocationServices;
+using VirtualEmployee.Application.LocationServices.ReplaceLocationServices;
 using VirtualEmployee.Api.Endpoints;
 using VirtualEmployee.Api.Middleware;
 using VirtualEmployee.Infrastructure;
@@ -26,6 +28,8 @@ builder.Services.AddScoped<GetServicesHandler>();
 builder.Services.AddScoped<GetServiceByIdHandler>();
 builder.Services.AddScoped<CreateServiceHandler>();
 builder.Services.AddScoped<UpdateServiceHandler>();
+builder.Services.AddScoped<GetLocationServicesHandler>();
+builder.Services.AddScoped<ReplaceLocationServicesHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
