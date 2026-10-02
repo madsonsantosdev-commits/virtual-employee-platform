@@ -155,35 +155,93 @@ A atualização busca a Location através do `TenantContext` e do Global Query F
 MVP cria uma Location no onboarding, mas contratos não assumem que ela será sempre única.
 
 ## 3. Services, Combos e disponibilidade por Location
+
 `GET /services?active=true&locationId=<uuid>`
+
 `POST /services`, `PUT /services/{serviceId}`.
 
-Service pertence ao Business e é a fonte comercial de preço/duração no MVP. `serviceType` é `SINGLE` ou `COMBO` e é imutável após criação; cadastro incorreto deve ser desativado e recriado.
+Service pertence ao Business e é a fonte comercial de preço/duração no MVP. `serviceType` é representado no contrato JSON como `"SINGLE"` ou `"COMBO"` e é imutável após criação; cadastro incorreto deve ser desativado e recriado.
 
 SINGLE:
+
 ```json
-{"name":"Corte Masculino","serviceType":"SINGLE","price":50.00,"durationMinutes":30}
+{
+  "name": "Corte Masculino",
+  "serviceType": "SINGLE",
+  "price": 50.00,
+  "durationMinutes": 30
+}
 ```
 
 COMBO:
+
 ```json
 {
-  "name":"Corte + Barba",
-  "serviceType":"COMBO",
-  "price":80.00,
-  "durationMinutes":60,
-  "componentServiceIds":["<corte-id>","<barba-id>"]
+  "name": "Corte + Barba",
+  "serviceType": "COMBO",
+  "price": 80.00,
+  "durationMinutes": 60,
+  "componentServiceIds": [
+    "<corte-id>",
+    "<barba-id>"
+  ]
 }
 ```
 
 COMBO possui preço/duração próprios. Todos os componentes devem existir, pertencer ao mesmo Business, ser `SINGLE` e não podem ser duplicados. COMBO nunca contém outro COMBO. Violação de nesting retorna `422 COMBO_NESTING_NOT_ALLOWED`. Componentes podem ser alterados enquanto as invariantes forem preservadas; snapshots históricos de AppointmentItem permanecem autoritativos para bookings existentes.
 
-`PUT /locations/{locationId}/services/{serviceId}`
+### Disponibilidade de Services por Location
+
+`GET /locations/{locationId}/services`
+
+Retorna os Services associados à Location no contexto do tenant atual.
+
+Uma Location válida sem Services associados retorna `200 OK` com uma coleção vazia:
+
 ```json
-{"isActive":true}
+[]
 ```
 
-`LocationService` define somente disponibilidade do Service na unidade. A API v1 não aceita nem retorna override de preço/duração por Location. Preço/duração por unidade não fazem parte da Migration 001.
+Location inexistente ou pertencente a outro tenant retorna `404 Not Found`, sem revelar a existência de recursos cross-tenant.
+
+`PUT /locations/{locationId}/services`
+
+Substitui o conjunto completo de Services oferecidos pela Location.
+
+Request:
+
+```json
+{
+  "serviceIds": [
+    "<service-id-1>",
+    "<service-id-2>"
+  ]
+}
+```
+
+A operação possui semântica de replace completo:
+- Services existentes que não estiverem em `serviceIds` são removidos da associação;
+- Services já associados e novamente informados são preservados;
+- novos Services são associados;
+- enviar `serviceIds: []` remove todas as associações;
+- repetir o mesmo conjunto produz o mesmo estado final.
+
+Todos os Services devem existir no tenant atual e pertencer ao mesmo Business da Location.
+
+Responses:
+- `200 OK`: conjunto de Services substituído com sucesso;
+- `400 Bad Request`: request inválido ou `serviceIds` duplicados;
+- `404 Not Found`: Location ou Service inexistente no contexto do tenant atual;
+- `409 Conflict`: Service pertence a outro Business dentro do mesmo tenant.
+
+`LocationService` representa somente a disponibilidade do Service na unidade. A existência do vínculo significa que o Service está disponível; sua remoção significa que não está disponível.
+
+No MVP, `LocationService`:
+- não possui `IsActive`;
+- não possui override de preço;
+- não possui override de duração.
+
+Preço e duração continuam sendo definidos pelo `Service`.
 
 ## 4. Professionals, Locations e Services
 `GET /professionals?active=true&locationId=<uuid>&serviceIds=<id1>,<id2>`

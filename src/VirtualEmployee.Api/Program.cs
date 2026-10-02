@@ -6,14 +6,24 @@ using VirtualEmployee.Application.Businesses.UpdateBusiness;
 using VirtualEmployee.Application.Services.CreateService;
 using VirtualEmployee.Application.Services.GetServices;
 using VirtualEmployee.Application.Services.UpdateService;
+using VirtualEmployee.Application.LocationServices.GetLocationServices;
+using VirtualEmployee.Application.LocationServices.ReplaceLocationServices;
 using VirtualEmployee.Api.Endpoints;
 using VirtualEmployee.Api.Middleware;
+using VirtualEmployee.Api.Serialization;
 using VirtualEmployee.Infrastructure;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenAPI
 builder.Services.AddOpenApi();
+
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(
+        new JsonStringEnumConverter(new UpperCaseJsonNamingPolicy()));
+});
 
 // Application use cases
 builder.Services.AddScoped<GetLocationsHandler>();
@@ -26,6 +36,8 @@ builder.Services.AddScoped<GetServicesHandler>();
 builder.Services.AddScoped<GetServiceByIdHandler>();
 builder.Services.AddScoped<CreateServiceHandler>();
 builder.Services.AddScoped<UpdateServiceHandler>();
+builder.Services.AddScoped<GetLocationServicesHandler>();
+builder.Services.AddScoped<ReplaceLocationServicesHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);

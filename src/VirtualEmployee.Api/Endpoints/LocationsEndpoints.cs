@@ -3,6 +3,10 @@ using VirtualEmployee.Application.Locations;
 using VirtualEmployee.Application.Locations.CreateLocation;
 using VirtualEmployee.Application.Locations.GetLocations;
 using VirtualEmployee.Application.Locations.UpdateLocation;
+using VirtualEmployee.Application.LocationServices;
+using VirtualEmployee.Application.LocationServices.GetLocationServices;
+using VirtualEmployee.Application.LocationServices.ReplaceLocationServices;
+using VirtualEmployee.Application.Services;
 
 namespace VirtualEmployee.Api.Endpoints;
 
@@ -161,7 +165,105 @@ public static class LocationsEndpoints
             .Produces<LocationResponse>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status404NotFound);
+                group.MapGet(
+            "/{id:guid}/services",
+            async (
+                Guid id,
+                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                GetLocationServicesHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                var services = await handler.HandleAsync(
+                    id,
+                    cancellationToken);
 
+                return services is null
+                    ? Results.NotFound()
+                    : Results.Ok(services);
+            })
+            .WithName("GetLocationServices")
+            .WithSummary("Lista os serviços oferecidos por uma unidade")
+            .WithDescription(
+                "Retorna os serviços vinculados à unidade pertencente ao tenant atual. " +
+                "Uma unidade válida sem serviços retorna uma lista vazia. " +
+                "Unidade inexistente ou pertencente a outro tenant retorna 404. " +
+                "O header X-Tenant-Id é temporário e utilizado apenas durante o desenvolvimento.")
+            .Produces<IReadOnlyList<ServiceResponse>>(
+                StatusCodes.Status200OK)
+            .Produces(
+                StatusCodes.Status400BadRequest)
+            .Produces(
+                StatusCodes.Status404NotFound);
+
+        group.MapPut(
+            "/{id:guid}/services",
+            async (
+                Guid id,
+                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                ReplaceLocationServicesRequest request,
+                ReplaceLocationServicesHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                if (request.ServiceIds is null)
+                {
+                    return Results.Problem(
+                        statusCode: StatusCodes.Status400BadRequest,
+                        title: "Invalid location services request",
+                        detail: "ServiceIds is required.");
+                }
+
+                var command = new ReplaceLocationServicesCommand(
+                    id,
+                    request.ServiceIds);
+
+                var result = await handler.HandleAsync(
+                    command,
+                    cancellationToken);
+
+                return result.Error switch
+                {
+                    LocationServiceOperationError.None =>
+                        Results.Ok(),
+
+                    LocationServiceOperationError.LocationNotFound =>
+                        Results.NotFound(),
+
+                    LocationServiceOperationError.ServiceNotFound =>
+                        Results.NotFound(),
+
+                    LocationServiceOperationError.DuplicateService =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status400BadRequest,
+                            title: "Invalid location services request",
+                            detail: "ServiceIds must not contain duplicates."),
+
+                    LocationServiceOperationError.ServiceFromAnotherBusiness =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status409Conflict,
+                            title: "Service does not belong to the location business",
+                            detail:
+                                "All services must belong to the same Business as the Location."),
+
+                    _ =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status500InternalServerError,
+                            title: "Unexpected location services error")
+                };
+            })
+            .WithName("ReplaceLocationServices")
+            .WithSummary("Substitui os serviços oferecidos por uma unidade")
+            .WithDescription(
+                "Substitui integralmente os serviços vinculados à unidade. " +
+                "Uma lista vazia remove todos os vínculos. " +
+                "Serviços duplicados retornam 400. " +
+                "Location ou Service inexistente ou pertencente a outro tenant retorna 404. " +
+                "Service pertencente a outro Business do mesmo tenant retorna 409. " +
+                "O header X-Tenant-Id é temporário e utilizado apenas durante o desenvolvimento.")
+            .Produces(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+        
         return endpoints;
     }
 }
@@ -181,3 +283,6 @@ public sealed record UpdateLocationRequest(
     bool IsActive,
     string? Phone,
     string? Address);
+
+public sealed record ReplaceLocationServicesRequest(
+    IReadOnlyList<Guid> ServiceIds);

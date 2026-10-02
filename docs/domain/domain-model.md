@@ -81,18 +81,22 @@ Franquias não serão módulo do MVP. Franqueados independentes podem futurament
 ### Service
 Service pertence ao Business e representa o catálogo comercial da marca.
 
-Campos principais: `ServiceId`, `TenantId`, `BusinessId`, nome, descrição, tipo `SINGLE|COMBO`, preço padrão, duração padrão, `RequiresPayment` e `IsActive`.
+Campos principais: `ServiceId`, `TenantId`, `BusinessId`, nome, tipo `SINGLE|COMBO`, preço padrão, duração padrão e `IsActive`.
 
 Preço/duração são definidos pelo backend; combo possui valores próprios; alterações não modificam histórico; sem combo aninhado no MVP.
 
 ### LocationService
 Define se um Service do Business está disponível em uma determinada Location.
 
-Responsabilidades:
-- habilitar/desabilitar serviço por unidade;
-- permitir evolução futura para `PriceOverride` e `DurationOverride` por unidade sem duplicar o Service.
+No MVP, `LocationService` representa somente a associação entre Location e Service:
+- a existência do vínculo significa que o Service está disponível na Location;
+- a remoção do vínculo significa que o Service não está disponível na Location;
+- não possui `IsActive`;
+- não possui override de preço ou duração;
+- Location e Service devem pertencer ao mesmo Business;
+- o vínculo é tenant-scoped.
 
-No MVP, preço e duração usados por padrão são os definidos em `Service`. Overrides podem existir no modelo como evolução, mas não precisam ser expostos na primeira UX/API.
+Preço e duração continuam sendo definidos pelo `Service`. Overrides por Location ficam como possibilidade de evolução futura, não fazendo parte do modelo/API v1 atual.
 
 ### ServiceComponent
 Composição comercial de COMBO. Componentes SINGLE; não calculam automaticamente preço/duração; sem nesting.
