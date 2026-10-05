@@ -6,6 +6,7 @@ using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Domain.BusinessTypes;
 using VirtualEmployee.Domain.Locations;
 using VirtualEmployee.Domain.Services;
+using VirtualEmployee.Domain.Professionals;
 
 namespace VirtualEmployee.Infrastructure.Persistence;
 
@@ -28,7 +29,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<Service> Services => Set<Service>();
     public DbSet<ServiceComponent> ServiceComponents => Set<ServiceComponent>();
     public DbSet<LocationService> LocationServices => Set<LocationService>();
-
+    public DbSet<Professional> Professionals => Set<Professional>();
     public Guid CurrentTenantId => _tenantContext.TenantId;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -56,6 +57,11 @@ public sealed class AppDbContext : DbContext
             .HasQueryFilter(
                 locationService =>
                     locationService.TenantId == CurrentTenantId);
+
+        modelBuilder.Entity<Professional>()
+            .HasQueryFilter(
+                professional =>
+                    professional.TenantId == CurrentTenantId);            
 
         base.OnModelCreating(modelBuilder);
     }
