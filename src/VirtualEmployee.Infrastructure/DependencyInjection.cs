@@ -5,11 +5,13 @@ using VirtualEmployee.Application.Businesses;
 using VirtualEmployee.Application.Common.Tenancy;
 using VirtualEmployee.Application.Locations;
 using VirtualEmployee.Application.LocationServices;
+using VirtualEmployee.Application.Professionals;
 using VirtualEmployee.Application.Services;
 using VirtualEmployee.Infrastructure.Businesses;
 using VirtualEmployee.Infrastructure.Locations;
 using VirtualEmployee.Infrastructure.LocationServices;
 using VirtualEmployee.Infrastructure.Persistence;
+using VirtualEmployee.Infrastructure.Professionals;
 using VirtualEmployee.Infrastructure.Services;
 using VirtualEmployee.Infrastructure.Tenancy;
 
@@ -52,6 +54,9 @@ public static class DependencyInjection
         services.AddScoped<
             ILocationServiceWriteService,
             LocationServiceWriteService>();
+
+        services.AddScoped<IProfessionalReadService, ProfessionalReadService>();
+        services.AddScoped<IProfessionalWriteService, ProfessionalWriteService>();
 
         return services;
     }

@@ -8,6 +8,9 @@ using VirtualEmployee.Application.Services.GetServices;
 using VirtualEmployee.Application.Services.UpdateService;
 using VirtualEmployee.Application.LocationServices.GetLocationServices;
 using VirtualEmployee.Application.LocationServices.ReplaceLocationServices;
+using VirtualEmployee.Application.Professionals.CreateProfessional;
+using VirtualEmployee.Application.Professionals.GetProfessionals;
+using VirtualEmployee.Application.Professionals.UpdateProfessional;
 using VirtualEmployee.Api.Endpoints;
 using VirtualEmployee.Api.Middleware;
 using VirtualEmployee.Api.Serialization;
@@ -38,6 +41,10 @@ builder.Services.AddScoped<CreateServiceHandler>();
 builder.Services.AddScoped<UpdateServiceHandler>();
 builder.Services.AddScoped<GetLocationServicesHandler>();
 builder.Services.AddScoped<ReplaceLocationServicesHandler>();
+builder.Services.AddScoped<GetProfessionalsHandler>();
+builder.Services.AddScoped<GetProfessionalByIdHandler>();
+builder.Services.AddScoped<CreateProfessionalHandler>();
+builder.Services.AddScoped<UpdateProfessionalHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
@@ -70,6 +77,7 @@ app.UseHttpsRedirection();
 app.MapLocationsEndpoints();
 app.MapBusinessEndpoints();
 app.MapServicesEndpoints();
+app.MapProfessionalsEndpoints();
 
 app.Run();
 

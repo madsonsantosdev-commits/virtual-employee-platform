@@ -6,6 +6,7 @@ using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
 using VirtualEmployee.IntegrationTests.Infrastructure;
+using VirtualEmployee.Infrastructure.Professionals;
 using Xunit;
 
 namespace VirtualEmployee.IntegrationTests.Professionals;
@@ -391,6 +392,195 @@ public sealed class ProfessionalPersistenceTests
         }
     }
 
+    [Fact]
+    public async Task ProfessionalWriteService_ShouldCreateAndUpdateProfessional()
+    {
+        var options = CreateOptions();
+
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var updatedAt = CreatedAt.AddHours(1);
+
+        try
+        {
+            await using (var setupContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId)))
+            {
+                setupContext.Tenants.Add(
+                    new Tenant(tenantId, "Tenant Professionals"));
+
+                setupContext.Businesses.Add(
+                    new Business(
+                        businessId,
+                        tenantId,
+                        BusinessTypeIds.Barbershop,
+                        "Business Professionals",
+                        CreatedAt));
+
+                await setupContext.SaveChangesAsync();
+            }
+
+            await using (var createContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId)))
+            {
+                var writeService =
+                    new ProfessionalWriteService(createContext);
+
+                Assert.True(
+                    await writeService.BusinessExistsAsync(businessId));
+
+                await writeService.AddAsync(
+                    new Professional(
+                        professionalId,
+                        tenantId,
+                        businessId,
+                        "Arthur Silva",
+                        CreatedAt));
+            }
+
+            await using (var updateContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId)))
+            {
+                var writeService =
+                    new ProfessionalWriteService(updateContext);
+
+                var professional =
+                    await writeService.GetByIdAsync(professionalId);
+
+                Assert.NotNull(professional);
+                Assert.Equal("Arthur Silva", professional.Name);
+                Assert.True(professional.IsActive);
+
+                professional.Update(
+                    "Arthur Santos",
+                    false,
+                    updatedAt);
+
+                await writeService.SaveChangesAsync();
+            }
+
+            await using (var verificationContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantId)))
+            {
+                var professional = await verificationContext.Professionals
+                    .AsNoTracking()
+                    .SingleAsync(x => x.Id == professionalId);
+
+                Assert.Equal(professionalId, professional.Id);
+                Assert.Equal(tenantId, professional.TenantId);
+                Assert.Equal(businessId, professional.BusinessId);
+                Assert.Equal("Arthur Santos", professional.Name);
+                Assert.False(professional.IsActive);
+                Assert.Equal(CreatedAt, professional.CreatedAt);
+                Assert.Equal(updatedAt, professional.UpdatedAt);
+            }
+        }
+        finally
+        {
+            await RemoveTestDataAsync(
+                options,
+                tenantId,
+                businessId,
+                professionalId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalWriteService_ShouldNotFindOtherTenantResources()
+    {
+        var options = CreateOptions();
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+        var businessBId = Guid.NewGuid();
+        var professionalBId = Guid.NewGuid();
+
+        try
+        {
+            await using (var setupContext = new AppDbContext(
+                options,
+                CreateTenantContext(tenantBId)))
+            {
+                setupContext.Tenants.AddRange(
+                    new Tenant(tenantAId, "Tenant A"),
+                    new Tenant(tenantBId, "Tenant B"));
+
+                setupContext.Businesses.Add(
+                    new Business(
+                        businessBId,
+                        tenantBId,
+                        BusinessTypeIds.Barbershop,
+                        "Business B",
+                        CreatedAt));
+
+                setupContext.Professionals.Add(
+                    new Professional(
+                        professionalBId,
+                        tenantBId,
+                        businessBId,
+                        "Professional B",
+                        CreatedAt));
+
+                await setupContext.SaveChangesAsync();
+            }
+
+            await using (var contextA = new AppDbContext(
+                options,
+                CreateTenantContext(tenantAId)))
+            {
+                var writeService = new ProfessionalWriteService(contextA);
+
+                Assert.False(
+                    await writeService.BusinessExistsAsync(businessBId));
+
+                Assert.Null(
+                    await writeService.GetByIdAsync(professionalBId));
+            }
+
+            await using (var contextB = new AppDbContext(
+                options,
+                CreateTenantContext(tenantBId)))
+            {
+                var writeService = new ProfessionalWriteService(contextB);
+
+                Assert.True(
+                    await writeService.BusinessExistsAsync(businessBId));
+
+                var professional =
+                    await writeService.GetByIdAsync(professionalBId);
+
+                Assert.NotNull(professional);
+                Assert.Equal(professionalBId, professional.Id);
+                Assert.Equal(tenantBId, professional.TenantId);
+                Assert.Equal(businessBId, professional.BusinessId);
+            }
+        }
+        finally
+        {
+            try
+            {
+                await RemoveTestDataAsync(
+                    options,
+                    tenantBId,
+                    businessBId,
+                    professionalBId);
+            }
+            finally
+            {
+                await RemoveTestDataAsync(
+                    options,
+                    tenantAId,
+                    businessBId,
+                    professionalBId);
+            }
+        }
+    }
+
     [Theory]
     [InlineData(EntityState.Added)]
     [InlineData(EntityState.Modified)]
@@ -423,6 +613,146 @@ public sealed class ProfessionalPersistenceTests
         Assert.Equal(
             "Cross-tenant data modification is not allowed.",
             exception.Message);
+    }
+
+    [Fact]
+    public async Task ProfessionalReadService_ShouldReturnOnlyCurrentTenantData()
+    {
+        var options = CreateOptions();
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+        var businessAId = Guid.NewGuid();
+        var businessBId = Guid.NewGuid();
+        var professionalAId = Guid.NewGuid();
+        var professionalBId = Guid.NewGuid();
+
+        try
+        {
+            await using (var setupA = new AppDbContext(
+                options,
+                CreateTenantContext(tenantAId)))
+            {
+                setupA.Tenants.Add(new Tenant(tenantAId, "Tenant A"));
+
+                setupA.Businesses.Add(
+                    new Business(
+                        businessAId,
+                        tenantAId,
+                        BusinessTypeIds.Barbershop,
+                        "Business A",
+                        CreatedAt));
+
+                var professionalA = new Professional(
+                    professionalAId,
+                    tenantAId,
+                    businessAId,
+                    "Professional A",
+                    CreatedAt);
+
+                professionalA.Update(
+                    "Professional A",
+                    false,
+                    CreatedAt.AddHours(1));
+
+                setupA.Professionals.Add(professionalA);
+
+                await setupA.SaveChangesAsync();
+            }
+
+            await using (var setupB = new AppDbContext(
+                options,
+                CreateTenantContext(tenantBId)))
+            {
+                setupB.Tenants.Add(new Tenant(tenantBId, "Tenant B"));
+
+                setupB.Businesses.Add(
+                    new Business(
+                        businessBId,
+                        tenantBId,
+                        BusinessTypeIds.Barbershop,
+                        "Business B",
+                        CreatedAt));
+
+                setupB.Professionals.Add(
+                    new Professional(
+                        professionalBId,
+                        tenantBId,
+                        businessBId,
+                        "Professional B",
+                        CreatedAt));
+
+                await setupB.SaveChangesAsync();
+            }
+
+            await using (var contextA = new AppDbContext(
+                options,
+                CreateTenantContext(tenantAId)))
+            {
+                var readService = new ProfessionalReadService(contextA);
+
+                var professionals = await readService.GetAllAsync();
+                var response = Assert.Single(professionals);
+
+                Assert.Equal(professionalAId, response.Id);
+                Assert.Equal(businessAId, response.BusinessId);
+                Assert.Equal("Professional A", response.Name);
+                Assert.False(response.IsActive);
+
+                var byId = await readService.GetByIdAsync(professionalAId);
+
+                Assert.NotNull(byId);
+                Assert.Equal(response, byId);
+
+                Assert.Null(
+                    await readService.GetByIdAsync(professionalBId));
+
+                Assert.Null(
+                    await readService.GetByIdAsync(Guid.NewGuid()));
+            }
+
+            await using (var contextB = new AppDbContext(
+                options,
+                CreateTenantContext(tenantBId)))
+            {
+                var readService = new ProfessionalReadService(contextB);
+
+                var professionals = await readService.GetAllAsync();
+                var response = Assert.Single(professionals);
+
+                Assert.Equal(professionalBId, response.Id);
+                Assert.Equal(businessBId, response.BusinessId);
+                Assert.Equal("Professional B", response.Name);
+                Assert.True(response.IsActive);
+
+                var byId = await readService.GetByIdAsync(professionalBId);
+
+                Assert.NotNull(byId);
+                Assert.Equal(response, byId);
+
+                Assert.Null(
+                    await readService.GetByIdAsync(professionalAId));
+            }
+        }
+        finally
+        {
+            try
+            {
+                await RemoveTestDataAsync(
+                    options,
+                    tenantAId,
+                    businessAId,
+                    professionalAId);
+            }
+            finally
+            {
+                await RemoveTestDataAsync(
+                    options,
+                    tenantBId,
+                    businessBId,
+                    professionalBId);
+            }
+        }
     }
 
     [Theory]
