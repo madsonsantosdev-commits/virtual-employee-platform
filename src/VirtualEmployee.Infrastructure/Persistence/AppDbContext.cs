@@ -30,6 +30,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<ServiceComponent> ServiceComponents => Set<ServiceComponent>();
     public DbSet<LocationService> LocationServices => Set<LocationService>();
     public DbSet<Professional> Professionals => Set<Professional>();
+    public DbSet<ProfessionalLocation> ProfessionalLocations => Set<ProfessionalLocation>();
     public Guid CurrentTenantId => _tenantContext.TenantId;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -61,7 +62,12 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Professional>()
             .HasQueryFilter(
                 professional =>
-                    professional.TenantId == CurrentTenantId);            
+                    professional.TenantId == CurrentTenantId);
+
+        modelBuilder.Entity<ProfessionalLocation>()
+            .HasQueryFilter(
+                professionalLocation =>
+                    professionalLocation.TenantId == CurrentTenantId);
 
         base.OnModelCreating(modelBuilder);
     }
