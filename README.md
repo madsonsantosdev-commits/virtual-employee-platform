@@ -41,25 +41,69 @@ O workspace contém, entre outros artefatos, as visões **Macro Architecture** e
 
 ## Status
 
-MVP em implementação.
+MVP em implementação por entregas incrementais.
 
-### Foundation
+### Fundação técnica
 
 - [x] Solution .NET 10
 - [x] Estrutura Domain / Application / Infrastructure / API
 - [x] Projetos de testes
 - [x] PostgreSQL 18 via Docker
 - [x] EF Core + Npgsql
-- [x] AppDbContext
-- [x] Primeira entidade persistida (`Tenant`)
-- [x] Migration inicial
+- [x] AppDbContext e migrations
+- [x] Persistência de Tenant
 - [x] Banco separado para testes de integração
-- [x] Primeiro teste de integração com PostgreSQL real
-- [ ] Multi-Tenancy / Tenant Isolation
-- [ ] Business / Location
-- [ ] Scheduling
-- [ ] Payments
-- [ ] WhatsApp / AI
-- [ ] PWA
+- [x] Testes de integração com PostgreSQL real
+- [x] Testes de isolamento de tenant na persistência
+- [x] Pipeline de CI configurado
 
-Projeto em fase de fechamento pré-implementação do MVP: ERD/API, privacidade/LGPD, wireframes essenciais e backlog antes da estrutura inicial da Solution .NET.
+### Negócio e catálogo
+
+- [x] Base de Business e Location
+- [x] Base de Services
+- [x] Vínculo LocationService
+- [x] Entidade Professional e persistência
+- [x] Application e serviços de leitura e escrita de Professionals
+- [x] API de Professionals: criação, listagem, consulta por ID e atualização
+- [x] Validação e isolamento entre tenants em Professionals
+- [x] Testes automatizados dos endpoints de Professionals
+- [x] Vínculo ProfessionalLocation: persistência, leitura e substituição via API
+- [x] Validação de Business e isolamento entre tenants em ProfessionalLocations
+- [ ] Vínculo ProfessionalService e regras de elegibilidade
+
+### Identidade e acesso
+
+- [x] TenantContext e filtros de consulta por tenant
+- [x] Proteções de escrita e referências entre tenants
+- [ ] Autenticação e resolução de tenant pela identidade autenticada
+- [ ] Cadastro e verificação de conta
+- [ ] Papéis e permissões de usuários internos
+
+O header `X-Tenant-Id` é um mecanismo temporário de desenvolvimento.
+A autenticação e a autorização de produção ainda estão pendentes.
+
+### Próximas capacidades do MVP
+
+- [ ] AvailabilityRule e busca de slots
+- [ ] Appointment e proteção contra agendamentos concorrentes
+- [ ] Payments e Refunds
+- [ ] Integração WhatsApp
+- [ ] Conversation Engine e AI Gateway
+- [ ] PWA
+- [ ] Dashboard e Analytics
+- [ ] SaaS Billing
+
+### Última validação local — 06/10/2026
+
+- Suíte completa: 206 testes passaram, sem falhas ou ignorados.
+- ProfessionalLocation: 5 testes de domínio, 6 de Application, 13 de persistência e 13 HTTP.
+- Validados criação, desativação, reativação e preservação das datas dos vínculos.
+- Validados payloads inválidos, recursos inexistentes, conflito de Business e isolamento entre tenants.
+- Cadastro básico de Professionals verificado no Postman em 05/10/2026.
+
+O cadastro básico de Professionals está integrado à `main`.
+ProfessionalLocations está implementado na branch `feature/professional-locations`,
+com validação automatizada concluída e integração à `main` pendente.
+
+A próxima etapa prevista é implementar ProfessionalService e as regras
+de elegibilidade, preparando a base para Scheduling.

@@ -253,6 +253,45 @@ Professional pertence ao Business.
 ```json
 {"locationIds":["<moema-id>","<tatuape-id>"]}
 ```
+### ProfessionalLocations — implementação validada em 06/10/2026
+
+As rotas implementadas usam o prefixo `/api/v1`.
+
+`GET /professionals/{professionalId}/locations`
+
+Retorna `200 OK` com uma lista de `LocationResponse`, ordenada por nome e ID.
+Inclui apenas vínculos ativos. O campo `isActive` da resposta indica o estado
+da própria Location; uma Location inativa com vínculo ativo também é retornada.
+Professional existente sem vínculos ativos retorna `[]`.
+Professional inexistente ou pertencente a outro tenant retorna `404 Not Found`.
+
+`PUT /professionals/{professionalId}/locations`
+
+Recebe `locationIds` e substitui o conjunto de vínculos ativos:
+
+- Cria os vínculos ainda inexistentes.
+- Reativa os vínculos selecionados que estavam inativos.
+- Desativa os vínculos não selecionados, preservando os registros.
+- Preserva `createdAt` dos vínculos existentes.
+- Altera `updatedAt` somente quando o estado do vínculo muda.
+- Uma lista vazia desativa todos os vínculos do Professional.
+
+Todas as Locations devem pertencer ao mesmo Business do Professional.
+As validações ocorrem antes de alterar os vínculos.
+
+| Resultado | HTTP |
+| --- | --- |
+| Substituição concluída, sem corpo de resposta | 200 |
+| `locationIds` ausente, null, com GUID vazio ou IDs duplicados | 400 |
+| Professional ou Location inexistente ou de outro tenant | 404 |
+| Location de outro Business do mesmo tenant | 409 |
+
+O header `X-Tenant-Id` é temporário para desenvolvimento.
+A gestão dos vínculos não substitui as futuras regras de elegibilidade
+e disponibilidade de Scheduling.
+
+Os filtros `active`, `locationId` e `serviceIds` previstos para a listagem
+geral de Professionals ainda não estão implementados nesta entrega.
 
 `ProfessionalLocation` define onde trabalha; `ProfessionalService` define o que executa. Quando vários serviceIds forem informados, retornar somente profissionais da Location habilitados para TODOS os Services. Para COMBO, elegibilidade é explícita em `ProfessionalService`; não é inferida pelos componentes.
 

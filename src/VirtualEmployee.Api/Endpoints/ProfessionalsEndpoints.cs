@@ -3,6 +3,10 @@ using VirtualEmployee.Application.Professionals;
 using VirtualEmployee.Application.Professionals.CreateProfessional;
 using VirtualEmployee.Application.Professionals.GetProfessionals;
 using VirtualEmployee.Application.Professionals.UpdateProfessional;
+using VirtualEmployee.Application.Locations;
+using VirtualEmployee.Application.ProfessionalLocations;
+using VirtualEmployee.Application.ProfessionalLocations.GetProfessionalLocations;
+using VirtualEmployee.Application.ProfessionalLocations.ReplaceProfessionalLocations;
 
 namespace VirtualEmployee.Api.Endpoints;
 
@@ -150,6 +154,106 @@ public static class ProfessionalsEndpoints
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status404NotFound);
 
+                group.MapGet(
+            "/{id:guid}/locations",
+            async (
+                Guid id,
+                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                GetProfessionalLocationsHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                var locations = await handler.HandleAsync(
+                    id,
+                    cancellationToken);
+
+                return locations is null
+                    ? Results.NotFound()
+                    : Results.Ok(locations);
+            })
+            .WithName("GetProfessionalLocations")
+            .WithSummary("Lista as unidades vinculadas ao profissional")
+            .WithDescription(
+                "Retorna unidades com vínculo ativo ao profissional. " +
+                "IsActive na resposta indica o estado da própria unidade. " +
+                "Profissional sem vínculos ativos retorna uma lista vazia. " +
+                "Profissional inexistente ou de outro tenant retorna 404. " +
+                "O header X-Tenant-Id é temporário para desenvolvimento.")
+            .Produces<IReadOnlyList<LocationResponse>>(
+                StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPut(
+            "/{id:guid}/locations",
+            async (
+                Guid id,
+                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                ReplaceProfessionalLocationsRequest request,
+                ReplaceProfessionalLocationsHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                if (request.LocationIds is null ||
+                    request.LocationIds.Any(locationId =>
+                        locationId == Guid.Empty))
+                {
+                    return Results.Problem(
+                        statusCode: StatusCodes.Status400BadRequest,
+                        title: "Invalid professional locations request",
+                        detail:
+                            "LocationIds is required and must not contain empty GUIDs.");
+                }
+
+                var result = await handler.HandleAsync(
+                    new ReplaceProfessionalLocationsCommand(
+                        id,
+                        request.LocationIds),
+                    cancellationToken);
+
+                return result.Error switch
+                {
+                    ProfessionalLocationOperationError.None =>
+                        Results.Ok(),
+
+                    ProfessionalLocationOperationError.ProfessionalNotFound =>
+                        Results.NotFound(),
+
+                    ProfessionalLocationOperationError.LocationNotFound =>
+                        Results.NotFound(),
+
+                    ProfessionalLocationOperationError.DuplicateLocation =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status400BadRequest,
+                            title: "Invalid professional locations request",
+                            detail: "LocationIds must not contain duplicates."),
+
+                    ProfessionalLocationOperationError.LocationFromAnotherBusiness =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status409Conflict,
+                            title: "Location does not belong to the professional business",
+                            detail:
+                                "All locations must belong to the same Business as the Professional."),
+
+                    _ =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status500InternalServerError,
+                            title: "Unexpected professional locations error")
+                };
+            })
+            .WithName("ReplaceProfessionalLocations")
+            .WithSummary("Substitui as unidades vinculadas ao profissional")
+            .WithDescription(
+                "Ativa os vínculos selecionados e desativa os demais, " +
+                "preservando os registros existentes. " +
+                "Uma lista vazia desativa todos os vínculos do profissional. " +
+                "IDs duplicados ou GUIDs vazios retornam 400. " +
+                "Professional ou Location inexistente ou de outro tenant retorna 404. " +
+                "Location de outro Business do mesmo tenant retorna 409. " +
+                "O header X-Tenant-Id é temporário para desenvolvimento.")
+            .Produces(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+
         return endpoints;
     }
 }
@@ -161,3 +265,6 @@ public sealed record CreateProfessionalRequest(
 public sealed record UpdateProfessionalRequest(
     string Name,
     bool IsActive);
+
+public sealed record ReplaceProfessionalLocationsRequest(
+    IReadOnlyList<Guid>? LocationIds);

@@ -11,6 +11,8 @@ using VirtualEmployee.Application.LocationServices.ReplaceLocationServices;
 using VirtualEmployee.Application.Professionals.CreateProfessional;
 using VirtualEmployee.Application.Professionals.GetProfessionals;
 using VirtualEmployee.Application.Professionals.UpdateProfessional;
+using VirtualEmployee.Application.ProfessionalLocations.GetProfessionalLocations;
+using VirtualEmployee.Application.ProfessionalLocations.ReplaceProfessionalLocations;
 using VirtualEmployee.Api.Endpoints;
 using VirtualEmployee.Api.Middleware;
 using VirtualEmployee.Api.Serialization;
@@ -45,6 +47,8 @@ builder.Services.AddScoped<GetProfessionalsHandler>();
 builder.Services.AddScoped<GetProfessionalByIdHandler>();
 builder.Services.AddScoped<CreateProfessionalHandler>();
 builder.Services.AddScoped<UpdateProfessionalHandler>();
+builder.Services.AddScoped<GetProfessionalLocationsHandler>();
+builder.Services.AddScoped<ReplaceProfessionalLocationsHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
