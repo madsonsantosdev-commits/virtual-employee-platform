@@ -7,6 +7,10 @@ using VirtualEmployee.Application.Locations;
 using VirtualEmployee.Application.ProfessionalLocations;
 using VirtualEmployee.Application.ProfessionalLocations.GetProfessionalLocations;
 using VirtualEmployee.Application.ProfessionalLocations.ReplaceProfessionalLocations;
+using VirtualEmployee.Application.Services;
+using VirtualEmployee.Application.ProfessionalServices;
+using VirtualEmployee.Application.ProfessionalServices.GetProfessionalServices;
+using VirtualEmployee.Application.ProfessionalServices.ReplaceProfessionalServices;
 
 namespace VirtualEmployee.Api.Endpoints;
 
@@ -17,27 +21,6 @@ public static class ProfessionalsEndpoints
     {
         var group = endpoints.MapGroup("/api/v1/professionals")
             .WithTags("Professionals");
-
-        group.MapGet(
-            "/",
-            async (
-                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
-                GetProfessionalsHandler handler,
-                CancellationToken cancellationToken) =>
-            {
-                var professionals = await handler.HandleAsync(
-                    cancellationToken);
-
-                return Results.Ok(professionals);
-            })
-            .WithName("GetProfessionals")
-            .WithSummary("Lista os profissionais do tenant atual")
-            .WithDescription(
-                "Retorna profissionais ativos e inativos do tenant atual. " +
-                "O header X-Tenant-Id é temporário para desenvolvimento.")
-            .Produces<IReadOnlyList<ProfessionalResponse>>(
-                StatusCodes.Status200OK)
-            .Produces(StatusCodes.Status400BadRequest);
 
         group.MapGet(
             "/{id:guid}",
@@ -154,7 +137,7 @@ public static class ProfessionalsEndpoints
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status404NotFound);
 
-                group.MapGet(
+        group.MapGet(
             "/{id:guid}/locations",
             async (
                 Guid id,
@@ -254,6 +237,151 @@ public static class ProfessionalsEndpoints
             .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status409Conflict);
 
+        group.MapGet("/{id:guid}/services",
+            async (
+                Guid id,
+                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                GetProfessionalServicesHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                var services = await handler.HandleAsync(
+                    id,
+                    cancellationToken);
+
+                return services is null
+                    ? Results.NotFound()
+                    : Results.Ok(services);
+            })
+            .WithName("GetProfessionalServices")
+            .WithSummary("Lista os serviços vinculados ao profissional")
+            .WithDescription(
+                "Retorna serviços com vínculo ativo, ordenados por nome e ID. " +
+                "IsActive na resposta indica o estado do próprio serviço. " +
+                "Profissional sem vínculos ativos retorna uma lista vazia. " +
+                "Profissional inexistente ou de outro tenant retorna 404. " +
+                "O header X-Tenant-Id é temporário para desenvolvimento.")
+            .Produces<IReadOnlyList<ServiceResponse>>(
+                StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status404NotFound);
+
+        group.MapPut("/{id:guid}/services",
+            async (
+                Guid id,
+                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                ReplaceProfessionalServicesRequest request,
+                ReplaceProfessionalServicesHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                if (request.ServiceIds is null ||
+                    request.ServiceIds.Any(serviceId =>
+                        serviceId == Guid.Empty))
+                {
+                    return Results.Problem(
+                        statusCode: StatusCodes.Status400BadRequest,
+                        title: "Invalid professional services request",
+                        detail:
+                            "ServiceIds is required and must not contain empty GUIDs.");
+                }
+
+                var result = await handler.HandleAsync(
+                    new ReplaceProfessionalServicesCommand(
+                        id,
+                        request.ServiceIds),
+                    cancellationToken);
+
+                return result.Error switch
+                {
+                    ProfessionalServiceOperationError.None =>
+                        Results.Ok(),
+
+                    ProfessionalServiceOperationError.ProfessionalNotFound =>
+                        Results.NotFound(),
+
+                    ProfessionalServiceOperationError.ServiceNotFound =>
+                        Results.NotFound(),
+
+                    ProfessionalServiceOperationError.DuplicateService =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status400BadRequest,
+                            title: "Invalid professional services request",
+                            detail: "ServiceIds must not contain duplicates."),
+
+                    ProfessionalServiceOperationError.ServiceFromAnotherBusiness =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status409Conflict,
+                            title: "Service does not belong to the professional business",
+                            detail:
+                                "All services must belong to the same Business as the Professional."),
+
+                    _ =>
+                        Results.Problem(
+                            statusCode: StatusCodes.Status500InternalServerError,
+                            title: "Unexpected professional services error")
+                };
+            })
+            .WithName("ReplaceProfessionalServices")
+            .WithSummary("Substitui os serviços vinculados ao profissional")
+            .WithDescription(
+                "Ativa os vínculos selecionados e desativa os demais, " +
+                "preservando os registros existentes. " +
+                "Uma lista vazia desativa todos os vínculos do profissional. " +
+                "IDs duplicados ou GUIDs vazios retornam 400. " +
+                "Professional ou Service inexistente ou de outro tenant retorna 404. " +
+                "Service de outro Business do mesmo tenant retorna 409. " +
+                "A habilitação para COMBO exige vínculo explícito com seu ID. " +
+                "O header X-Tenant-Id é temporário para desenvolvimento.")
+            .Produces(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status404NotFound)
+            .Produces(StatusCodes.Status409Conflict);
+
+                        group.MapGet("/",async (
+                                [FromHeader(Name = "X-Tenant-Id")] Guid tenantId,
+                                [FromQuery] bool? active,
+                                [FromQuery] Guid? locationId,
+                                [FromQuery] Guid[]? serviceIds,
+                                GetProfessionalsHandler handler,
+                                CancellationToken cancellationToken) =>
+                            {
+                                if (locationId == Guid.Empty ||
+                                    (serviceIds is not null &&
+                                    (serviceIds.Any(id => id == Guid.Empty) ||
+                                    serviceIds.Length != serviceIds.Distinct().Count())))
+                                {
+                                    return Results.Problem(
+                                        statusCode: StatusCodes.Status400BadRequest,
+                                        title: "Invalid professional filters",
+                                        detail:
+                                            "LocationId and ServiceIds must not contain empty GUIDs. " +
+                                            "ServiceIds must not contain duplicates.");
+                                }
+
+                                var professionals = await handler.HandleAsync(
+                                    new GetProfessionalsQuery(
+                                        active,
+                                        locationId,
+                                        serviceIds),
+                                    cancellationToken);
+
+                                return Results.Ok(professionals);
+                            })
+                            .WithName("GetProfessionals")
+                            .WithSummary("Lista os profissionais do tenant atual")
+                            .WithDescription(
+                                "Permite filtrar por active, locationId e serviceIds. " +
+                                "Sem active, retorna profissionais ativos e inativos. " +
+                                "Location deve estar ativa e possuir vínculo ativo com o profissional. " +
+                                "Todos os Services informados devem estar ativos e possuir " +
+                                "vínculo explícito ativo com o profissional. " +
+                                "Quando locationId é informado, todos os Services também " +
+                                "devem estar vinculados à Location. " +
+                                "Informe vários Services repetindo o parâmetro serviceIds. " +
+                                "O header X-Tenant-Id é temporário para desenvolvimento.")
+                            .Produces<IReadOnlyList<ProfessionalResponse>>(
+                                StatusCodes.Status200OK)
+                            .Produces(StatusCodes.Status400BadRequest);
+
         return endpoints;
     }
 }
@@ -268,3 +396,6 @@ public sealed record UpdateProfessionalRequest(
 
 public sealed record ReplaceProfessionalLocationsRequest(
     IReadOnlyList<Guid>? LocationIds);
+
+public sealed record ReplaceProfessionalServicesRequest(
+    IReadOnlyList<Guid>? ServiceIds);
