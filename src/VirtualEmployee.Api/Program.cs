@@ -18,6 +18,8 @@ using VirtualEmployee.Api.Middleware;
 using VirtualEmployee.Api.Serialization;
 using VirtualEmployee.Infrastructure;
 using System.Text.Json.Serialization;
+using VirtualEmployee.Application.ProfessionalServices.GetProfessionalServices;
+using VirtualEmployee.Application.ProfessionalServices.ReplaceProfessionalServices;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -49,6 +51,8 @@ builder.Services.AddScoped<CreateProfessionalHandler>();
 builder.Services.AddScoped<UpdateProfessionalHandler>();
 builder.Services.AddScoped<GetProfessionalLocationsHandler>();
 builder.Services.AddScoped<ReplaceProfessionalLocationsHandler>();
+builder.Services.AddScoped<GetProfessionalServicesHandler>();
+builder.Services.AddScoped<ReplaceProfessionalServicesHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);

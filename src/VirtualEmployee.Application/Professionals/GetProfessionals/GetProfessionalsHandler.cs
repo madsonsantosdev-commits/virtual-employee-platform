@@ -13,6 +13,17 @@ public sealed class GetProfessionalsHandler
     public Task<IReadOnlyList<ProfessionalResponse>> HandleAsync(
         CancellationToken cancellationToken = default)
     {
-        return _professionalReadService.GetAllAsync(cancellationToken);
+        return HandleAsync(
+            new GetProfessionalsQuery(),
+            cancellationToken);
+    }
+
+    public Task<IReadOnlyList<ProfessionalResponse>> HandleAsync(
+        GetProfessionalsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        return _professionalReadService.GetAllAsync(
+            query,
+            cancellationToken);
     }
 }

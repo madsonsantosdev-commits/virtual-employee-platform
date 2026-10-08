@@ -8,6 +8,8 @@ using VirtualEmployee.Application.LocationServices;
 using VirtualEmployee.Application.Professionals;
 using VirtualEmployee.Application.Services;
 using VirtualEmployee.Application.ProfessionalLocations;
+using VirtualEmployee.Application.ProfessionalServices;
+using VirtualEmployee.Infrastructure.ProfessionalServices;
 using VirtualEmployee.Infrastructure.ProfessionalLocations;
 using VirtualEmployee.Infrastructure.Businesses;
 using VirtualEmployee.Infrastructure.Locations;
@@ -58,6 +60,9 @@ public static class DependencyInjection
 
         services.AddScoped<IProfessionalLocationWriteService, ProfessionalLocationWriteService>();
         services.AddScoped<IProfessionalLocationReadService, ProfessionalLocationReadService>();
+
+        services.AddScoped<IProfessionalServiceReadService, ProfessionalServiceReadService>();
+        services.AddScoped<IProfessionalServiceWriteService, ProfessionalServiceWriteService>();
 
         return services;
     }

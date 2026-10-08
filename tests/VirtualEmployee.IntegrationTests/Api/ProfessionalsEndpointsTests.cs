@@ -1,4 +1,6 @@
 using System.Net;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -16,6 +18,8 @@ using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
 using VirtualEmployee.IntegrationTests.Infrastructure;
+using VirtualEmployee.Application.Services;
+using VirtualEmployee.Domain.Services;
 
 namespace VirtualEmployee.IntegrationTests.Api;
 
@@ -565,6 +569,274 @@ public sealed class ProfessionalsEndpointsTests
             await CleanupAsync(tenantId);
         }
     }
+
+    [Fact]
+    public async Task ProfessionalServices_WithValidServices_ShouldReplaceAndReturnOrderedList()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceAId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Services.AddRange(
+                    new Service(
+                        serviceAId,
+                        tenantId,
+                        businessId,
+                        "Service A",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt),
+                    new Service(
+                        serviceBId,
+                        tenantId,
+                        businessId,
+                        "Service B",
+                        ServiceType.Single,
+                        150m,
+                        90,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+
+            using var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            var route =
+                $"/api/v1/professionals/{professionalId}/services";
+
+            using var putResponse = await client.PutAsJsonAsync(
+                route,
+                new
+                {
+                    serviceIds = new[] { serviceBId, serviceAId }
+                });
+
+            Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+            Assert.Empty(await putResponse.Content.ReadAsStringAsync());
+
+            using var getResponse = await client.GetAsync(route);
+
+            Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+
+            var jsonOptions = new JsonSerializerOptions(
+                JsonSerializerDefaults.Web);
+
+            jsonOptions.Converters.Add(
+                new JsonStringEnumConverter());
+
+            var services = await getResponse.Content
+                .ReadFromJsonAsync<List<ServiceResponse>>(jsonOptions);
+
+            Assert.NotNull(services);
+            Assert.Equal(2, services.Count);
+
+            Assert.Equal(
+                new[] { serviceAId, serviceBId },
+                services.Select(service => service.Id).ToArray());
+
+            Assert.Equal("Service A", services[0].Name);
+            Assert.Equal(100m, services[0].Price);
+            Assert.Equal(60, services[0].DurationMinutes);
+
+            Assert.Equal("Service B", services[1].Name);
+            Assert.Equal(150m, services[1].Price);
+            Assert.Equal(90, services[1].DurationMinutes);
+
+            Assert.All(services, service =>
+            {
+                Assert.Equal(businessId, service.BusinessId);
+                Assert.Equal(ServiceType.Single, service.ServiceType);
+                Assert.True(service.IsActive);
+                Assert.Empty(service.ComponentServiceIds);
+            });
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId));
+
+            var links = await verificationContext.ProfessionalServices
+                .AsNoTracking()
+                .Where(link => link.ProfessionalId == professionalId)
+                .ToListAsync();
+
+            Assert.Equal(2, links.Count);
+            Assert.Contains(links, link => link.ServiceId == serviceAId);
+            Assert.Contains(links, link => link.ServiceId == serviceBId);
+
+            Assert.All(links, link =>
+            {
+                Assert.Equal(tenantId, link.TenantId);
+                Assert.True(link.IsActive);
+                Assert.Equal(link.CreatedAt, link.UpdatedAt);
+            });
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalServices_ShouldDeactivateAndReactivateLinks()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Services.Add(
+                    new Service(
+                        serviceId,
+                        tenantId,
+                        businessId,
+                        "Service",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            var route =
+                $"/api/v1/professionals/{professionalId}/services";
+
+            using var createResponse = await client.PutAsJsonAsync(
+                route,
+                new { serviceIds = new[] { serviceId } });
+
+            Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+
+            DateTimeOffset originalCreatedAt;
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                var link = await context.ProfessionalServices
+                    .AsNoTracking()
+                    .SingleAsync(x =>
+                        x.ProfessionalId == professionalId &&
+                        x.ServiceId == serviceId);
+
+                Assert.True(link.IsActive);
+                originalCreatedAt = link.CreatedAt;
+            }
+
+            using var deactivateResponse = await client.PutAsJsonAsync(
+                route,
+                new { serviceIds = Array.Empty<Guid>() });
+
+            Assert.Equal(HttpStatusCode.OK, deactivateResponse.StatusCode);
+
+            using var emptyResponse = await client.GetAsync(route);
+
+            Assert.Equal(HttpStatusCode.OK, emptyResponse.StatusCode);
+
+            var jsonOptions = new JsonSerializerOptions(
+                JsonSerializerDefaults.Web);
+
+            jsonOptions.Converters.Add(
+                new JsonStringEnumConverter());
+
+            var emptyServices = await emptyResponse.Content
+                .ReadFromJsonAsync<List<ServiceResponse>>(jsonOptions);
+
+            Assert.NotNull(emptyServices);
+            Assert.Empty(emptyServices);
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                var link = await context.ProfessionalServices
+                    .AsNoTracking()
+                    .SingleAsync(x =>
+                        x.ProfessionalId == professionalId &&
+                        x.ServiceId == serviceId);
+
+                Assert.False(link.IsActive);
+                Assert.Equal(originalCreatedAt, link.CreatedAt);
+            }
+
+            using var reactivateResponse = await client.PutAsJsonAsync(
+                route,
+                new { serviceIds = new[] { serviceId } });
+
+            Assert.Equal(HttpStatusCode.OK, reactivateResponse.StatusCode);
+
+            using var finalResponse = await client.GetAsync(route);
+
+            Assert.Equal(HttpStatusCode.OK, finalResponse.StatusCode);
+
+            var finalServices = await finalResponse.Content
+                .ReadFromJsonAsync<List<ServiceResponse>>(jsonOptions);
+
+            Assert.NotNull(finalServices);
+
+            var service = Assert.Single(finalServices);
+            Assert.Equal(serviceId, service.Id);
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId));
+
+            var links = await verificationContext.ProfessionalServices
+                .AsNoTracking()
+                .Where(x => x.ProfessionalId == professionalId)
+                .ToListAsync();
+
+            var persistedLink = Assert.Single(links);
+
+            Assert.Equal(serviceId, persistedLink.ServiceId);
+            Assert.True(persistedLink.IsActive);
+            Assert.Equal(originalCreatedAt, persistedLink.CreatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
     private async Task SeedAsync(
         Guid tenantId,
         Guid businessId,
@@ -597,50 +869,6 @@ public sealed class ProfessionalsEndpointsTests
                 CreatedAt));
 
         await context.SaveChangesAsync();
-    }
-
-    private async Task CleanupAsync(Guid tenantId)
-    {
-        await using var context = new AppDbContext(
-            CreateOptions(),
-            CreateTenantContext(tenantId));
-
-        var links = await context.ProfessionalLocations
-            .Where(x => x.TenantId == tenantId)
-            .ToListAsync();
-
-        context.ProfessionalLocations.RemoveRange(links);
-        await context.SaveChangesAsync();
-
-        var professionals = await context.Professionals
-            .Where(x => x.TenantId == tenantId)
-            .ToListAsync();
-
-        context.Professionals.RemoveRange(professionals);
-        await context.SaveChangesAsync();
-
-        var locations = await context.Locations
-            .Where(x => x.TenantId == tenantId)
-            .ToListAsync();
-
-        context.Locations.RemoveRange(locations);
-        await context.SaveChangesAsync();
-
-        var businesses = await context.Businesses
-            .Where(x => x.TenantId == tenantId)
-            .ToListAsync();
-
-        context.Businesses.RemoveRange(businesses);
-        await context.SaveChangesAsync();
-
-        var tenant = await context.Tenants
-            .SingleOrDefaultAsync(x => x.Id == tenantId);
-
-        if (tenant is not null)
-        {
-            context.Tenants.Remove(tenant);
-            await context.SaveChangesAsync();
-        }
     }
 
     [Fact]
@@ -1282,6 +1510,1499 @@ public sealed class ProfessionalsEndpointsTests
         }
     }
 
+    [Fact]
+    public async Task ProfessionalServices_WithUnknownProfessional_ShouldReturnNotFound()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var existingProfessionalId = Guid.NewGuid();
+        var unknownProfessionalId = Guid.NewGuid();
+        var serviceId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                existingProfessionalId,
+                "Existing Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Services.Add(
+                    new Service(
+                        serviceId,
+                        tenantId,
+                        businessId,
+                        "Service",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            var route =
+                $"/api/v1/professionals/{unknownProfessionalId}/services";
+
+            using var getResponse = await client.GetAsync(route);
+
+            Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
+
+            using var putResponse = await client.PutAsJsonAsync(
+                route,
+                new { serviceIds = new[] { serviceId } });
+
+            Assert.Equal(HttpStatusCode.NotFound, putResponse.StatusCode);
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId));
+
+            Assert.False(
+                await verificationContext.ProfessionalServices
+                    .AnyAsync(x => x.TenantId == tenantId));
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalServices_WithUnknownService_ShouldReturnNotFoundAndPreserveLinks()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceId = Guid.NewGuid();
+        var unknownServiceId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Services.Add(
+                    new Service(
+                        serviceId,
+                        tenantId,
+                        businessId,
+                        "Service",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ProfessionalServices.Add(
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var response = await client.PutAsJsonAsync(
+                $"/api/v1/professionals/{professionalId}/services",
+                new
+                {
+                    serviceIds = new[] { serviceId, unknownServiceId }
+                });
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId));
+
+            var links = await verificationContext.ProfessionalServices
+                .AsNoTracking()
+                .Where(x => x.ProfessionalId == professionalId)
+                .ToListAsync();
+
+            var persistedLink = Assert.Single(links);
+
+            Assert.Equal(serviceId, persistedLink.ServiceId);
+            Assert.True(persistedLink.IsActive);
+            Assert.Equal(CreatedAt, persistedLink.CreatedAt);
+            Assert.Equal(CreatedAt, persistedLink.UpdatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalServices_WithProfessionalFromAnotherTenant_ShouldReturnNotFoundAndPreserveLinks()
+    {
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+        var businessAId = Guid.NewGuid();
+        var businessBId = Guid.NewGuid();
+        var professionalAId = Guid.NewGuid();
+        var professionalBId = Guid.NewGuid();
+        var serviceAId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantAId,
+                businessAId,
+                professionalAId,
+                "Professional A");
+
+            await SeedAsync(
+                tenantBId,
+                businessBId,
+                professionalBId,
+                "Professional B");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantAId)))
+            {
+                context.Services.Add(
+                    new Service(
+                        serviceAId,
+                        tenantAId,
+                        businessAId,
+                        "Service A",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantBId)))
+            {
+                context.Services.Add(
+                    new Service(
+                        serviceBId,
+                        tenantBId,
+                        businessBId,
+                        "Service B",
+                        ServiceType.Single,
+                        150m,
+                        90,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ProfessionalServices.Add(
+                    new ProfessionalService(
+                        tenantBId,
+                        professionalBId,
+                        serviceBId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantAId.ToString());
+
+            var route =
+                $"/api/v1/professionals/{professionalBId}/services";
+
+            using var getResponse = await client.GetAsync(route);
+
+            Assert.Equal(HttpStatusCode.NotFound, getResponse.StatusCode);
+
+            using var putResponse = await client.PutAsJsonAsync(
+                route,
+                new { serviceIds = new[] { serviceAId } });
+
+            Assert.Equal(HttpStatusCode.NotFound, putResponse.StatusCode);
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantBId));
+
+            var links = await verificationContext.ProfessionalServices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x =>
+                    x.TenantId == tenantAId ||
+                    x.TenantId == tenantBId)
+                .ToListAsync();
+
+            var persistedLink = Assert.Single(links);
+
+            Assert.Equal(tenantBId, persistedLink.TenantId);
+            Assert.Equal(professionalBId, persistedLink.ProfessionalId);
+            Assert.Equal(serviceBId, persistedLink.ServiceId);
+            Assert.True(persistedLink.IsActive);
+            Assert.Equal(CreatedAt, persistedLink.CreatedAt);
+            Assert.Equal(CreatedAt, persistedLink.UpdatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(tenantAId);
+            await CleanupAsync(tenantBId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalServices_WithServiceFromAnotherTenant_ShouldReturnNotFoundAndPreserveLinks()
+    {
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+        var businessAId = Guid.NewGuid();
+        var businessBId = Guid.NewGuid();
+        var professionalAId = Guid.NewGuid();
+        var professionalBId = Guid.NewGuid();
+        var serviceAId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantAId,
+                businessAId,
+                professionalAId,
+                "Professional A");
+
+            await SeedAsync(
+                tenantBId,
+                businessBId,
+                professionalBId,
+                "Professional B");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantAId)))
+            {
+                context.Services.Add(
+                    new Service(
+                        serviceAId,
+                        tenantAId,
+                        businessAId,
+                        "Service A",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ProfessionalServices.Add(
+                    new ProfessionalService(
+                        tenantAId,
+                        professionalAId,
+                        serviceAId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantBId)))
+            {
+                context.Services.Add(
+                    new Service(
+                        serviceBId,
+                        tenantBId,
+                        businessBId,
+                        "Service B",
+                        ServiceType.Single,
+                        150m,
+                        90,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantAId.ToString());
+
+            using var response = await client.PutAsJsonAsync(
+                $"/api/v1/professionals/{professionalAId}/services",
+                new
+                {
+                    serviceIds = new[] { serviceAId, serviceBId }
+                });
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantAId));
+
+            var links = await verificationContext.ProfessionalServices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x =>
+                    x.TenantId == tenantAId ||
+                    x.TenantId == tenantBId)
+                .ToListAsync();
+
+            var persistedLink = Assert.Single(links);
+
+            Assert.Equal(tenantAId, persistedLink.TenantId);
+            Assert.Equal(professionalAId, persistedLink.ProfessionalId);
+            Assert.Equal(serviceAId, persistedLink.ServiceId);
+            Assert.True(persistedLink.IsActive);
+            Assert.Equal(CreatedAt, persistedLink.CreatedAt);
+            Assert.Equal(CreatedAt, persistedLink.UpdatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(tenantAId);
+            await CleanupAsync(tenantBId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalServices_WithServiceFromAnotherBusiness_ShouldReturnConflictAndPreserveLinks()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var anotherBusinessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceId = Guid.NewGuid();
+        var anotherServiceId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Businesses.Add(new Business(
+                    anotherBusinessId,
+                    tenantId,
+                    BusinessTypeIds.Barbershop,
+                    "Another Business",
+                    CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.Services.AddRange(
+                    new Service(
+                        serviceId,
+                        tenantId,
+                        businessId,
+                        "Original Service",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt),
+                    new Service(
+                        anotherServiceId,
+                        tenantId,
+                        anotherBusinessId,
+                        "Another Business Service",
+                        ServiceType.Single,
+                        150m,
+                        90,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ProfessionalServices.Add(
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var response = await client.PutAsJsonAsync(
+                $"/api/v1/professionals/{professionalId}/services",
+                new
+                {
+                    serviceIds = new[]
+                    {
+                        serviceId,
+                        anotherServiceId
+                    }
+                });
+
+            Assert.Equal(
+                HttpStatusCode.Conflict,
+                response.StatusCode);
+
+            var problem = await response.Content
+                .ReadFromJsonAsync<JsonElement>();
+
+            Assert.Equal(
+                409,
+                problem.GetProperty("status").GetInt32());
+
+            Assert.Equal(
+                "Service does not belong to the professional business",
+                problem.GetProperty("title").GetString());
+
+            Assert.Equal(
+                "All services must belong to the same Business as the Professional.",
+                problem.GetProperty("detail").GetString());
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId));
+
+            var links = await verificationContext.ProfessionalServices
+                .AsNoTracking()
+                .Where(link => link.ProfessionalId == professionalId)
+                .ToListAsync();
+
+            var link = Assert.Single(links);
+
+            Assert.Equal(tenantId, link.TenantId);
+            Assert.Equal(professionalId, link.ProfessionalId);
+            Assert.Equal(serviceId, link.ServiceId);
+            Assert.True(link.IsActive);
+            Assert.Equal(CreatedAt, link.CreatedAt);
+            Assert.Equal(CreatedAt, link.UpdatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalServices_WithCombo_ShouldRequireExplicitLinkAndReturnOrderedComponents()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceAId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+        var comboId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Services.AddRange(
+                    new Service(
+                        serviceAId,
+                        tenantId,
+                        businessId,
+                        "Service A",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt),
+                    new Service(
+                        serviceBId,
+                        tenantId,
+                        businessId,
+                        "Service B",
+                        ServiceType.Single,
+                        150m,
+                        90,
+                        CreatedAt),
+                    new Service(
+                        comboId,
+                        tenantId,
+                        businessId,
+                        "Combo",
+                        ServiceType.Combo,
+                        230m,
+                        150,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                // Insere em ordem inversa para verificar SortOrder no GET.
+                context.ServiceComponents.AddRange(
+                    new ServiceComponent(
+                        tenantId,
+                        comboId,
+                        serviceBId,
+                        1,
+                        CreatedAt),
+                    new ServiceComponent(
+                        tenantId,
+                        comboId,
+                        serviceAId,
+                        0,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            var jsonOptions = new JsonSerializerOptions(
+                JsonSerializerDefaults.Web);
+
+            jsonOptions.Converters.Add(
+                new JsonStringEnumConverter());
+
+            using (var response = await client.PutAsJsonAsync(
+                $"/api/v1/professionals/{professionalId}/services",
+                new { serviceIds = new[] { serviceAId, serviceBId } }))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals/{professionalId}/services"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var services = await response.Content
+                    .ReadFromJsonAsync<List<ServiceResponse>>(jsonOptions);
+
+                Assert.NotNull(services);
+                Assert.Equal(2, services.Count);
+
+                Assert.Equal(
+                    new[] { serviceAId, serviceBId },
+                    services.Select(service => service.Id).ToArray());
+
+                Assert.DoesNotContain(
+                    services,
+                    service => service.Id == comboId);
+            }
+
+            using (var response = await client.PutAsJsonAsync(
+                $"/api/v1/professionals/{professionalId}/services",
+                new { serviceIds = new[] { comboId } }))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals/{professionalId}/services"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var services = await response.Content
+                    .ReadFromJsonAsync<List<ServiceResponse>>(jsonOptions);
+
+                Assert.NotNull(services);
+
+                var combo = Assert.Single(services);
+
+                Assert.Equal(comboId, combo.Id);
+                Assert.Equal(businessId, combo.BusinessId);
+                Assert.Equal(ServiceType.Combo, combo.ServiceType);
+
+                Assert.Equal(
+                    new[] { serviceAId, serviceBId },
+                    combo.ComponentServiceIds);
+            }
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId));
+
+            var links = await verificationContext.ProfessionalServices
+                .AsNoTracking()
+                .Where(link => link.ProfessionalId == professionalId)
+                .ToListAsync();
+
+            Assert.Equal(3, links.Count);
+
+            var comboLink = Assert.Single(
+                links,
+                link => link.ServiceId == comboId);
+
+            Assert.True(comboLink.IsActive);
+
+            Assert.All(
+                links.Where(link => link.ServiceId != comboId),
+                link => Assert.False(link.IsActive));
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalsFilters_WithMultipleServices_ShouldRequireAllServices()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var partialProfessionalId = Guid.NewGuid();
+        var serviceAId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Fully Qualified Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Professionals.Add(new Professional(
+                    partialProfessionalId,
+                    tenantId,
+                    businessId,
+                    "Partially Qualified Professional",
+                    CreatedAt));
+
+                context.Services.AddRange(
+                    new Service(
+                        serviceAId,
+                        tenantId,
+                        businessId,
+                        "Service A",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt),
+                    new Service(
+                        serviceBId,
+                        tenantId,
+                        businessId,
+                        "Service B",
+                        ServiceType.Single,
+                        150m,
+                        90,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ProfessionalServices.AddRange(
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceAId,
+                        CreatedAt),
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceBId,
+                        CreatedAt),
+                    new ProfessionalService(
+                        tenantId,
+                        partialProfessionalId,
+                        serviceAId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            // Ambos possuem o primeiro serviço.
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals?serviceIds={serviceAId}"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+
+                Assert.Equal(
+                    new[] { professionalId, partialProfessionalId }
+                        .OrderBy(id => id)
+                        .ToArray(),
+                    professionals
+                        .Select(professional => professional.Id)
+                        .OrderBy(id => id)
+                        .ToArray());
+            }
+
+            // Apenas um possui todos os serviços solicitados.
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals?serviceIds={serviceAId}&serviceIds={serviceBId}"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+
+                var professional = Assert.Single(professionals);
+
+                Assert.Equal(professionalId, professional.Id);
+                Assert.Equal(businessId, professional.BusinessId);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalsFilters_WithResourcesFromAnotherTenant_ShouldReturnEmptyList()
+    {
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+        var businessAId = Guid.NewGuid();
+        var businessBId = Guid.NewGuid();
+        var professionalAId = Guid.NewGuid();
+        var professionalBId = Guid.NewGuid();
+        var locationBId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantAId,
+                businessAId,
+                professionalAId,
+                "Professional A");
+
+            await SeedAsync(
+                tenantBId,
+                businessBId,
+                professionalBId,
+                "Professional B");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantBId)))
+            {
+                context.Locations.Add(new Location(
+                    locationBId,
+                    tenantBId,
+                    businessBId,
+                    "Location B",
+                    "BR",
+                    "America/Sao_Paulo",
+                    CreatedAt));
+
+                context.Services.Add(new Service(
+                    serviceBId,
+                    tenantBId,
+                    businessBId,
+                    "Service B",
+                    ServiceType.Single,
+                    100m,
+                    60,
+                    CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ProfessionalLocations.Add(
+                    new ProfessionalLocation(
+                        tenantBId,
+                        professionalBId,
+                        locationBId,
+                        CreatedAt));
+
+                context.ProfessionalServices.Add(
+                    new ProfessionalService(
+                        tenantBId,
+                        professionalBId,
+                        serviceBId,
+                        CreatedAt));
+
+                context.LocationServices.Add(
+                    new LocationService(
+                        tenantBId,
+                        locationBId,
+                        serviceBId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+
+            // O proprietário consegue consultar o profissional elegível.
+            using (var ownerClient = factory.CreateClient())
+            {
+                ownerClient.DefaultRequestHeaders.Add(
+                    "X-Tenant-Id",
+                    tenantBId.ToString());
+
+                using var response = await ownerClient.GetAsync(
+                    $"/api/v1/professionals?active=true&locationId={locationBId}&serviceIds={serviceBId}");
+
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+
+                Assert.Equal(
+                    professionalBId,
+                    Assert.Single(professionals).Id);
+            }
+
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantAId.ToString());
+
+            var queries = new[]
+            {
+                $"locationId={locationBId}",
+                $"serviceIds={serviceBId}",
+                $"active=true&locationId={locationBId}&serviceIds={serviceBId}"
+            };
+
+            foreach (var query in queries)
+            {
+                using var response = await client.GetAsync(
+                    $"/api/v1/professionals?{query}");
+
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+                Assert.Empty(professionals);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(tenantAId);
+            await CleanupAsync(tenantBId);
+        }
+    }
+
+    [Fact]
+    public async Task ProfessionalsFilters_WithCombo_ShouldRequireExplicitProfessionalLink()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceAId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+        var comboId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Services.AddRange(
+                    new Service(
+                        serviceAId,
+                        tenantId,
+                        businessId,
+                        "Service A",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt),
+                    new Service(
+                        serviceBId,
+                        tenantId,
+                        businessId,
+                        "Service B",
+                        ServiceType.Single,
+                        150m,
+                        90,
+                        CreatedAt),
+                    new Service(
+                        comboId,
+                        tenantId,
+                        businessId,
+                        "Combo",
+                        ServiceType.Combo,
+                        230m,
+                        150,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ServiceComponents.AddRange(
+                    new ServiceComponent(
+                        tenantId,
+                        comboId,
+                        serviceAId,
+                        0,
+                        CreatedAt),
+                    new ServiceComponent(
+                        tenantId,
+                        comboId,
+                        serviceBId,
+                        1,
+                        CreatedAt));
+
+                context.ProfessionalServices.AddRange(
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceAId,
+                        CreatedAt),
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceBId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            // Possuir os componentes não habilita o COMBO.
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals?active=true&serviceIds={comboId}"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+                Assert.Empty(professionals);
+            }
+
+            // Substitui os componentes pelo vínculo explícito com o COMBO.
+            using (var response = await client.PutAsJsonAsync(
+                $"/api/v1/professionals/{professionalId}/services",
+                new { serviceIds = new[] { comboId } }))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals?active=true&serviceIds={comboId}"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+
+                Assert.Equal(
+                    professionalId,
+                    Assert.Single(professionals).Id);
+            }
+
+            // Habilitação para COMBO também não habilita seus componentes.
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals?active=true&serviceIds={serviceAId}&serviceIds={serviceBId}"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+                Assert.Empty(professionals);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProfessionalsFilters_WithLocationAndServices_ShouldRequireAllServicesAtLocation(
+        bool allServicesAtLocation)
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+        var serviceAId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Locations.Add(new Location(
+                    locationId,
+                    tenantId,
+                    businessId,
+                    "Location",
+                    "BR",
+                    "America/Sao_Paulo",
+                    CreatedAt));
+
+                context.Services.AddRange(
+                    new Service(
+                        serviceAId,
+                        tenantId,
+                        businessId,
+                        "Service A",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt),
+                    new Service(
+                        serviceBId,
+                        tenantId,
+                        businessId,
+                        "Service B",
+                        ServiceType.Single,
+                        150m,
+                        90,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ProfessionalLocations.Add(
+                    new ProfessionalLocation(
+                        tenantId,
+                        professionalId,
+                        locationId,
+                        CreatedAt));
+
+                context.ProfessionalServices.AddRange(
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceAId,
+                        CreatedAt),
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceBId,
+                        CreatedAt));
+
+                context.LocationServices.Add(
+                    new LocationService(
+                        tenantId,
+                        locationId,
+                        serviceAId,
+                        CreatedAt));
+
+                if (allServicesAtLocation)
+                {
+                    context.LocationServices.Add(
+                        new LocationService(
+                            tenantId,
+                            locationId,
+                            serviceBId,
+                            CreatedAt));
+                }
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            // Sem Location, o profissional possui os dois serviços.
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals?active=true&serviceIds={serviceAId}&serviceIds={serviceBId}"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+
+                Assert.Equal(
+                    professionalId,
+                    Assert.Single(professionals).Id);
+            }
+
+            // Com Location, ambos também precisam estar disponíveis nela.
+            using (var response = await client.GetAsync(
+                $"/api/v1/professionals?active=true&locationId={locationId}&serviceIds={serviceAId}&serviceIds={serviceBId}"))
+            {
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var professionals = await response.Content
+                    .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+                Assert.NotNull(professionals);
+
+                if (allServicesAtLocation)
+                {
+                    Assert.Equal(
+                        professionalId,
+                        Assert.Single(professionals).Id);
+                }
+                else
+                {
+                    Assert.Empty(professionals);
+                }
+            }
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task ProfessionalsFilters_WithService_ShouldRequireActiveServiceAndLink(
+        bool serviceActive,
+        bool linkActive)
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                var service = new Service(
+                    serviceId,
+                    tenantId,
+                    businessId,
+                    "Service",
+                    ServiceType.Single,
+                    100m,
+                    60,
+                    CreatedAt);
+
+                context.Services.Add(service);
+
+                await context.SaveChangesAsync();
+
+                service.Update(
+                    "Service",
+                    100m,
+                    60,
+                    serviceActive,
+                    CreatedAt.AddHours(1));
+
+                var link = new ProfessionalService(
+                    tenantId,
+                    professionalId,
+                    serviceId,
+                    CreatedAt);
+
+                if (!linkActive)
+                {
+                    link.Update(false, CreatedAt.AddHours(1));
+                }
+
+                context.ProfessionalServices.Add(link);
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var response = await client.GetAsync(
+                $"/api/v1/professionals?active=true&serviceIds={serviceId}");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var professionals = await response.Content
+                .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+            Assert.NotNull(professionals);
+
+            if (serviceActive && linkActive)
+            {
+                var professional = Assert.Single(professionals);
+
+                Assert.Equal(professionalId, professional.Id);
+                Assert.Equal(businessId, professional.BusinessId);
+                Assert.True(professional.IsActive);
+            }
+            else
+            {
+                Assert.Empty(professionals);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProfessionalsFilters_WithActive_ShouldReturnOnlyMatchingProfessionals(
+        bool active)
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var activeProfessionalId = Guid.NewGuid();
+        var inactiveProfessionalId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                activeProfessionalId,
+                "Active Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                var inactiveProfessional = new Professional(
+                    inactiveProfessionalId,
+                    tenantId,
+                    businessId,
+                    "Inactive Professional",
+                    CreatedAt);
+
+                inactiveProfessional.Update(
+                    "Inactive Professional",
+                    false,
+                    CreatedAt.AddHours(1));
+
+                context.Professionals.Add(inactiveProfessional);
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var response = await client.GetAsync(
+                $"/api/v1/professionals?active={active.ToString().ToLowerInvariant()}");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var professionals = await response.Content
+                .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+            Assert.NotNull(professionals);
+
+            var professional = Assert.Single(professionals);
+
+            Assert.Equal(
+                active ? activeProfessionalId : inactiveProfessionalId,
+                professional.Id);
+
+            Assert.Equal(active, professional.IsActive);
+            Assert.Equal(businessId, professional.BusinessId);
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task ProfessionalsFilters_WithLocation_ShouldRequireActiveLocationAndLink(
+        bool locationActive,
+        bool linkActive)
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                var location = new Location(
+                    locationId,
+                    tenantId,
+                    businessId,
+                    "Location",
+                    "BR",
+                    "America/Sao_Paulo",
+                    CreatedAt);
+
+                context.Locations.Add(location);
+
+                await context.SaveChangesAsync();
+
+                // Altera pelo EF para não depender da assinatura de Location.Update.
+                context.Entry(location)
+                    .Property(entity => entity.IsActive)
+                    .CurrentValue = locationActive;
+
+                var link = new ProfessionalLocation(
+                    tenantId,
+                    professionalId,
+                    locationId,
+                    CreatedAt);
+
+                if (!linkActive)
+                {
+                    link.Update(false, CreatedAt.AddHours(1));
+                }
+
+                context.ProfessionalLocations.Add(link);
+
+                // Profissional do mesmo Business, mas sem vínculo com a Location.
+                context.Professionals.Add(new Professional(
+                    Guid.NewGuid(),
+                    tenantId,
+                    businessId,
+                    "Unlinked Professional",
+                    CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var response = await client.GetAsync(
+                $"/api/v1/professionals?locationId={locationId}");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var professionals = await response.Content
+                .ReadFromJsonAsync<List<ProfessionalResponse>>();
+
+            Assert.NotNull(professionals);
+
+            if (locationActive && linkActive)
+            {
+                var professional = Assert.Single(professionals);
+
+                Assert.Equal(professionalId, professional.Id);
+                Assert.Equal(businessId, professional.BusinessId);
+            }
+            else
+            {
+                Assert.Empty(professionals);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
     [Theory]
     [InlineData("GET")]
     [InlineData("PUT")]
@@ -1649,6 +3370,236 @@ public sealed class ProfessionalsEndpointsTests
         finally
         {
             await CleanupAsync(tenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("null")]
+    [InlineData("emptyGuid")]
+    [InlineData("duplicate")]
+    public async Task ProfessionalServices_WithInvalidPayload_ShouldReturnBadRequestAndPreserveLinks(
+        string scenario)
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Services.Add(
+                    new Service(
+                        serviceId,
+                        tenantId,
+                        businessId,
+                        "Service",
+                        ServiceType.Single,
+                        100m,
+                        60,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+
+                context.ProfessionalServices.Add(
+                    new ProfessionalService(
+                        tenantId,
+                        professionalId,
+                        serviceId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            object payload = scenario switch
+            {
+                "missing" => new { },
+                "null" => new { serviceIds = (Guid[]?)null },
+                "emptyGuid" => new { serviceIds = new[] { Guid.Empty } },
+                "duplicate" => new
+                {
+                    serviceIds = new[] { serviceId, serviceId }
+                },
+                _ => throw new ArgumentOutOfRangeException(nameof(scenario))
+            };
+
+            using var response = await client.PutAsJsonAsync(
+                $"/api/v1/professionals/{professionalId}/services",
+                payload);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            var problem = await response.Content
+                .ReadFromJsonAsync<JsonElement>();
+
+            Assert.Equal(
+                "Invalid professional services request",
+                problem.GetProperty("title").GetString());
+
+            Assert.Equal(
+                400,
+                problem.GetProperty("status").GetInt32());
+
+            var expectedDetail = scenario == "duplicate"
+                ? "ServiceIds must not contain duplicates."
+                : "ServiceIds is required and must not contain empty GUIDs.";
+
+            Assert.Equal(
+                expectedDetail,
+                problem.GetProperty("detail").GetString());
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId));
+
+            var links = await verificationContext.ProfessionalServices
+                .AsNoTracking()
+                .Where(x => x.ProfessionalId == professionalId)
+                .ToListAsync();
+
+            var persistedLink = Assert.Single(links);
+
+            Assert.Equal(tenantId, persistedLink.TenantId);
+            Assert.Equal(serviceId, persistedLink.ServiceId);
+            Assert.True(persistedLink.IsActive);
+            Assert.Equal(CreatedAt, persistedLink.CreatedAt);
+            Assert.Equal(CreatedAt, persistedLink.UpdatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("active=invalid")]
+    [InlineData("locationId=invalid")]
+    [InlineData("locationId=00000000-0000-0000-0000-000000000000")]
+    [InlineData("serviceIds=invalid")]
+    [InlineData("serviceIds=00000000-0000-0000-0000-000000000000")]
+    [InlineData(
+        "serviceIds=11111111-1111-4111-8111-111111111111" +
+        "&serviceIds=11111111-1111-4111-8111-111111111111")]
+    public async Task ProfessionalsFilters_WithInvalidQuery_ShouldReturnBadRequest(
+        string queryString)
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var response = await client.GetAsync(
+                $"/api/v1/professionals?{queryString}");
+
+            Assert.Equal(
+                HttpStatusCode.BadRequest,
+                response.StatusCode);
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+    private async Task CleanupAsync(Guid tenantId)
+    {
+        await using var context = new AppDbContext(
+            CreateOptions(),
+            CreateTenantContext(tenantId));
+
+        var professionalServiceLinks = await context.ProfessionalServices
+            .Where(link => link.TenantId == tenantId)
+            .ToListAsync();
+
+        context.ProfessionalServices.RemoveRange(professionalServiceLinks);
+        await context.SaveChangesAsync();
+
+        var professionalLocationLinks = await context.ProfessionalLocations
+            .Where(link => link.TenantId == tenantId)
+            .ToListAsync();
+
+        context.ProfessionalLocations.RemoveRange(professionalLocationLinks);
+        await context.SaveChangesAsync();
+
+        var locationServiceLinks = await context.LocationServices
+            .Where(link => link.TenantId == tenantId)
+            .ToListAsync();
+
+        context.LocationServices.RemoveRange(locationServiceLinks);
+        await context.SaveChangesAsync();
+
+        var components = await context.ServiceComponents
+            .Where(component => component.TenantId == tenantId)
+            .ToListAsync();
+
+        context.ServiceComponents.RemoveRange(components);
+        await context.SaveChangesAsync();
+
+        var professionals = await context.Professionals
+            .Where(professional => professional.TenantId == tenantId)
+            .ToListAsync();
+
+        context.Professionals.RemoveRange(professionals);
+        await context.SaveChangesAsync();
+
+        var locations = await context.Locations
+            .Where(location => location.TenantId == tenantId)
+            .ToListAsync();
+
+        context.Locations.RemoveRange(locations);
+        await context.SaveChangesAsync();
+
+        var services = await context.Services
+            .Where(service => service.TenantId == tenantId)
+            .ToListAsync();
+
+        context.Services.RemoveRange(services);
+        await context.SaveChangesAsync();
+
+        var businesses = await context.Businesses
+            .Where(business => business.TenantId == tenantId)
+            .ToListAsync();
+
+        context.Businesses.RemoveRange(businesses);
+        await context.SaveChangesAsync();
+
+        var tenant = await context.Tenants
+            .SingleOrDefaultAsync(tenant => tenant.Id == tenantId);
+
+        if (tenant is not null)
+        {
+            context.Tenants.Remove(tenant);
+            await context.SaveChangesAsync();
         }
     }
     private DbContextOptions<AppDbContext> CreateOptions()

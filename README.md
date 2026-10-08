@@ -69,7 +69,7 @@ MVP em implementação por entregas incrementais.
 - [x] Testes automatizados dos endpoints de Professionals
 - [x] Vínculo ProfessionalLocation: persistência, leitura e substituição via API
 - [x] Validação de Business e isolamento entre tenants em ProfessionalLocations
-- [ ] Vínculo ProfessionalService e regras de elegibilidade
+- [x] Vínculo ProfessionalService e regras de elegibilidade
 
 ### Identidade e acesso
 
@@ -93,17 +93,17 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 06/10/2026
+### Última validação local — 08/10/2026
 
-- Suíte completa: 206 testes passaram, sem falhas ou ignorados.
-- ProfessionalLocation: 5 testes de domínio, 6 de Application, 13 de persistência e 13 HTTP.
-- Validados criação, desativação, reativação e preservação das datas dos vínculos.
-- Validados payloads inválidos, recursos inexistentes, conflito de Business e isolamento entre tenants.
-- Cadastro básico de Professionals verificado no Postman em 05/10/2026.
+- Suíte completa: 261 testes passaram, sem falhas ou ignorados.
+- Testes automatizados cobrem vínculos, mudanças de estado, preservação de datas, validações e isolamento entre tenants.
+- Validação manual no Postman e PowerShell: leitura e substituição de ProfessionalServices, filtro por todos os serviços e elegibilidade explícita de COMBO.
+- Filtro combinado de unidade e serviços validado com resultado vazio e com profissional elegível.
+- IDs duplicados no filtro retornam 400; recursos de outro tenant retornam lista vazia.
 
-O cadastro básico de Professionals está integrado à `main`.
-ProfessionalLocations está implementado na branch `feature/professional-locations`,
-com validação automatizada concluída e integração à `main` pendente.
+Professionals e ProfessionalLocations estão integrados à `main`.
+ProfessionalServices e os filtros de elegibilidade estão implementados na branch
+`feature/professional-services`, com integração à `main` pendente.
 
-A próxima etapa prevista é implementar ProfessionalService e as regras
-de elegibilidade, preparando a base para Scheduling.
+A próxima etapa prevista é implementar AvailabilityRule, preparando
+a busca de slots e o fluxo de Scheduling.

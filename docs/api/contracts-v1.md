@@ -244,7 +244,7 @@ No MVP, `LocationService`:
 Preço e duração continuam sendo definidos pelo `Service`.
 
 ## 4. Professionals, Locations e Services
-`GET /professionals?active=true&locationId=<uuid>&serviceIds=<id1>,<id2>`
+`GET /professionals?active=true&locationId=<uuid>&serviceIds=<id1>&serviceIds=<id2>`
 `POST /professionals`, `PUT /professionals/{professionalId}`.
 
 Professional pertence ao Business.
@@ -287,11 +287,52 @@ As validações ocorrem antes de alterar os vínculos.
 | Location de outro Business do mesmo tenant | 409 |
 
 O header `X-Tenant-Id` é temporário para desenvolvimento.
-A gestão dos vínculos não substitui as futuras regras de elegibilidade
-e disponibilidade de Scheduling.
+A gestão dos vínculos não substitui a consulta de elegibilidade nem a futura busca de disponibilidade de Scheduling.
 
-Os filtros `active`, `locationId` e `serviceIds` previstos para a listagem
-geral de Professionals ainda não estão implementados nesta entrega.
+### ProfessionalServices — validados em 08/10/2026
+
+As rotas usam o prefixo `/api/v1`.
+
+`GET /professionals/{professionalId}/services`
+
+Retorna `200` com uma lista de `ServiceResponse`, ordenada por nome e ID,
+incluindo os componentes dos COMBOs na ordem definida.
+Inclui apenas vínculos ativos; Services inativos com vínculo ativo também
+são retornados. `isActive` indica o estado do próprio Service.
+Professional sem vínculos ativos retorna `[]`.
+Professional inexistente ou de outro tenant retorna `404`.
+
+`PUT /professionals/{professionalId}/services`
+
+Corpo: `{"serviceIds":["<corte-id>","<barba-id>"]}`.
+
+Cria vínculos inexistentes, reativa os selecionados e desativa os não selecionados.
+Preserva os registros e `createdAt`; altera `updatedAt` apenas quando o estado muda.
+Uma lista vazia desativa todos os vínculos.
+Todos os Services devem pertencer ao mesmo Business do Professional.
+As validações ocorrem antes de alterar os vínculos.
+
+| Resultado | HTTP |
+| --- | --- |
+| Substituição concluída, sem corpo | 200 |
+| `serviceIds` ausente, null, com GUID vazio ou IDs duplicados | 400 |
+| Professional ou Service inexistente ou de outro tenant | 404 |
+| Service de outro Business do mesmo tenant | 409 |
+
+### Filtros de Professionals — validados em 08/10/2026
+
+- `active` é opcional; quando ausente, inclui profissionais ativos e inativos.
+- `locationId` exige Location ativa, do mesmo Business, com vínculo ProfessionalLocation ativo.
+- Todos os Services devem estar ativos, pertencer ao mesmo Business e possuir vínculo ProfessionalService ativo.
+- Com `locationId`, todos os Services também devem estar vinculados à Location.
+- Envie vários Services repetindo o parâmetro `serviceIds`.
+- O resultado é ordenado por nome e ID.
+- Recursos inexistentes, de outro tenant ou sem elegibilidade retornam `200` com `[]`.
+- GUIDs inválidos ou vazios, Services duplicados e `active` inválido retornam `400`.
+
+COMBO exige vínculo explícito; seus componentes não conferem elegibilidade automaticamente.
+Use `active=true` para retornar apenas profissionais ativos.
+A disponibilidade de horários ainda depende de Scheduling.
 
 `ProfessionalLocation` define onde trabalha; `ProfessionalService` define o que executa. Quando vários serviceIds forem informados, retornar somente profissionais da Location habilitados para TODOS os Services. Para COMBO, elegibilidade é explícita em `ProfessionalService`; não é inferida pelos componentes.
 
