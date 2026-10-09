@@ -337,14 +337,85 @@ A disponibilidade de horários ainda depende de Scheduling.
 `ProfessionalLocation` define onde trabalha; `ProfessionalService` define o que executa. Quando vários serviceIds forem informados, retornar somente profissionais da Location habilitados para TODOS os Services. Para COMBO, elegibilidade é explícita em `ProfessionalService`; não é inferida pelos componentes.
 
 ## 5. Availability Rules
+
+Implementação validada em 09/10/2026. As rotas usam o prefixo `/api/v1`.
+O header `X-Tenant-Id` é temporário para desenvolvimento.
+
+AvailabilityRule define janelas semanais de um Professional em uma Location.
+Os horários são locais, interpretados conforme a timezone da Location.
+
+### Consulta
+
 `GET /locations/{locationId}/professionals/{professionalId}/availability-rules`
 
-`PUT /locations/{locationId}/professionals/{professionalId}/availability-rules`
+Retorna `200` com as regras ativas, ordenadas por dia da semana,
+início, fim e ID. Sem regras ativas, retorna `[]`.
+
+Exemplo de resposta:
+
 ```json
-{"rules":[{"dayOfWeek":1,"startTime":"09:00","endTime":"12:00"},{"dayOfWeek":1,"startTime":"13:00","endTime":"18:00"}]}
+[
+  {
+    "id": "<rule-id>",
+    "dayOfWeek": 1,
+    "startTime": "09:00:00",
+    "endTime": "12:00:00"
+  }
+]
 ```
 
-AvailabilityRule é específica de Professional + Location. Timezone vem da Location.
+Location e Professional devem existir no tenant atual, pertencer ao mesmo
+Business e possuir vínculo ProfessionalLocation.
+Caso contrário, a consulta retorna `404`.
+
+A consulta administrativa permite ler regras mesmo quando Location,
+Professional ou ProfessionalLocation estão inativos.
+Isso não significa disponibilidade para agendamento.
+
+### Substituição
+
+`PUT /locations/{locationId}/professionals/{professionalId}/availability-rules`
+
+```json
+{
+  "rules": [
+    {"dayOfWeek": 1, "startTime": "09:00", "endTime": "12:00"},
+    {"dayOfWeek": 1, "startTime": "13:00", "endTime": "18:00"}
+  ]
+}
+```
+
+- `rules` é obrigatório; uma lista vazia desativa todas as regras do par.
+- Cada regra exige `dayOfWeek`, `startTime` e `endTime`.
+- `dayOfWeek` usa números de 0 (domingo) a 6 (sábado).
+- Domingo e início à meia-noite (`00:00`) são aceitos.
+- O início deve ser anterior ao fim, dentro do mesmo dia.
+- Janelas que atravessam a meia-noite não são aceitas nesta entrega.
+- São permitidas várias janelas por dia, sem sobreposição.
+- Janelas adjacentes são aceitas; janelas duplicadas são rejeitadas.
+- Location, Professional e ProfessionalLocation devem estar ativos.
+- Location e Professional devem pertencer ao mesmo Business.
+- As validações ocorrem antes de alterar a agenda.
+
+A substituição cria janelas inexistentes, reativa as selecionadas e
+desativa as omitidas, preservando os registros.
+A mesma combinação de dia, início e fim preserva o ID e `createdAt`.
+`updatedAt` muda somente quando o estado da regra muda.
+Alterar os horários desativa a janela anterior e cria ou reativa outra.
+
+| Resultado do PUT | HTTP |
+| --- | --- |
+| Substituição concluída, sem corpo de resposta | 200 |
+| Payload incompleto, dia inválido, janela inválida ou sobreposição | 400 |
+| Location, Professional ou vínculo inexistente ou de outro tenant | 404 |
+| Professional de outro Business do mesmo tenant | 409 |
+| Location, Professional ou vínculo inativo | 409 |
+
+GUIDs vazios nos parâmetros de rota retornam `400` no GET e no PUT.
+
+Esta entrega gerencia regras semanais. A busca de slots, os bloqueios
+e os conflitos com agendamentos serão implementados nas próximas etapas.
+
 
 ## 6. Schedule Blocks
 `GET /schedule-blocks?locationId=<uuid>&from=<instant>&to=<instant>&professionalId=<uuid>`

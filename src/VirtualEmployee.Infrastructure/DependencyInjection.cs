@@ -18,7 +18,8 @@ using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Professionals;
 using VirtualEmployee.Infrastructure.Services;
 using VirtualEmployee.Infrastructure.Tenancy;
-
+using VirtualEmployee.Application.AvailabilityRules;
+using VirtualEmployee.Infrastructure.AvailabilityRules;
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -63,6 +64,9 @@ public static class DependencyInjection
 
         services.AddScoped<IProfessionalServiceReadService, ProfessionalServiceReadService>();
         services.AddScoped<IProfessionalServiceWriteService, ProfessionalServiceWriteService>();
+
+        services.AddScoped<IAvailabilityRuleReadService, AvailabilityRuleReadService>();
+        services.AddScoped<IAvailabilityRuleWriteService, AvailabilityRuleWriteService>();
 
         return services;
     }

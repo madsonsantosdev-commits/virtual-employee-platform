@@ -51,6 +51,25 @@ AvailabilityRule(Location, Professional)
 - Appointments ativos(Location, Professional)
 = janelas livres
 ```
+### Implementação da agenda-base — 09/10/2026
+
+A leitura e a substituição de AvailabilityRules estão implementadas.
+A busca de slots, ScheduleBlocks e Appointments permanecem pendentes.
+
+As janelas usam dia da semana de 0 (domingo) a 6 (sábado) e horários
+locais da Location. Cada janela deve começar e terminar no mesmo dia,
+com início anterior ao fim. Janelas adjacentes são aceitas;
+sobrepostas ou duplicadas são rejeitadas.
+
+A substituição atua sobre um par Location + Professional do tenant atual.
+Exige recursos e vínculo ativos, pertencentes ao mesmo Business.
+Janelas omitidas são desativadas; janelas existentes selecionadas são
+reativadas, preservando Id e CreatedAt.
+Uma lista vazia desativa todas as janelas do par.
+
+A consulta administrativa retorna somente regras ativas, mesmo quando
+Location, Professional ou vínculo estão inativos. Essa leitura não
+representa disponibilidade para reserva.
 
 ## 5. ProfessionalService como capacidade
 ProfessionalService define capacidade. Sem Skill separada no MVP. Para N serviços, profissional deve executar TODOS.

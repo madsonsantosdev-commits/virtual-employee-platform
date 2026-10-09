@@ -84,7 +84,9 @@ A autenticação e a autorização de produção ainda estão pendentes.
 
 ### Próximas capacidades do MVP
 
-- [ ] AvailabilityRule e busca de slots
+- [x] AvailabilityRule: persistência, leitura e substituição via API
+- [x] Validações de janelas, recursos ativos, Business e isolamento entre tenants
+- [ ] Busca de slots disponíveis
 - [ ] Appointment e proteção contra agendamentos concorrentes
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -93,17 +95,19 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 08/10/2026
+### Última validação local — 09/10/2026
 
-- Suíte completa: 261 testes passaram, sem falhas ou ignorados.
-- Testes automatizados cobrem vínculos, mudanças de estado, preservação de datas, validações e isolamento entre tenants.
-- Validação manual no Postman e PowerShell: leitura e substituição de ProfessionalServices, filtro por todos os serviços e elegibilidade explícita de COMBO.
-- Filtro combinado de unidade e serviços validado com resultado vazio e com profissional elegível.
-- IDs duplicados no filtro retornam 400; recursos de outro tenant retornam lista vazia.
+- Suíte completa: 328 testes passaram, sem falhas ou ignorados.
+- AvailabilityRules: 16 testes de domínio, 16 de Application, 14 de persistência e 21 HTTP.
+- Validados horários, sobreposição, recursos inexistentes ou inativos, conflito de Business e isolamento entre tenants.
+- Validação manual no PowerShell: leitura, substituição, rejeição de sobreposição, limpeza e reativação da agenda.
+- IDs preservados na desativação e reativação das mesmas janelas.
 
-Professionals e ProfessionalLocations estão integrados à `main`.
-ProfessionalServices e os filtros de elegibilidade estão implementados na branch
-`feature/professional-services`, com integração à `main` pendente.
+Professionals, ProfessionalLocations, ProfessionalServices e os filtros
+de elegibilidade estão integrados à `main`.
 
-A próxima etapa prevista é implementar AvailabilityRule, preparando
-a busca de slots e o fluxo de Scheduling.
+AvailabilityRules está implementado na branch `feature/availability-rules`,
+com validação automatizada e manual concluída e integração à `main` pendente.
+
+A próxima etapa prevista é implementar a busca de slots disponíveis,
+considerando as regras de disponibilidade e a elegibilidade dos profissionais.
