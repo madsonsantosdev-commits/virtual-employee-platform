@@ -106,6 +106,45 @@ PK(tenant_id,location_id,service_id)
 ```
 Sem `price_override`/`duration_minutes_override` na Migration 001. Service é fonte autoritativa de preço/duração no MVP.
 
+## AvailabilityRule — implementação em 09/10/2026
+
+Detalhamento físico implementado pela migration
+`20261009143618_AddAvailabilityRules`.
+
+```text
+availability_rules
+id uuid PK
+tenant_id uuid NOT NULL
+location_id uuid NOT NULL
+professional_id uuid NOT NULL
+day_of_week integer NOT NULL
+start_time time without time zone NOT NULL
+end_time time without time zone NOT NULL
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+
+FK(tenant_id,professional_id,location_id)
+  -> professional_locations(tenant_id,professional_id,location_id)
+  ON DELETE RESTRICT
+
+CHECK(day_of_week BETWEEN 0 AND 6)
+CHECK(start_time < end_time)
+```
+
+Índices implementados:
+- `(tenant_id,location_id,professional_id,day_of_week,is_active)`
+- `(tenant_id,professional_id,location_id)`
+
+A FK garante a existência do vínculo no mesmo tenant.
+Estado ativo, coerência de Business e ausência de sobreposição
+no conjunto enviado são validados pela Application.
+O banco não possui constraint de exclusão para sobreposição dessas regras.
+
+Horários representam recorrência local; CreatedAt e UpdatedAt são
+instantes absolutos. TenantId é configurado como token de concorrência
+no EF Core, além do filtro de consulta e da validação de escrita.
+
 ## Appointment
 ```text
 appointments

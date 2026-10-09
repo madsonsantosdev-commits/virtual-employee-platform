@@ -134,6 +134,16 @@ Arthur
 - segunda: Moema
 - terça: Tatuapé
 ```
+Implementação de AvailabilityRule validada em 09/10/2026:
+
+- Campos: Id, TenantId, LocationId, ProfessionalId, DayOfWeek,
+  StartTime, EndTime, IsActive, CreatedAt e UpdatedAt.
+- Dia da semana de 0 (domingo) a 6 (sábado).
+- Horários locais da Location, com início anterior ao fim no mesmo dia.
+- Múltiplas janelas por dia são permitidas, sem sobreposição.
+- Substituição preserva os registros; janelas omitidas são desativadas.
+- Reativar a mesma janela preserva Id e CreatedAt.
+- A gestão exige Location, Professional e vínculo ativos e coerência de Business.
 
 ### ScheduleBlock
 Exceção/indisponibilidade vinculada a uma Location e opcionalmente a um Professional.

@@ -7,7 +7,7 @@ using VirtualEmployee.Domain.BusinessTypes;
 using VirtualEmployee.Domain.Locations;
 using VirtualEmployee.Domain.Services;
 using VirtualEmployee.Domain.Professionals;
-
+using VirtualEmployee.Domain.Scheduling;
 namespace VirtualEmployee.Infrastructure.Persistence;
 
 public sealed class AppDbContext : DbContext
@@ -32,6 +32,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<Professional> Professionals => Set<Professional>();
     public DbSet<ProfessionalLocation> ProfessionalLocations => Set<ProfessionalLocation>();
     public DbSet<ProfessionalService> ProfessionalServices => Set<ProfessionalService>();
+    public DbSet<AvailabilityRule> AvailabilityRules => Set<AvailabilityRule>();
     public Guid CurrentTenantId => _tenantContext.TenantId;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -74,6 +75,12 @@ public sealed class AppDbContext : DbContext
             .HasQueryFilter(
                 professionalService =>
                     professionalService.TenantId == CurrentTenantId);
+
+        modelBuilder.Entity<AvailabilityRule>()
+            .HasQueryFilter(
+                availabilityRule =>
+                    availabilityRule.TenantId == CurrentTenantId);
+
         base.OnModelCreating(modelBuilder);
     }
 

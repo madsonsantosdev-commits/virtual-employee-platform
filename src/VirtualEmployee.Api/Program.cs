@@ -13,6 +13,8 @@ using VirtualEmployee.Application.Professionals.GetProfessionals;
 using VirtualEmployee.Application.Professionals.UpdateProfessional;
 using VirtualEmployee.Application.ProfessionalLocations.GetProfessionalLocations;
 using VirtualEmployee.Application.ProfessionalLocations.ReplaceProfessionalLocations;
+using VirtualEmployee.Application.AvailabilityRules.GetAvailabilityRules;
+using VirtualEmployee.Application.AvailabilityRules.ReplaceAvailabilityRules;
 using VirtualEmployee.Api.Endpoints;
 using VirtualEmployee.Api.Middleware;
 using VirtualEmployee.Api.Serialization;
@@ -53,6 +55,8 @@ builder.Services.AddScoped<GetProfessionalLocationsHandler>();
 builder.Services.AddScoped<ReplaceProfessionalLocationsHandler>();
 builder.Services.AddScoped<GetProfessionalServicesHandler>();
 builder.Services.AddScoped<ReplaceProfessionalServicesHandler>();
+builder.Services.AddScoped<GetAvailabilityRulesHandler>();
+builder.Services.AddScoped<ReplaceAvailabilityRulesHandler>();
 
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
@@ -86,6 +90,7 @@ app.MapLocationsEndpoints();
 app.MapBusinessEndpoints();
 app.MapServicesEndpoints();
 app.MapProfessionalsEndpoints();
+app.MapAvailabilityRulesEndpoints();
 
 app.Run();
 
