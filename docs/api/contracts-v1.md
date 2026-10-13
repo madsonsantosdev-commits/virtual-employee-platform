@@ -434,12 +434,98 @@ e os conflitos com agendamentos serão implementados nas próximas etapas.
 Backend valida que todos os Services estão disponíveis na Location. Quote é informativo; CreateAppointment recalcula tudo. Preço/duração vêm de Service (ou do próprio COMBO selecionado), sem override por Location no MVP.
 
 ## 9. Available Slots
-`POST /availability/slots/search`
+
+Implementação incremental validada em 13/10/2026.
+
+`POST /api/v1/availability/slots/search`
+
+O header `X-Tenant-Id` é temporário para desenvolvimento.
+
+### Entrada
+
 ```json
-{"locationId":"<moema-id>","serviceIds":["<corte-id>","<barba-id>"],"date":"2026-09-18","professionalId":null}
+{
+  "locationId": "<location-id>",
+  "serviceIds": ["<corte-id>", "<barba-id>"],
+  "date": "2026-10-19",
+  "professionalId": null
+}
 ```
 
-Busca: LocationService -> ProfessionalLocation -> ProfessionalService -> AvailabilityRule -> ScheduleBlock -> Appointments.
+- LocationId, date e pelo menos um ServiceId são obrigatórios.
+- IDs vazios e ServiceIds duplicados são rejeitados.
+- ProfessionalId é opcional; ausente ou null busca todos os elegíveis.
+- Date representa a data local na timezone da Location.
+
+### Resposta
+
+Retorna `200` com timezone, duração total e slots ordenados por
+StartsAt e ProfessionalId.
+
+```json
+{
+  "locationId": "<location-id>",
+  "date": "2026-10-19",
+  "timezone": "America/Sao_Paulo",
+  "totalDurationMinutes": 65,
+  "slots": [
+    {
+      "professionalId": "<professional-id>",
+      "startsAt": "2026-10-19T12:00:00+00:00",
+      "endsAt": "2026-10-19T13:05:00+00:00"
+    }
+  ]
+}
+```
+
+StartsAt e EndsAt são instantes UTC.
+Sem profissionais elegíveis ou janelas disponíveis, retorna `slots: []`.
+Datas passadas também retornam lista vazia.
+
+### Regras implementadas
+
+- Location e Business devem estar ativos no tenant atual.
+- Todos os Services devem estar ativos, pertencer ao Business da Location
+  e ser oferecidos nela via LocationService.
+- Professional deve estar ativo, com ProfessionalLocation ativo e
+  ProfessionalService ativo para todos os Services solicitados.
+- COMBO exige habilitação explícita e usa sua própria duração,
+  sem somar novamente os componentes.
+- A duração total é a soma das durações dos Services selecionados.
+- Apenas AvailabilityRules ativas do dia e da unidade são consideradas.
+- Janelas adjacentes ou sobrepostas são unidas para formar intervalos contínuos.
+- Descansos entre janelas são preservados.
+- Os inícios avançam conforme Business.SlotIntervalMinutes,
+  a partir do início de cada janela contínua.
+- O atendimento completo deve caber na janela.
+- Inícios iguais ou anteriores ao instante da consulta são excluídos.
+- Horários locais com início ou fim inexistente ou ambíguo por mudança
+  de timezone são descartados.
+- Candidatos cuja duração em UTC difere da duração local são descartados.
+
+| Resultado | HTTP |
+| --- | --- |
+| Busca concluída, inclusive sem slots | 200 |
+| Payload incompleto, IDs vazios ou duplicados, GUID ou data malformados | 400 |
+| Location, Business ou Service inexistente ou de outro tenant | 404 |
+| Location ou Business inativo | 409 |
+| Service inativo, de outro Business ou não oferecido na Location | 409 |
+| Duração total inválida | 409 |
+| Timezone configurada na Location não resolvida pelo servidor | 500 |
+
+Professional informado sem elegibilidade, inexistente ou de outro tenant
+não produz slots; a busca retorna `200` com lista vazia, desde que
+Location e Services sejam válidos.
+
+### Limite desta entrega
+
+A busca considera elegibilidade e agenda semanal.
+ScheduleBlocks e Appointments ainda não são descontados.
+Slots não são persistidos e não constituem reserva nem lock.
+
+O fluxo completo previsto permanece:
+LocationService -> ProfessionalLocation -> ProfessionalService ->
+AvailabilityRule -> ScheduleBlock -> Appointments.
 
 ## 10. Appointments
 `GET /appointments?locationId=<uuid>`

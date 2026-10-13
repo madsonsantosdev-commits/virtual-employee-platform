@@ -86,7 +86,9 @@ A autenticação e a autorização de produção ainda estão pendentes.
 
 - [x] AvailabilityRule: persistência, leitura e substituição via API
 - [x] Validações de janelas, recursos ativos, Business e isolamento entre tenants
-- [ ] Busca de slots disponíveis
+- [x] Busca de slots por agenda semanal, elegibilidade, duração e timezone
+- [ ] ScheduleBlocks: bloqueios e exceções da agenda
+- [ ] Descontar bloqueios e agendamentos ocupantes na busca de slots
 - [ ] Appointment e proteção contra agendamentos concorrentes
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -95,19 +97,25 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 09/10/2026
+### Última validação local — 13/10/2026
 
-- Suíte completa: 328 testes passaram, sem falhas ou ignorados.
-- AvailabilityRules: 16 testes de domínio, 16 de Application, 14 de persistência e 21 HTTP.
-- Validados horários, sobreposição, recursos inexistentes ou inativos, conflito de Business e isolamento entre tenants.
-- Validação manual no PowerShell: leitura, substituição, rejeição de sobreposição, limpeza e reativação da agenda.
-- IDs preservados na desativação e reativação das mesmas janelas.
+- Suíte completa: 394 testes passaram, sem falhas ou ignorados.
+- AvailableSlots: 11 testes de domínio, 27 de Application, 1 de leitura no PostgreSQL e 27 HTTP.
+- Validados duração, intervalo entre inícios, descansos, janelas adjacentes, timezone e exclusão de horários passados.
+- Validados recursos inativos, payloads inválidos, elegibilidade para todos os serviços, COMBO explícito e isolamento entre tenants.
+- Validação manual no PowerShell: busca com e sem profissional, dia sem expediente e rejeição de IDs duplicados.
+- Corte + Barba: duração total de 65 minutos, com 18 slots respeitando as janelas de São Paulo e retornados em UTC.
 
-Professionals, ProfessionalLocations, ProfessionalServices e os filtros
-de elegibilidade estão integrados à `main`.
+Professionals, ProfessionalLocations, ProfessionalServices, os filtros
+de elegibilidade e AvailabilityRules estão integrados à `main`.
 
-AvailabilityRules está implementado na branch `feature/availability-rules`,
+AvailableSlots está implementado na branch `feature/available-slots`,
 com validação automatizada e manual concluída e integração à `main` pendente.
 
-A próxima etapa prevista é implementar a busca de slots disponíveis,
-considerando as regras de disponibilidade e a elegibilidade dos profissionais.
+A busca atual considera agenda semanal e elegibilidade.
+ScheduleBlocks e Appointments ainda não são descontados.
+Slots representam disponibilidade calculada; não constituem reserva.
+
+A próxima etapa prevista é implementar ScheduleBlocks e integrar
+os bloqueios ao cálculo, seguida da ocupação por Appointments
+e da proteção contra agendamentos concorrentes.

@@ -54,7 +54,9 @@ AvailabilityRule(Location, Professional)
 ### Implementação da agenda-base — 09/10/2026
 
 A leitura e a substituição de AvailabilityRules estão implementadas.
-A busca de slots, ScheduleBlocks e Appointments permanecem pendentes.
+A busca inicial de slots por agenda semanal e elegibilidade também está
+implementada. ScheduleBlocks e Appointments permanecem pendentes
+e ainda não são descontados da busca.
 
 As janelas usam dia da semana de 0 (domingo) a 6 (sábado) e horários
 locais da Location. Cada janela deve começar e terminar no mesmo dia,
@@ -116,6 +118,33 @@ Fluxo:
 12. retornar slots válidos usando `Location.Timezone`.
 
 Slot retornado é disponibilidade observada; não é lock.
+
+### Implementação incremental da busca — 13/10/2026
+
+O endpoint POST /api/v1/availability/slots/search calcula slots sem
+persisti-los, usando elegibilidade, agenda semanal e duração dos serviços.
+
+Decisões de cálculo:
+- Date representa a data local da Location.
+- Janelas ativas do dia são agrupadas por Professional.
+- Janelas adjacentes ou sobrepostas são unidas; descansos são preservados.
+- A grade de inícios parte do início de cada janela contínua e avança
+  conforme Business.SlotIntervalMinutes.
+- O intervalo completo deve comportar a duração total dos serviços.
+- COMBO usa sua própria duração e exige habilitação explícita.
+- Horários locais são convertidos para instantes UTC usando Location.Timezone.
+- Candidatos com início ou fim local inexistente ou ambíguo são descartados.
+- Candidatos cuja duração real em UTC difere da duração local são descartados.
+- Inícios iguais ou anteriores ao instante capturado na consulta são excluídos.
+- Resultado ordenado por StartsAt e ProfessionalId, sem slots duplicados.
+
+A consulta permite selecionar um Professional ou buscar todos os elegíveis.
+Ausência de elegibilidade ou agenda produz lista vazia.
+
+Esta entrega ainda não subtrai ScheduleBlocks ou Appointments.
+O fluxo completo descrito acima permanece como objetivo das próximas etapas.
+Consultar slots não reserva horário; CreateAppointment deverá revalidar
+a disponibilidade e aplicar a proteção de concorrência.
 
 ## 8. CreateAppointment
 Command conceitual:
