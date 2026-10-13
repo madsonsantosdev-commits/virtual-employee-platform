@@ -20,6 +20,8 @@ using VirtualEmployee.Infrastructure.Services;
 using VirtualEmployee.Infrastructure.Tenancy;
 using VirtualEmployee.Application.AvailabilityRules;
 using VirtualEmployee.Infrastructure.AvailabilityRules;
+using VirtualEmployee.Application.AvailabilitySlots;
+using VirtualEmployee.Infrastructure.AvailabilitySlots;
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -45,29 +47,21 @@ public static class DependencyInjection
 
         services.AddScoped<IBusinessReadService, BusinessReadService>();
         services.AddScoped<IBusinessWriteService, BusinessWriteService>();
-
         services.AddScoped<ILocationReadService, LocationReadService>();
         services.AddScoped<ILocationWriteService, LocationWriteService>();
-
         services.AddScoped<IServiceReadService, ServiceReadService>();
         services.AddScoped<IServiceWriteService, ServiceWriteService>();
-
         services.AddScoped<ILocationServiceReadService, LocationServiceReadService>();
-
         services.AddScoped<ILocationServiceWriteService, LocationServiceWriteService>();
-
         services.AddScoped<IProfessionalReadService, ProfessionalReadService>();
         services.AddScoped<IProfessionalWriteService, ProfessionalWriteService>();
-
         services.AddScoped<IProfessionalLocationWriteService, ProfessionalLocationWriteService>();
         services.AddScoped<IProfessionalLocationReadService, ProfessionalLocationReadService>();
-
         services.AddScoped<IProfessionalServiceReadService, ProfessionalServiceReadService>();
         services.AddScoped<IProfessionalServiceWriteService, ProfessionalServiceWriteService>();
-
         services.AddScoped<IAvailabilityRuleReadService, AvailabilityRuleReadService>();
         services.AddScoped<IAvailabilityRuleWriteService, AvailabilityRuleWriteService>();
-
+        services.AddScoped<IAvailabilitySlotReadService, AvailabilitySlotReadService>();
         return services;
     }
 }

@@ -22,7 +22,7 @@ using VirtualEmployee.Infrastructure;
 using System.Text.Json.Serialization;
 using VirtualEmployee.Application.ProfessionalServices.GetProfessionalServices;
 using VirtualEmployee.Application.ProfessionalServices.ReplaceProfessionalServices;
-
+using VirtualEmployee.Application.AvailabilitySlots.SearchAvailableSlots;
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenAPI
@@ -57,7 +57,8 @@ builder.Services.AddScoped<GetProfessionalServicesHandler>();
 builder.Services.AddScoped<ReplaceProfessionalServicesHandler>();
 builder.Services.AddScoped<GetAvailabilityRulesHandler>();
 builder.Services.AddScoped<ReplaceAvailabilityRulesHandler>();
-
+builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.AddScoped<SearchAvailableSlotsHandler>();
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
 
@@ -91,6 +92,7 @@ app.MapBusinessEndpoints();
 app.MapServicesEndpoints();
 app.MapProfessionalsEndpoints();
 app.MapAvailabilityRulesEndpoints();
+app.MapAvailabilitySlotsEndpoints();
 
 app.Run();
 
