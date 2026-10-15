@@ -1,7 +1,7 @@
 using VirtualEmployee.Domain.Businesses;
 using VirtualEmployee.Domain.Locations;
 using VirtualEmployee.Domain.Services;
-
+using VirtualEmployee.Application.ScheduleBlocks;
 namespace VirtualEmployee.Application.AvailabilitySlots;
 
 public interface IAvailabilitySlotReadService
@@ -28,6 +28,13 @@ public interface IAvailabilitySlotReadService
         Guid businessId,
         IReadOnlyList<Guid> serviceIds,
         DayOfWeek dayOfWeek,
+        Guid? professionalId,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<ScheduleBlockResponse>> GetBlocksAsync(
+        Guid locationId,
+        DateTimeOffset from,
+        DateTimeOffset to,
         Guid? professionalId,
         CancellationToken cancellationToken = default);
 }

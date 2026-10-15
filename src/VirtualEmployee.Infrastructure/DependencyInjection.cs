@@ -22,6 +22,8 @@ using VirtualEmployee.Application.AvailabilityRules;
 using VirtualEmployee.Infrastructure.AvailabilityRules;
 using VirtualEmployee.Application.AvailabilitySlots;
 using VirtualEmployee.Infrastructure.AvailabilitySlots;
+using VirtualEmployee.Application.ScheduleBlocks;
+using VirtualEmployee.Infrastructure.ScheduleBlocks;
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -62,6 +64,9 @@ public static class DependencyInjection
         services.AddScoped<IAvailabilityRuleReadService, AvailabilityRuleReadService>();
         services.AddScoped<IAvailabilityRuleWriteService, AvailabilityRuleWriteService>();
         services.AddScoped<IAvailabilitySlotReadService, AvailabilitySlotReadService>();
+        services.AddScoped<IScheduleBlockCreationService, ScheduleBlockCreationService>();
+        services.AddScoped<IScheduleBlockReadService, ScheduleBlockReadService>();
+        services.AddScoped<IScheduleBlockRemovalService, ScheduleBlockRemovalService>();
         return services;
     }
 }

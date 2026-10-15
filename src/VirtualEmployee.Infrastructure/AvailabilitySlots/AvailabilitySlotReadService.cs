@@ -4,7 +4,8 @@ using VirtualEmployee.Domain.Businesses;
 using VirtualEmployee.Domain.Locations;
 using VirtualEmployee.Domain.Services;
 using VirtualEmployee.Infrastructure.Persistence;
-
+using VirtualEmployee.Application.ScheduleBlocks;
+using VirtualEmployee.Infrastructure.ScheduleBlocks;
 namespace VirtualEmployee.Infrastructure.AvailabilitySlots;
 
 public sealed class AvailabilitySlotReadService
@@ -122,5 +123,20 @@ public sealed class AvailabilitySlotReadService
                 rule.StartTime,
                 rule.EndTime))
             .ToListAsync(cancellationToken);
+    }
+    public Task<IReadOnlyList<ScheduleBlockResponse>> GetBlocksAsync(
+        Guid locationId,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        Guid? professionalId,
+        CancellationToken cancellationToken = default)
+    {
+        return new ScheduleBlockReadService(_dbContext)
+            .GetByPeriodAsync(
+                locationId,
+                from,
+                to,
+                professionalId,
+                cancellationToken);
     }
 }

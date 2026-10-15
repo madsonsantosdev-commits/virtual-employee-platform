@@ -418,9 +418,106 @@ e os conflitos com agendamentos serão implementados nas próximas etapas.
 
 
 ## 6. Schedule Blocks
+
+Implementação incremental validada em 14/10/2026.
+As rotas usam o prefixo `/api/v1`.
+O header `X-Tenant-Id` é temporário para desenvolvimento.
+
+### Criação
+
+`POST /schedule-blocks`
+
+Requer o header `Idempotency-Key`.
+
+```json
+{
+  "locationId": "<location-id>",
+  "professionalId": null,
+  "startsAt": "2026-10-19T10:00:00-03:00",
+  "endsAt": "2026-10-19T10:30:00-03:00"
+}
+```
+
+LocationId, StartsAt e EndsAt são obrigatórios.
+ProfessionalId ausente ou null bloqueia toda a unidade.
+Quando preenchido, bloqueia somente o profissional naquela unidade.
+
+O início deve preceder o fim. Bloqueios podem atravessar dias.
+Os instantes são normalizados para UTC.
+A sobreposição usa intervalos [StartsAt, EndsAt): encostar no limite
+não constitui conflito.
+
+Location e Business devem estar ativos.
+Quando informado, Professional deve estar ativo, pertencer ao mesmo
+Business da Location e possuir ProfessionalLocation ativo.
+
+Retorna `201` com Id, LocationId, ProfessionalId, StartsAt, EndsAt,
+IsActive, CreatedAt e UpdatedAt.
+
+### Idempotência
+
+- Identidade: TenantId + operação CreateScheduleBlock + chave.
+- Chave obrigatória, com até 200 caracteres, sem espaços ou caracteres de controle.
+- A chave é preservada e diferencia maiúsculas de minúsculas.
+- Mesma chave e conteúdo retornam `201` com a resposta original.
+- Offsets diferentes que representam os mesmos instantes são equivalentes.
+- Mesma chave e conteúdo diferente retornam `409`,
+  com `code: IDEMPOTENCY_CONFLICT`.
+- Bloqueio e resultado idempotente são gravados na mesma transação.
+- Requisições concorrentes com a mesma chave não duplicam o bloqueio.
+- Após desativação, replay não reativa o bloqueio:
+  devolve a resposta original da criação, inclusive seu IsActive original.
+- Falhas de validação não persistem bloqueio nem registro idempotente.
+
+### Consulta
+
 `GET /schedule-blocks?locationId=<uuid>&from=<instant>&to=<instant>&professionalId=<uuid>`
 
-`POST /schedule-blocks/impact` recebe LocationId, ProfessionalId opcional e intervalo. ProfessionalId null bloqueia a Location inteira. Criar block não move appointments automaticamente. A operação de criação efetiva do block requer `Idempotency-Key`.
+LocationId, from e to são obrigatórios; from deve preceder to.
+Retorna `200` com bloqueios ativos que se sobrepõem ao período,
+ordenados por StartsAt e Id. Sem resultados, retorna `[]`.
+
+Sem ProfessionalId, inclui todos os escopos da unidade.
+Com ProfessionalId, inclui os bloqueios desse profissional e os
+bloqueios da unidade inteira.
+
+A consulta permite Location inativa para leitura administrativa.
+Location inexistente ou de outro tenant retorna `404`.
+
+### Desativação
+
+`DELETE /schedule-blocks/{blockId}`
+
+Retorna `204` para bloqueio existente, inclusive já inativo.
+Preserva o registro e CreatedAt; altera UpdatedAt somente na
+primeira desativação.
+Bloqueio inexistente ou de outro tenant retorna `404`.
+GUID vazio retorna `400`.
+
+A chave idempotente da criação permanece preservada.
+
+### Resultados da criação
+
+| Resultado | HTTP |
+| --- | --- |
+| Criação ou replay da resposta original | 201 |
+| Payload, intervalo, IDs ou chave inválidos | 400 |
+| Location, Business, Professional ou vínculo inexistente ou de outro tenant | 404 |
+| Recursos ou vínculo inativos; conflito de Business | 409 |
+| Mesma chave com conteúdo diferente | 409 |
+
+### Integração com slots e limite da entrega
+
+A busca de slots descarta candidatos cujo intervalo completo se
+sobreponha a bloqueios ativos aplicáveis.
+Bloqueios da unidade afetam todos os profissionais; bloqueios
+específicos afetam somente o profissional indicado.
+A grade original de inícios é preservada.
+
+`POST /schedule-blocks/impact` permanece previsto e ainda não implementado.
+A avaliação de impacto depende de Appointments.
+Criar um bloqueio não move nem cancela agendamentos automaticamente.
+
 
 ## 7. Customers
 `GET /customers`, `GET /customers/{id}`, `POST /customers`.
@@ -519,8 +616,8 @@ Location e Services sejam válidos.
 
 ### Limite desta entrega
 
-A busca considera elegibilidade e agenda semanal.
-ScheduleBlocks e Appointments ainda não são descontados.
+A busca considera elegibilidade, agenda semanal e ScheduleBlocks ativos.
+Appointments ainda não são descontados.
 Slots não são persistidos e não constituem reserva nem lock.
 
 O fluxo completo previsto permanece:
@@ -681,7 +778,12 @@ POST /appointments/{id}/reschedule
 POST /appointments/{id}/cancel
 ```
 
-Segunda fatia: Payment + PaymentAttempts + webhook + Refunds. Terceira: Schedule Blocks/WhatsApp/AI/Analytics/Billing/Usage.
+Segunda fatia: Payment + PaymentAttempts + webhook + Refunds.
+Terceira: WhatsApp/AI/Analytics/Billing/Usage.
+
+ScheduleBlocks foi antecipado e implementado incrementalmente em 14/10/2026,
+incluindo criação idempotente, consulta, desativação e integração com slots.
+A avaliação de impacto sobre Appointments permanece pendente.
 
 ## 19. Freeze v1
 API Contracts v1 congelado em 2026-09-17 após aprovação dos contratos críticos de Appointment, Payment/PaymentAttempt e Refund e revisão de consistência com o ERD v1 congelado. Não foi identificada necessidade de alteração estrutural do ERD.

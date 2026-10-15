@@ -17,6 +17,7 @@ using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
 using VirtualEmployee.IntegrationTests.Infrastructure;
+
 using Xunit;
 
 namespace VirtualEmployee.IntegrationTests.Api;
@@ -782,6 +783,99 @@ public sealed class AvailabilitySlotsEndpointsTests
             await CleanupAsync(tenantId);
         }
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SearchSlots_WithScheduleBlock_ShouldExcludeOverlappingSlots(
+        bool professionalScoped)
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var serviceAId = Guid.NewGuid();
+        var serviceBId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                locationId,
+                professionalId,
+                serviceAId,
+                serviceBId);
+
+            await using (var context = CreateContext(tenantId))
+            {
+                // 10h–10h30 em São Paulo corresponde a 13h–13h30 UTC.
+                context.ScheduleBlocks.Add(
+                    new ScheduleBlock(
+                        Guid.NewGuid(),
+                        tenantId,
+                        locationId,
+                        professionalScoped ? professionalId : null,
+                        new DateTimeOffset(
+                            2026, 10, 19, 13, 0, 0, TimeSpan.Zero),
+                        new DateTimeOffset(
+                            2026, 10, 19, 13, 30, 0, TimeSpan.Zero),
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var response = await client.PostAsJsonAsync(
+                "/api/v1/availability/slots/search",
+                new
+                {
+                    locationId,
+                    serviceIds = new[] { serviceAId, serviceBId },
+                    date = "2026-10-19",
+                    professionalId
+                });
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var result = await response.Content
+                .ReadFromJsonAsync<SearchAvailableSlotsResponse>();
+
+            Assert.NotNull(result);
+            Assert.Equal(60, result.TotalDurationMinutes);
+            Assert.Equal(3, result.Slots.Count);
+
+            Assert.Equal(
+                new[]
+                {
+                    new DateTimeOffset(
+                        2026, 10, 19, 12, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(
+                        2026, 10, 19, 13, 40, 0, TimeSpan.Zero),
+                    new DateTimeOffset(
+                        2026, 10, 19, 14, 0, 0, TimeSpan.Zero)
+                },
+                result.Slots.Select(slot => slot.StartsAt).ToArray());
+
+            Assert.All(result.Slots, slot =>
+            {
+                Assert.Equal(professionalId, slot.ProfessionalId);
+                Assert.Equal(
+                    TimeSpan.FromHours(1),
+                    slot.EndsAt - slot.StartsAt);
+            });
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
     private WebApplicationFactory<Program> CreateFactory()
     {
         return new WebApplicationFactory<Program>()
@@ -905,12 +999,12 @@ public sealed class AvailabilitySlotsEndpointsTests
     {
         await using var context = CreateContext(tenantId);
 
+        context.ScheduleBlocks.RemoveRange(
+            await context.ScheduleBlocks.ToListAsync());
         context.AvailabilityRules.RemoveRange(
             await context.AvailabilityRules.ToListAsync());
         await context.SaveChangesAsync();
-        context.ServiceComponents.RemoveRange(
-            await context.ServiceComponents.ToListAsync());
-        await context.SaveChangesAsync();
+
         context.ProfessionalServices.RemoveRange(
             await context.ProfessionalServices.ToListAsync());
         context.ProfessionalLocations.RemoveRange(
@@ -918,6 +1012,11 @@ public sealed class AvailabilitySlotsEndpointsTests
         context.LocationServices.RemoveRange(
             await context.LocationServices.ToListAsync());
         await context.SaveChangesAsync();
+
+        context.ServiceComponents.RemoveRange(
+            await context.ServiceComponents.ToListAsync());
+        await context.SaveChangesAsync();
+
         context.Services.RemoveRange(
             await context.Services.ToListAsync());
         context.Professionals.RemoveRange(
@@ -925,8 +1024,11 @@ public sealed class AvailabilitySlotsEndpointsTests
         context.Locations.RemoveRange(
             await context.Locations.ToListAsync());
         await context.SaveChangesAsync();
+
         context.Businesses.RemoveRange(
             await context.Businesses.ToListAsync());
+        context.IdempotencyRecords.RemoveRange(
+            await context.IdempotencyRecords.ToListAsync());
         await context.SaveChangesAsync();
 
         var tenant = await context.Tenants

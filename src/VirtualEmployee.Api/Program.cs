@@ -23,6 +23,9 @@ using System.Text.Json.Serialization;
 using VirtualEmployee.Application.ProfessionalServices.GetProfessionalServices;
 using VirtualEmployee.Application.ProfessionalServices.ReplaceProfessionalServices;
 using VirtualEmployee.Application.AvailabilitySlots.SearchAvailableSlots;
+using VirtualEmployee.Application.ScheduleBlocks.CreateScheduleBlock;
+using VirtualEmployee.Application.ScheduleBlocks.GetScheduleBlocks;
+using VirtualEmployee.Application.ScheduleBlocks.RemoveScheduleBlock;
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenAPI
@@ -59,6 +62,9 @@ builder.Services.AddScoped<GetAvailabilityRulesHandler>();
 builder.Services.AddScoped<ReplaceAvailabilityRulesHandler>();
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddScoped<SearchAvailableSlotsHandler>();
+builder.Services.AddScoped<CreateScheduleBlockHandler>();
+builder.Services.AddScoped<GetScheduleBlocksHandler>();
+builder.Services.AddScoped<RemoveScheduleBlockHandler>();
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
 
@@ -66,12 +72,7 @@ var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
 {
-    // OpenAPI document:
-    // /openapi/v1.json
     app.MapOpenApi();
-
-    // Swagger UI:
-    // /swagger
     app.UseSwaggerUI(options =>
     {
         options.SwaggerEndpoint(
@@ -86,13 +87,13 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
 app.MapLocationsEndpoints();
 app.MapBusinessEndpoints();
 app.MapServicesEndpoints();
 app.MapProfessionalsEndpoints();
 app.MapAvailabilityRulesEndpoints();
 app.MapAvailabilitySlotsEndpoints();
+app.MapScheduleBlocksEndpoints();
 
 app.Run();
 
