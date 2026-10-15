@@ -520,7 +520,99 @@ Criar um bloqueio não move nem cancela agendamentos automaticamente.
 
 
 ## 7. Customers
-`GET /customers`, `GET /customers/{id}`, `POST /customers`.
+
+Cliente final pertencente a um Business e ao tenant atual.
+Telefone/WhatsApp é identificador operacional principal, mas não PK.
+
+Implementado em 15/10/2026 com nome opcional, telefone obrigatório,
+e-mail opcional e datas de criação e atualização em UTC.
+
+A Application normaliza o telefone para `+` seguido de dígitos ASCII,
+sem inferir país. A validação é estrutural e não confirma existência
+do número nem disponibilidade no WhatsApp.
+Nome e e-mail em branco são armazenados como null.
+
+A criação exige Business ativo do tenant atual.
+Consultas e escritas respeitam o isolamento entre tenants.
+Telefone não possui restrição de unicidade nesta entrega.
+
+A API expõe criação, listagem e consulta por ID.
+Evitar enriquecer Customer com dados pessoais sem finalidade definida.
+
+### Criação
+
+`POST /api/v1/customers`
+
+```json
+{
+  "businessId": "<business-id>",
+  "phone": "+55 (11) 99999-0001",
+  "name": "Maria Silva",
+  "email": "maria@example.com"
+}
+```
+
+O Business deve existir no tenant atual e estar ativo.
+
+Regras de telefone:
+- Exige prefixo internacional explícito com `+`.
+- Aceita de 1 a 15 dígitos ASCII, com primeiro dígito diferente de zero.
+- Remove espaços nas extremidades e ignora espaços comuns, parênteses,
+  hífens e pontos na parte após o `+`.
+- Não infere país nem acrescenta código de país.
+- Rejeita letras, ramais e demais caracteres.
+- A validação é estrutural; não confirma existência do número,
+  validade do plano de numeração ou disponibilidade no WhatsApp.
+
+Nome e e-mail têm espaços nas extremidades removidos.
+Valores ausentes, null ou em branco são armazenados como null.
+Quando informado, o e-mail deve representar um endereço simples,
+sem nome de apresentação, lista de destinatários ou caracteres de controle.
+Não há verificação de existência da caixa postal.
+
+Retorna `201` com o Customer criado e o header
+`Location: /api/v1/customers/{id}`.
+
+```json
+{
+  "id": "<customer-id>",
+  "businessId": "<business-id>",
+  "name": "Maria Silva",
+  "phone": "+5511999990001",
+  "email": "maria@example.com"
+}
+```
+
+Telefone não é PK e não possui restrição de unicidade nesta entrega.
+Repetir uma criação válida pode gerar outro Customer.
+
+| Resultado do POST | HTTP |
+| --- | --- |
+| Customer criado | 201 |
+| BusinessId ausente, vazio ou malformado; telefone ou e-mail inválido | 400 |
+| Business inexistente ou de outro tenant | 404 |
+| Business inativo | 409 |
+
+### Listagem
+
+`GET /api/v1/customers`
+
+Retorna `200` com os Customers do tenant atual, ordenados por nome e ID.
+A listagem pode incluir Customers de diferentes Businesses desse tenant.
+Sem registros, retorna `[]`.
+
+### Consulta por ID
+
+`GET /api/v1/customers/{customerId}`
+
+Retorna `200` com o mesmo formato de Customer apresentado na criação.
+Customer inexistente ou de outro tenant retorna `404`.
+GUID vazio retorna `400`.
+
+### Limite desta entrega
+
+Inclui criação, listagem e consulta por ID.
+Atualização e exclusão de Customers não estão expostas pela API.
 
 ## 8. Booking Quote
 `POST /booking/quote`

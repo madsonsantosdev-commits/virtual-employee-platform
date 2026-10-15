@@ -9,6 +9,7 @@ using VirtualEmployee.Domain.Services;
 using VirtualEmployee.Domain.Professionals;
 using VirtualEmployee.Domain.Scheduling;
 using VirtualEmployee.Infrastructure.Persistence.Idempotency;
+using VirtualEmployee.Domain.Customers;
 namespace VirtualEmployee.Infrastructure.Persistence;
 
 public sealed class AppDbContext : DbContext
@@ -35,6 +36,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProfessionalService> ProfessionalServices => Set<ProfessionalService>();
     public DbSet<AvailabilityRule> AvailabilityRules => Set<AvailabilityRule>();
     public DbSet<ScheduleBlock> ScheduleBlocks => Set<ScheduleBlock>();
+    public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<IdempotencyRecord> IdempotencyRecords =>
     Set<IdempotencyRecord>();    public Guid CurrentTenantId => _tenantContext.TenantId;
 
@@ -92,6 +94,10 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<IdempotencyRecord>()
             .HasQueryFilter(
                 record => record.TenantId == CurrentTenantId);
+
+        modelBuilder.Entity<Customer>()
+            .HasQueryFilter(
+                customer => customer.TenantId == CurrentTenantId);
                 base.OnModelCreating(modelBuilder);
     }
 

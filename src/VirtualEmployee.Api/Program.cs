@@ -26,6 +26,9 @@ using VirtualEmployee.Application.AvailabilitySlots.SearchAvailableSlots;
 using VirtualEmployee.Application.ScheduleBlocks.CreateScheduleBlock;
 using VirtualEmployee.Application.ScheduleBlocks.GetScheduleBlocks;
 using VirtualEmployee.Application.ScheduleBlocks.RemoveScheduleBlock;
+using VirtualEmployee.Application.Customers.CreateCustomer;
+using VirtualEmployee.Application.Customers.GetCustomerById;
+using VirtualEmployee.Application.Customers.GetCustomers;
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenAPI
@@ -65,6 +68,9 @@ builder.Services.AddScoped<SearchAvailableSlotsHandler>();
 builder.Services.AddScoped<CreateScheduleBlockHandler>();
 builder.Services.AddScoped<GetScheduleBlocksHandler>();
 builder.Services.AddScoped<RemoveScheduleBlockHandler>();
+builder.Services.AddScoped<CreateCustomerHandler>();
+builder.Services.AddScoped<GetCustomersHandler>();
+builder.Services.AddScoped<GetCustomerByIdHandler>();
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
 
@@ -94,7 +100,7 @@ app.MapProfessionalsEndpoints();
 app.MapAvailabilityRulesEndpoints();
 app.MapAvailabilitySlotsEndpoints();
 app.MapScheduleBlocksEndpoints();
-
+app.MapCustomersEndpoints();
 app.Run();
 
 public partial class Program;

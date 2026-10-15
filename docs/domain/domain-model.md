@@ -165,11 +165,24 @@ Implementação validada em 14/10/2026:
 - Avaliação de impacto sobre Appointments permanece pendente.
 
 ### Customer
-Cliente final. Telefone/WhatsApp é identificador operacional principal, mas não PK.
 
-Dados previstos no MVP: nome opcional, telefone/WhatsApp obrigatório operacionalmente e e-mail opcional. Evitar enriquecer Customer com dados pessoais sem finalidade definida.
+Cliente final pertencente a um Business e ao tenant atual.
+Telefone/WhatsApp é identificador operacional principal, mas não PK.
 
----
+Implementado em 15/10/2026 com nome opcional, telefone obrigatório,
+e-mail opcional e datas de criação e atualização em UTC.
+
+A Application normaliza o telefone para `+` seguido de dígitos ASCII,
+sem inferir país. A validação é estrutural e não confirma existência
+do número nem disponibilidade no WhatsApp.
+Nome e e-mail em branco são armazenados como null.
+
+A criação exige Business ativo do tenant atual.
+Consultas e escritas respeitam o isolamento entre tenants.
+Telefone não possui restrição de unicidade nesta entrega.
+
+A API expõe criação, listagem e consulta por ID.
+Evitar enriquecer Customer com dados pessoais sem finalidade definida.
 
 ## Appointment — Aggregate Root
 Principal agregado operacional do Scheduling.

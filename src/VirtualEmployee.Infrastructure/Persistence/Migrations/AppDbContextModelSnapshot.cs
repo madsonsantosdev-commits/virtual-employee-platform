@@ -220,6 +220,52 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                     b.ToTable("businesses", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Domain.Customers.Customer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Email")
+                        .HasColumnType("text")
+                        .HasColumnName("email");
+
+                    b.Property<string>("Name")
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Phone")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("phone");
+
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "BusinessId", "Phone");
+
+                    b.ToTable("customers", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_customers_phone_not_blank", "length(btrim(phone)) > 0");
+                        });
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Locations.Location", b =>
                 {
                     b.Property<Guid>("Id")
@@ -696,6 +742,16 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                     b.HasOne("VirtualEmployee.Domain.Tenants.Tenant", null)
                         .WithMany()
                         .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Customers.Customer", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Businesses.Business", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "BusinessId")
+                        .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

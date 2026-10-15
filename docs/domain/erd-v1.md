@@ -191,6 +191,40 @@ TenantId é token de concorrência no EF Core.
 A chave composta de idempotência impede duplicação da operação;
 a transação garante a gravação conjunta do bloqueio e da resposta.
 
+## Customer — implementação em 15/10/2026
+
+Customer pertence a um Business e ao tenant atual.
+
+```text
+customers
+id uuid PK
+tenant_id uuid NOT NULL
+business_id uuid NOT NULL
+name text NULL
+phone text NOT NULL
+email text NULL
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+```
+
+Restrições e índices implementados:
+- FK composta `(tenant_id, business_id)` para
+  `businesses(tenant_id, id)`, com exclusão restrita.
+- CHECK `CK_customers_phone_not_blank` exige
+  `length(btrim(phone)) > 0`.
+- Índice não único em `(tenant_id, business_id, phone)`.
+- Filtro de consulta por tenant e proteção de escrita no AppDbContext.
+
+A Application normaliza o telefone antes da persistência.
+O CHECK do banco impede telefone vazio ou composto apenas por espaços
+comuns; não valida o formato internacional.
+
+Telefone não é PK e não possui restrição de unicidade.
+Datas de auditoria são gravadas em UTC.
+A tabela não possui campos de estado ativo ou inativo nesta entrega.
+
+Migration: `20261015133227_AddCustomers`.
+
 ## Appointment
 ```text
 appointments
