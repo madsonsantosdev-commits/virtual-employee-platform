@@ -70,6 +70,8 @@ MVP em implementação por entregas incrementais.
 - [x] Vínculo ProfessionalLocation: persistência, leitura e substituição via API
 - [x] Validação de Business e isolamento entre tenants em ProfessionalLocations
 - [x] Vínculo ProfessionalService e regras de elegibilidade
+- [x] Customers: persistência, criação, listagem e consulta por ID
+- [x] Normalização de telefone e isolamento entre tenants em Customers
 
 ### Identidade e acesso
 
@@ -91,6 +93,7 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] Descontar bloqueios da unidade e do profissional na busca de slots
 - [ ] Avaliação de impacto dos bloqueios sobre Appointments
 - [ ] Descontar agendamentos ocupantes na busca de slots
+- [ ] Booking Quote: cálculo de preço e duração no backend
 - [ ] Appointment e proteção contra agendamentos concorrentes
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -99,27 +102,26 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 14/10/2026
+### Última validação local — 15/10/2026
 
-- Suíte completa: 483 testes passaram, sem falhas ou ignorados.
-- ScheduleBlocks: 20 testes de domínio, 14 do handler de criação, 22 de persistência/leitura e 24 HTTP.
-- Integração com slots: 7 novos testes de Application e 2 HTTP.
-- Validados escopos de unidade e profissional, intervalos, UTC, desativação, datas e isolamento entre tenants.
-- Idempotência validada com replay, offsets equivalentes, conflito de conteúdo e requisições concorrentes.
-- Validação manual no PowerShell: criação 201, replay com mesmo ID, conflito 409, consulta 200 e desativação 204.
-- Bloqueio do Arthur das 10h às 10h30 reduziu os slots de 18 para 13; a desativação restaurou os 18 slots.
+- Suíte completa: 563 testes passaram, sem falhas ou ignorados.
+- Customers: 16 testes de domínio, 20 de normalização de telefone, 13 do handler de criação, 13 de persistência/serviços e 18 HTTP.
+- Validados telefone obrigatório, normalização, nome e e-mail opcionais e rejeição de e-mail inválido.
+- Validados Business inexistente, inativo ou de outro tenant e isolamento na leitura e escrita.
+- Validação manual no PowerShell: criação 201, Location da consulta e consulta por ID 200.
+- Telefone persistido em formato canônico; nome e e-mail sem espaços nas extremidades.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
-de elegibilidade, AvailabilityRules e a busca inicial de slots
-estão integrados à `main`.
+de elegibilidade, AvailabilityRules, a busca inicial de slots e
+ScheduleBlocks estão integrados à `main`.
 
-ScheduleBlocks está implementado na branch `feature/schedule-blocks`,
+Customers está implementado na branch `feature/customers`,
 com validação automatizada e manual concluída e integração à `main` pendente.
 
 A busca considera agenda semanal, elegibilidade e bloqueios ativos.
 Appointments ainda não são descontados.
 Slots representam disponibilidade calculada; não constituem reserva.
 
-As próximas capacidades são Customers, Booking Quote e Appointments,
+As próximas capacidades são Booking Quote e Appointments,
 incluindo ocupação da agenda, idempotência e proteção contra concorrência.
 A avaliação de impacto dos bloqueios depende da implementação de Appointments.
