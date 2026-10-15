@@ -55,8 +55,8 @@ AvailabilityRule(Location, Professional)
 
 A leitura e a substituição de AvailabilityRules estão implementadas.
 A busca inicial de slots por agenda semanal e elegibilidade também está
-implementada. ScheduleBlocks e Appointments permanecem pendentes
-e ainda não são descontados da busca.
+implementada. ScheduleBlocks ativos são descontados da busca.
+Appointments permanecem pendentes e ainda não são descontados.
 
 As janelas usam dia da semana de 0 (domingo) a 6 (sábado) e horários
 locais da Location. Cada janela deve começar e terminar no mesmo dia,
@@ -141,7 +141,8 @@ Decisões de cálculo:
 A consulta permite selecionar um Professional ou buscar todos os elegíveis.
 Ausência de elegibilidade ou agenda produz lista vazia.
 
-Esta entrega ainda não subtrai ScheduleBlocks ou Appointments.
+Desde a entrega de 14/10/2026, a busca desconta ScheduleBlocks ativos.
+Appointments ainda não são descontados.
 O fluxo completo descrito acima permanece como objetivo das próximas etapas.
 Consultar slots não reserva horário; CreateAppointment deverá revalidar
 a disponibilidade e aplicar a proteção de concorrência.
@@ -216,6 +217,26 @@ O sistema propõe; cliente decide. Nunca mover sem consentimento.
 
 ## 14. Cancelamento
 Cancelamento muda estado e libera slot imediatamente. Refund é processo financeiro separado e assíncrono.
+### Implementação de ScheduleBlocks — 14/10/2026
+
+Criação, consulta e desativação estão implementadas.
+A avaliação de impacto sobre Appointments permanece pendente.
+
+- ProfessionalId null bloqueia a unidade inteira.
+- ProfessionalId preenchido bloqueia somente esse profissional na unidade.
+- Criação exige recursos e vínculo ativos e coerência de Business.
+- Idempotência usa TenantId + Operation + IdempotencyKey.
+- Hash considera unidade, profissional e instantes UTC.
+- Bloqueio e resposta original são persistidos atomicamente.
+- Mesma chave com conteúdo diferente retorna IDEMPOTENCY_CONFLICT.
+- Replay preserva a resposta original e não reativa bloqueios desativados.
+- A consulta retorna somente bloqueios ativos sobrepostos ao período.
+- Desativação preserva registros e datas; repetição não altera UpdatedAt.
+- Slots conflitantes são removidos após conversão para UTC,
+  preservando a grade de inícios da agenda-base.
+- Intervalos que apenas encostam não conflitam.
+
+Nenhum agendamento é movido ou cancelado automaticamente.
 
 ## 15. Idempotência
 Prioridade: CreateAppointment, RescheduleAppointment, CancelAppointment, CreateScheduleBlock.

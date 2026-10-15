@@ -145,6 +145,52 @@ Horários representam recorrência local; CreatedAt e UpdatedAt são
 instantes absolutos. TenantId é configurado como token de concorrência
 no EF Core, além do filtro de consulta e da validação de escrita.
 
+## ScheduleBlock e idempotência — implementação em 14/10/2026
+
+Migrations:
+- `20261014130625_AddScheduleBlocks`
+- `20261014183203_AddIdempotencyRecords`
+
+```text
+schedule_blocks
+id uuid PK
+tenant_id uuid NOT NULL
+location_id uuid NOT NULL
+professional_id uuid NULL
+starts_at timestamptz NOT NULL
+ends_at timestamptz NOT NULL
+is_active boolean NOT NULL DEFAULT true
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+
+FK(tenant_id,location_id) -> locations(tenant_id,id)
+FK(tenant_id,professional_id,location_id)
+  -> professional_locations(tenant_id,professional_id,location_id)
+ON DELETE RESTRICT
+CHECK(starts_at < ends_at)
+
+idempotency_records
+tenant_id uuid NOT NULL FK -> tenants(id) ON DELETE RESTRICT
+operation varchar(100) NOT NULL
+idempotency_key varchar(200) NOT NULL
+request_hash varchar(64) NOT NULL
+response_json jsonb NOT NULL
+created_at timestamptz NOT NULL
+PK(tenant_id,operation,idempotency_key)
+```
+
+ProfessionalId null permite bloqueio da unidade inteira.
+A FK obrigatória de Location mantém a referência dentro do tenant.
+
+Índices de ScheduleBlock:
+- `(tenant_id,location_id,professional_id,starts_at,ends_at)`
+- `(tenant_id,professional_id,location_id)`
+
+Ambas as entidades usam filtro de tenant e proteção de escrita no contexto.
+TenantId é token de concorrência no EF Core.
+A chave composta de idempotência impede duplicação da operação;
+a transação garante a gravação conjunta do bloqueio e da resposta.
+
 ## Appointment
 ```text
 appointments

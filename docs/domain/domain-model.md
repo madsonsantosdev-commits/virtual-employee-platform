@@ -152,6 +152,17 @@ Exceção/indisponibilidade vinculada a uma Location e opcionalmente a um Profes
 - `ProfessionalId = null`: bloqueia a Location inteira.
 
 Sistema apresenta impacto e oferece alternativas; nenhum cliente é movido sem consentimento.
+Implementação validada em 14/10/2026:
+
+- Campos: Id, TenantId, LocationId, ProfessionalId opcional,
+  StartsAt, EndsAt, IsActive, CreatedAt e UpdatedAt.
+- Instantes normalizados para UTC; início deve preceder o fim.
+- Intervalos usam [StartsAt, EndsAt); bloqueios podem atravessar dias.
+- Criação idempotente por tenant, operação e chave, com resposta original persistida.
+- Desativação preserva o registro e libera os slots afetados.
+- Repetir a desativação não altera novamente UpdatedAt.
+- A busca desconta bloqueios ativos da unidade e do profissional.
+- Avaliação de impacto sobre Appointments permanece pendente.
 
 ### Customer
 Cliente final. Telefone/WhatsApp é identificador operacional principal, mas não PK.

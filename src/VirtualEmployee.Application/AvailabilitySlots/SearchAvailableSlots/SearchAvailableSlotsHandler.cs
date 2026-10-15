@@ -146,6 +146,26 @@ public sealed class SearchAvailableSlotsHandler
             }
         }
 
+        // Filtra os bloqueios antes de copiar os slots para a resposta.
+        if (slots.Count > 0)
+        {
+            var blocks = await _readService.GetBlocksAsync(
+                location.Id,
+                slots.Min(slot => slot.StartsAt),
+                slots.Max(slot => slot.EndsAt),
+                query.ProfessionalId,
+                cancellationToken);
+
+            slots.RemoveAll(slot =>
+                blocks.Any(block =>
+                    block.IsActive &&
+                    block.LocationId == location.Id &&
+                    (block.ProfessionalId is null ||
+                     block.ProfessionalId == slot.ProfessionalId) &&
+                    block.StartsAt < slot.EndsAt &&
+                    slot.StartsAt < block.EndsAt));
+        }
+
         var response = new SearchAvailableSlotsResponse(
             location.Id,
             query.Date,

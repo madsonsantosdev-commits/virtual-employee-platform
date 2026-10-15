@@ -4,6 +4,7 @@ using VirtualEmployee.Domain.Businesses;
 using VirtualEmployee.Domain.BusinessTypes;
 using VirtualEmployee.Domain.Locations;
 using VirtualEmployee.Domain.Services;
+using VirtualEmployee.Application.ScheduleBlocks;
 using Xunit;
 
 namespace VirtualEmployee.Application.Tests.AvailabilitySlots;
@@ -255,6 +256,88 @@ public sealed class SearchAvailableSlotsHandlerTests
         // A busca de janelas não deve ocorrer após falha de validação.
         Assert.Null(readService.RequestedDay);
     }
+
+    [Theory]
+    [InlineData("location", 3)]
+    [InlineData("professional", 3)]
+    [InlineData("other-professional", 7)]
+    [InlineData("inactive", 7)]
+    [InlineData("other-location", 7)]
+    [InlineData("ends-at-window-start", 7)]
+    [InlineData("starts-at-window-end", 7)]
+    public async Task HandleAsync_ShouldExcludeOnlySlotsOverlappingApplicableBlocks(
+        string scenario,
+        int expectedCount)
+    {
+        var readService = new FakeReadService();
+
+        var blockStart = new DateTimeOffset(
+            2026, 10, 19, 10, 0, 0, TimeSpan.Zero);
+
+        var blockEnd = blockStart.AddMinutes(30);
+
+        if (scenario == "ends-at-window-start")
+        {
+            blockStart = new DateTimeOffset(
+                2026, 10, 19, 8, 0, 0, TimeSpan.Zero);
+            blockEnd = blockStart.AddHours(1);
+        }
+        else if (scenario == "starts-at-window-end")
+        {
+            blockStart = new DateTimeOffset(
+                2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+            blockEnd = blockStart.AddHours(1);
+        }
+
+        Guid? blockProfessionalId = scenario switch
+        {
+            "professional" => readService.ProfessionalId,
+            "other-professional" => Guid.NewGuid(),
+            _ => null
+        };
+
+        readService.Blocks =
+        [
+            new ScheduleBlockResponse(
+                Guid.NewGuid(),
+                scenario == "other-location"
+                    ? Guid.NewGuid()
+                    : readService.Location.Id,
+                blockProfessionalId,
+                blockStart,
+                blockEnd,
+                scenario != "inactive",
+                blockStart.AddDays(-1),
+                blockStart.AddDays(-1))
+        ];
+
+        var handler = CreateHandler(
+            readService,
+            new DateTimeOffset(2026, 10, 13, 12, 0, 0, TimeSpan.Zero));
+
+        var result = await handler.HandleAsync(CreateQuery(readService));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Response);
+        Assert.Equal(expectedCount, result.Response.Slots.Count);
+
+        if (scenario is "location" or "professional")
+        {
+            // 09h–10h termina no início do bloqueio e permanece disponível.
+            // O próximo início válido na grade é 10h40.
+            Assert.Equal(
+                new[]
+                {
+                    new DateTimeOffset(
+                        2026, 10, 19, 9, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(
+                        2026, 10, 19, 10, 40, 0, TimeSpan.Zero),
+                    new DateTimeOffset(
+                        2026, 10, 19, 11, 0, 0, TimeSpan.Zero)
+                },
+                result.Response.Slots.Select(slot => slot.StartsAt).ToArray());
+        }
+    }
     private static SearchAvailableSlotsQuery CreateQuery(
         FakeReadService readService)
     {
@@ -287,10 +370,19 @@ public sealed class SearchAvailableSlotsHandlerTests
         public Guid ProfessionalId { get; } = Guid.NewGuid();
         public IReadOnlyList<Service> Services { get; }
         public IReadOnlyList<AvailabilityWindow> Windows { get; set; }
-
+        public IReadOnlyList<ScheduleBlockResponse> Blocks { get; set; } = [];
         public DayOfWeek? RequestedDay { get; private set; }
         public Guid[]? RequestedServiceIds { get; private set; }
         public int LocationReadCount { get; private set; }
+        public Task<IReadOnlyList<ScheduleBlockResponse>> GetBlocksAsync(
+            Guid locationId,
+            DateTimeOffset from,
+            DateTimeOffset to,
+            Guid? professionalId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Blocks);
+        }
         public FakeReadService()
         {
             var tenantId = Guid.NewGuid();

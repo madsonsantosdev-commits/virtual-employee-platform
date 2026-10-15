@@ -461,6 +461,59 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.ScheduleBlock", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<Guid>("LocationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("location_id");
+
+                    b.Property<Guid?>("ProfessionalId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("professional_id");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ProfessionalId", "LocationId");
+
+                    b.HasIndex("TenantId", "LocationId", "ProfessionalId", "StartsAt", "EndsAt");
+
+                    b.ToTable("schedule_blocks", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_schedule_blocks_time_window", "starts_at < ends_at");
+                        });
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Services.LocationService", b =>
                 {
                     b.Property<Guid>("TenantId")
@@ -595,6 +648,43 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                     b.ToTable("tenants", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Infrastructure.Persistence.Idempotency.IdempotencyRecord", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Operation")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("operation");
+
+                    b.Property<string>("Key")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<string>("ResponseJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("response_json");
+
+                    b.HasKey("TenantId", "Operation", "Key");
+
+                    b.ToTable("idempotency_records", (string)null);
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Businesses.Business", b =>
                 {
                     b.HasOne("VirtualEmployee.Domain.BusinessTypes.BusinessType", null)
@@ -685,6 +775,21 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.ScheduleBlock", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Locations.Location", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "LocationId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualEmployee.Domain.Professionals.ProfessionalLocation", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ProfessionalId", "LocationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Services.LocationService", b =>
                 {
                     b.HasOne("VirtualEmployee.Domain.Tenants.Tenant", null)
@@ -737,6 +842,15 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("TenantId", "ComponentServiceId")
                         .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Infrastructure.Persistence.Idempotency.IdempotencyRecord", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Tenants.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

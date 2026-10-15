@@ -87,8 +87,10 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] AvailabilityRule: persistência, leitura e substituição via API
 - [x] Validações de janelas, recursos ativos, Business e isolamento entre tenants
 - [x] Busca de slots por agenda semanal, elegibilidade, duração e timezone
-- [ ] ScheduleBlocks: bloqueios e exceções da agenda
-- [ ] Descontar bloqueios e agendamentos ocupantes na busca de slots
+- [x] ScheduleBlocks: criação idempotente, consulta e desativação
+- [x] Descontar bloqueios da unidade e do profissional na busca de slots
+- [ ] Avaliação de impacto dos bloqueios sobre Appointments
+- [ ] Descontar agendamentos ocupantes na busca de slots
 - [ ] Appointment e proteção contra agendamentos concorrentes
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -97,25 +99,27 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 13/10/2026
+### Última validação local — 14/10/2026
 
-- Suíte completa: 394 testes passaram, sem falhas ou ignorados.
-- AvailableSlots: 11 testes de domínio, 27 de Application, 1 de leitura no PostgreSQL e 27 HTTP.
-- Validados duração, intervalo entre inícios, descansos, janelas adjacentes, timezone e exclusão de horários passados.
-- Validados recursos inativos, payloads inválidos, elegibilidade para todos os serviços, COMBO explícito e isolamento entre tenants.
-- Validação manual no PowerShell: busca com e sem profissional, dia sem expediente e rejeição de IDs duplicados.
-- Corte + Barba: duração total de 65 minutos, com 18 slots respeitando as janelas de São Paulo e retornados em UTC.
+- Suíte completa: 483 testes passaram, sem falhas ou ignorados.
+- ScheduleBlocks: 20 testes de domínio, 14 do handler de criação, 22 de persistência/leitura e 24 HTTP.
+- Integração com slots: 7 novos testes de Application e 2 HTTP.
+- Validados escopos de unidade e profissional, intervalos, UTC, desativação, datas e isolamento entre tenants.
+- Idempotência validada com replay, offsets equivalentes, conflito de conteúdo e requisições concorrentes.
+- Validação manual no PowerShell: criação 201, replay com mesmo ID, conflito 409, consulta 200 e desativação 204.
+- Bloqueio do Arthur das 10h às 10h30 reduziu os slots de 18 para 13; a desativação restaurou os 18 slots.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
-de elegibilidade e AvailabilityRules estão integrados à `main`.
+de elegibilidade, AvailabilityRules e a busca inicial de slots
+estão integrados à `main`.
 
-AvailableSlots está implementado na branch `feature/available-slots`,
+ScheduleBlocks está implementado na branch `feature/schedule-blocks`,
 com validação automatizada e manual concluída e integração à `main` pendente.
 
-A busca atual considera agenda semanal e elegibilidade.
-ScheduleBlocks e Appointments ainda não são descontados.
+A busca considera agenda semanal, elegibilidade e bloqueios ativos.
+Appointments ainda não são descontados.
 Slots representam disponibilidade calculada; não constituem reserva.
 
-A próxima etapa prevista é implementar ScheduleBlocks e integrar
-os bloqueios ao cálculo, seguida da ocupação por Appointments
-e da proteção contra agendamentos concorrentes.
+As próximas capacidades são Customers, Booking Quote e Appointments,
+incluindo ocupação da agenda, idempotência e proteção contra concorrência.
+A avaliação de impacto dos bloqueios depende da implementação de Appointments.

@@ -8,6 +8,7 @@ using VirtualEmployee.Domain.Locations;
 using VirtualEmployee.Domain.Services;
 using VirtualEmployee.Domain.Professionals;
 using VirtualEmployee.Domain.Scheduling;
+using VirtualEmployee.Infrastructure.Persistence.Idempotency;
 namespace VirtualEmployee.Infrastructure.Persistence;
 
 public sealed class AppDbContext : DbContext
@@ -33,7 +34,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProfessionalLocation> ProfessionalLocations => Set<ProfessionalLocation>();
     public DbSet<ProfessionalService> ProfessionalServices => Set<ProfessionalService>();
     public DbSet<AvailabilityRule> AvailabilityRules => Set<AvailabilityRule>();
-    public Guid CurrentTenantId => _tenantContext.TenantId;
+    public DbSet<ScheduleBlock> ScheduleBlocks => Set<ScheduleBlock>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords =>
+    Set<IdempotencyRecord>();    public Guid CurrentTenantId => _tenantContext.TenantId;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -81,7 +84,15 @@ public sealed class AppDbContext : DbContext
                 availabilityRule =>
                     availabilityRule.TenantId == CurrentTenantId);
 
-        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<ScheduleBlock>()
+            .HasQueryFilter(
+                scheduleBlock =>
+                    scheduleBlock.TenantId == CurrentTenantId);
+
+        modelBuilder.Entity<IdempotencyRecord>()
+            .HasQueryFilter(
+                record => record.TenantId == CurrentTenantId);
+                base.OnModelCreating(modelBuilder);
     }
 
     public override int SaveChanges(
