@@ -166,6 +166,24 @@ public sealed class SearchAvailableSlotsHandler
                     slot.StartsAt < block.EndsAt));
         }
 
+        if (slots.Count > 0)
+        {
+            var occupiedWindows =
+                await _readService.GetOccupiedAppointmentsAsync(
+                    slots.Select(slot => slot.ProfessionalId)
+                        .Distinct()
+                        .ToArray(),
+                    slots.Min(slot => slot.StartsAt),
+                    slots.Max(slot => slot.EndsAt),
+                    cancellationToken);
+
+            slots.RemoveAll(slot =>
+                occupiedWindows.Any(occupied =>
+                    occupied.ProfessionalId == slot.ProfessionalId &&
+                    occupied.StartsAt < slot.EndsAt &&
+                    slot.StartsAt < occupied.EndsAt));
+        }
+
         var response = new SearchAvailableSlotsResponse(
             location.Id,
             query.Date,

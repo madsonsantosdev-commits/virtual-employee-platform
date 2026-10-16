@@ -6,6 +6,7 @@ using VirtualEmployee.Domain.Services;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Application.ScheduleBlocks;
 using VirtualEmployee.Infrastructure.ScheduleBlocks;
+using VirtualEmployee.Domain.Scheduling;
 namespace VirtualEmployee.Infrastructure.AvailabilitySlots;
 
 public sealed class AvailabilitySlotReadService
@@ -138,5 +139,36 @@ public sealed class AvailabilitySlotReadService
                 to,
                 professionalId,
                 cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<OccupiedAppointmentWindow>>
+        GetOccupiedAppointmentsAsync(
+            IReadOnlyList<Guid> professionalIds,
+            DateTimeOffset from,
+            DateTimeOffset to,
+            CancellationToken cancellationToken = default)
+    {
+        var ids = professionalIds.Distinct().ToArray();
+
+        if (ids.Length == 0)
+        {
+            return Array.Empty<OccupiedAppointmentWindow>();
+        }
+
+        return await _dbContext.Appointments
+            .AsNoTracking()
+            .Where(appointment =>
+                ids.Contains(appointment.ProfessionalId) &&
+                (appointment.Status == AppointmentStatus.Pending ||
+                 appointment.Status == AppointmentStatus.Confirmed ||
+                 appointment.Status == AppointmentStatus.ConfirmedByClient ||
+                 appointment.Status == AppointmentStatus.RescheduleRequested) &&
+                appointment.StartsAt < to &&
+                from < appointment.EndsAt)
+            .Select(appointment => new OccupiedAppointmentWindow(
+                appointment.ProfessionalId,
+                appointment.StartsAt,
+                appointment.EndsAt))
+            .ToListAsync(cancellationToken);
     }
 }

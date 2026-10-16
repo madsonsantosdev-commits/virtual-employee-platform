@@ -777,15 +777,130 @@ Location e Services sejam válidos.
 
 ### Limite desta entrega
 
-A busca considera elegibilidade, agenda semanal e ScheduleBlocks ativos.
-Appointments ainda não são descontados.
+A busca considera elegibilidade, agenda semanal, ScheduleBlocks ativos
+e Appointments nos estados que ocupam agenda.
+A ocupação considera o profissional em todas as unidades do tenant.
 Slots não são persistidos e não constituem reserva nem lock.
 
-O fluxo completo previsto permanece:
+O fluxo de disponibilidade implementado é:
 LocationService -> ProfessionalLocation -> ProfessionalService ->
 AvailabilityRule -> ScheduleBlock -> Appointments.
 
 ## 10. Appointments
+
+### Implementação incremental — 16/10/2026
+
+Rotas implementadas:
+- `POST /api/v1/appointments`
+- `GET /api/v1/appointments/{appointmentId}`
+
+O header `X-Tenant-Id` é temporário para desenvolvimento.
+A listagem, o cancelamento e o reagendamento descritos abaixo
+permanecem como contratos futuros.
+
+#### Criação e idempotência
+
+A criação exige `Idempotency-Key`, com até 200 caracteres,
+sem espaços ou caracteres de controle.
+
+CustomerId, LocationId, ProfessionalId, StartsAt e pelo menos
+um ServiceId são obrigatórios. IDs vazios ou duplicados são rejeitados.
+StartsAt deve representar um instante com precisão máxima de microssegundos.
+
+O backend valida:
+- Location e Business ativos;
+- Customer pertencente ao Business da Location;
+- Professional ativo e do mesmo Business;
+- ProfessionalLocation existente e ativo;
+- todos os Services ativos, do mesmo Business e oferecidos na unidade;
+- ProfessionalService ativo para todos os serviços, inclusive COMBO;
+- início futuro, pertencente à grade da agenda;
+- intervalo completo disponível, respeitando timezone e bloqueios;
+- ausência de Appointment ocupante do profissional em qualquer unidade
+  do tenant.
+
+Appointment, itens e resposta idempotente são persistidos atomicamente.
+Preço e duração são calculados no backend e preservados em snapshots.
+COMBO usa seus próprios valores, sem expandir componentes.
+
+Criação e replay retornam `201`, com o header
+`Location: /api/v1/appointments/{id}`.
+
+Exemplo de resposta:
+
+```json
+{
+  "id": "<appointment-id>",
+  "businessId": "<business-id>",
+  "locationId": "<location-id>",
+  "customerId": "<customer-id>",
+  "professionalId": "<professional-id>",
+  "startsAt": "2026-10-19T12:00:00+00:00",
+  "endsAt": "2026-10-19T12:45:00+00:00",
+  "status": "PENDING",
+  "totalPrice": 65.00,
+  "totalDurationMinutes": 45,
+  "reservationExpiresAt": "2026-10-16T22:48:05+00:00",
+  "items": [
+    {
+      "serviceId": "<service-id>",
+      "name": "Corte",
+      "price": 65.00,
+      "durationMinutes": 45
+    }
+  ],
+  "createdAt": "2026-10-16T22:38:05+00:00",
+  "updatedAt": "2026-10-16T22:38:05+00:00"
+}
+```
+
+Mesma chave e conteúdo equivalente retornam a resposta original.
+Offsets diferentes para o mesmo instante são equivalentes.
+A ordem de ServiceIds faz parte do conteúdo da requisição.
+Mesma chave com conteúdo diferente retorna `409 IDEMPOTENCY_CONFLICT`.
+
+Replay não revalida o catálogo nem reativa reservas expiradas.
+Pode retornar PENDING na resposta original mesmo quando o estado atual
+já é EXPIRED; consulte o recurso por ID para obter o estado atual.
+
+#### Consulta por ID
+
+Retorna `200` com o estado e os snapshots persistidos.
+Os itens são ordenados por ServiceId.
+Appointment inexistente ou de outro tenant retorna `404`.
+GUID vazio retorna `400`.
+
+#### Resultados da criação
+
+| Resultado | HTTP |
+| --- | --- |
+| Criação ou replay concluído | 201 |
+| Entrada ou chave de idempotência inválida | 400 |
+| Recurso ou ProfessionalLocation inexistente ou de outro tenant | 404 |
+| Horário indisponível | 409, code SLOT_UNAVAILABLE |
+| Mesma chave com conteúdo diferente | 409, code IDEMPOTENCY_CONFLICT |
+| Recursos inativos, inelegíveis, de Business incompatível ou totais inválidos | 409, code APPOINTMENT_CONFLICT |
+| Timezone não resolvida pelo servidor | 500 |
+
+Os códigos de conflito são retornados no campo `code` de Problem Details.
+
+#### Expiração implementada
+
+A configuração usa a seção `Scheduling:Reservations`:
+- `LifetimeMinutes`: padrão 10, inteiro positivo;
+- `ExpirationWorkerEnabled`: padrão false;
+- `ExpirationIntervalSeconds`: padrão 30, inteiro positivo.
+
+A expiração da reserva é limitada ao início do atendimento.
+O worker exige ativação explícita e executa ciclos em escopos separados
+por tenant, alterando somente PENDING com prazo vencido para EXPIRED.
+A repetição preserva UpdatedAt dos registros já expirados.
+
+A agenda é liberada quando a mudança para EXPIRED é persistida.
+Enquanto permanecer PENDING, o registro continua ocupando o intervalo,
+mesmo após o prazo.
+A confirmação por pagamento ainda não está implementada nesta entrega.
+
 `GET /appointments?locationId=<uuid>`
 `GET /appointments/{appointmentId}`
 

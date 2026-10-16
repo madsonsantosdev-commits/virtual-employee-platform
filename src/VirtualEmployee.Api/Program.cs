@@ -30,6 +30,8 @@ using VirtualEmployee.Application.Customers.CreateCustomer;
 using VirtualEmployee.Application.Customers.GetCustomerById;
 using VirtualEmployee.Application.Customers.GetCustomers;
 using VirtualEmployee.Application.BookingQuotes.GetBookingQuote;
+using VirtualEmployee.Application.Appointments.CreateAppointment;
+using VirtualEmployee.Application.Appointments.GetAppointmentById;
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenAPI
@@ -73,6 +75,8 @@ builder.Services.AddScoped<CreateCustomerHandler>();
 builder.Services.AddScoped<GetCustomersHandler>();
 builder.Services.AddScoped<GetCustomerByIdHandler>();
 builder.Services.AddScoped<GetBookingQuoteHandler>();
+builder.Services.AddScoped<CreateAppointmentHandler>();
+builder.Services.AddScoped<GetAppointmentByIdHandler>();
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
 
@@ -104,6 +108,7 @@ app.MapAvailabilitySlotsEndpoints();
 app.MapScheduleBlocksEndpoints();
 app.MapCustomersEndpoints();
 app.MapBookingQuotesEndpoints();
+app.MapAppointmentsEndpoints();
 app.Run();
 
 public partial class Program;

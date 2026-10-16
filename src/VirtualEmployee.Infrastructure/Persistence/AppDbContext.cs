@@ -37,6 +37,9 @@ public sealed class AppDbContext : DbContext
     public DbSet<AvailabilityRule> AvailabilityRules => Set<AvailabilityRule>();
     public DbSet<ScheduleBlock> ScheduleBlocks => Set<ScheduleBlock>();
     public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<Appointment> Appointments => Set<Appointment>();
+    public DbSet<AppointmentItem> AppointmentItems =>
+        Set<AppointmentItem>();
     public DbSet<IdempotencyRecord> IdempotencyRecords =>
     Set<IdempotencyRecord>();    public Guid CurrentTenantId => _tenantContext.TenantId;
 
@@ -97,7 +100,14 @@ public sealed class AppDbContext : DbContext
 
         modelBuilder.Entity<Customer>()
             .HasQueryFilter(
-                customer => customer.TenantId == CurrentTenantId);
+        customer => customer.TenantId == CurrentTenantId);
+            modelBuilder.Entity<Appointment>()
+            .HasQueryFilter(
+                appointment => appointment.TenantId == CurrentTenantId);
+
+        modelBuilder.Entity<AppointmentItem>()
+            .HasQueryFilter(
+                item => item.TenantId == CurrentTenantId);
                 base.OnModelCreating(modelBuilder);
     }
 
