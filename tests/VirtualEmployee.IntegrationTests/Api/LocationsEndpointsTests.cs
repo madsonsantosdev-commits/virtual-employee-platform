@@ -30,6 +30,8 @@ public sealed class LocationsEndpointsTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task GetLocations_ShouldReturnOnlyLocationsFromCurrentTenant()
     {
@@ -652,6 +654,7 @@ public sealed class LocationsEndpointsTests
                 tenantBId);
         }
     }
+
     [Fact]
     public async Task CreateLocation_WithInvalidRequest_ShouldReturnBadRequest()
     {
@@ -735,32 +738,6 @@ public sealed class LocationsEndpointsTests
                 options,
                 tenantId);
         }
-    }
-    private WebApplicationFactory<Program> CreateFactory()
-    {
-        return new WebApplicationFactory<Program>()
-            .WithWebHostBuilder(builder =>
-            {
-                builder.UseEnvironment("Development");
-                builder.UseSetting(
-                    "ConnectionStrings:Database",
-                    _fixture.ConnectionString);
-
-                builder.ConfigureTestServices(services =>
-                {
-                    services.RemoveAll<
-                        DbContextOptions<AppDbContext>>();
-
-                    services.RemoveAll<AppDbContext>();
-
-                    services.AddDbContext<AppDbContext>(
-                        options =>
-                        {
-                            options.UseNpgsql(
-                                _fixture.ConnectionString);
-                        });
-                });
-            });
     }
 
     [Fact]
@@ -1139,6 +1116,38 @@ public sealed class LocationsEndpointsTests
                 tenantId);
         }
     }
+
+    #endregion
+
+    #region Helpers
+
+    private WebApplicationFactory<Program> CreateFactory()
+    {
+        return new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Development");
+                builder.UseSetting(
+                    "ConnectionStrings:Database",
+                    _fixture.ConnectionString);
+
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<
+                        DbContextOptions<AppDbContext>>();
+
+                    services.RemoveAll<AppDbContext>();
+
+                    services.AddDbContext<AppDbContext>(
+                        options =>
+                        {
+                            options.UseNpgsql(
+                                _fixture.ConnectionString);
+                        });
+                });
+            });
+    }
+
     private async Task SeedAsync(
         Guid tenantAId,
         Guid tenantBId,
@@ -1360,4 +1369,6 @@ public sealed class LocationsEndpointsTests
 
         await context.SaveChangesAsync();
     }
+
+    #endregion
 }

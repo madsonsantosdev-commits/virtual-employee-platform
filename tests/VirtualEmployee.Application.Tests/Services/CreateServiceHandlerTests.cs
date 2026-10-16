@@ -7,6 +7,8 @@ namespace VirtualEmployee.Application.Tests.Services;
 
 public sealed class CreateServiceHandlerTests
 {
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_WithSingleService_ShouldCreateService()
     {
@@ -378,6 +380,10 @@ public sealed class CreateServiceHandlerTests
         Assert.Equal(0, writeService.SaveChangesCallCount);
     }
 
+    #endregion
+
+    #region Helpers
+
     private static FakeTenantContext CreateTenantContext(Guid tenantId)
     {
         return new FakeTenantContext(tenantId);
@@ -395,4 +401,6 @@ public sealed class CreateServiceHandlerTests
             30,
             DateTimeOffset.UtcNow);
     }
+
+    #endregion
 }

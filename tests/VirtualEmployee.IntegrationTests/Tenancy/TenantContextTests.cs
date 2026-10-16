@@ -8,6 +8,8 @@ namespace VirtualEmployee.IntegrationTests.Tenancy;
 
 public sealed class TenantContextTests
 {
+    #region Facts
+
     [Fact]
     public void TenantId_WhenNotInitialized_ShouldThrow()
     {
@@ -73,4 +75,6 @@ public sealed class TenantContextTests
         Assert.True(context.IsInitialized);
         Assert.Equal(tenantId, context.TenantId);
     }
+
+    #endregion
 }

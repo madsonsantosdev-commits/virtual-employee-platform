@@ -27,6 +27,8 @@ public sealed class ScheduleBlockPersistenceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task ScheduleBlock_WithMissingProfessionalLocation_ShouldRejectReference()
     {
@@ -527,6 +529,10 @@ public sealed class ScheduleBlockPersistenceTests
             await CleanupAsync(tenantId);
         }
     }
+
+    #endregion
+
+    #region Theories
 
     [Theory]
     [InlineData(false)]
@@ -1152,6 +1158,10 @@ public sealed class ScheduleBlockPersistenceTests
         }
     }
 
+    #endregion
+
+    #region Helpers
+
     private sealed class ConcurrentSaveGate
         : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
     {
@@ -1181,6 +1191,7 @@ public sealed class ScheduleBlockPersistenceTests
             return result;
         }
     }
+
     private AppDbContext CreateContext(
         Guid tenantId,
         Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor?
@@ -1286,4 +1297,6 @@ public sealed class ScheduleBlockPersistenceTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }

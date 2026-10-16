@@ -29,6 +29,8 @@ public sealed class BusinessEndpointsTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task GetBusiness_WithBusinessFromCurrentTenant_ShouldReturnOk()
     {
@@ -713,6 +715,11 @@ public sealed class BusinessEndpointsTests
                 tenantId);
         }
     }
+
+    #endregion
+
+    #region Helpers
+
     private WebApplicationFactory<Program> CreateFactory()
     {
         return new WebApplicationFactory<Program>()
@@ -815,4 +822,6 @@ public sealed class BusinessEndpointsTests
 
         await context.SaveChangesAsync();
     }
+
+    #endregion
 }

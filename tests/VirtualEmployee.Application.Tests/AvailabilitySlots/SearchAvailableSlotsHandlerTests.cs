@@ -13,6 +13,8 @@ public sealed class SearchAvailableSlotsHandlerTests
 {
     private static readonly DateOnly SearchDate = new(2026, 10, 19);
 
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_ShouldSumDurationsAndReturnOrderedSlots()
     {
@@ -98,6 +100,10 @@ public sealed class SearchAvailableSlotsHandlerTests
         Assert.Equal(60, result.Response.TotalDurationMinutes);
         Assert.Empty(result.Response.Slots);
     }
+
+    #endregion
+
+    #region Theories
 
     [Theory]
     [InlineData("empty-location")]
@@ -338,6 +344,11 @@ public sealed class SearchAvailableSlotsHandlerTests
                 result.Response.Slots.Select(slot => slot.StartsAt).ToArray());
         }
     }
+
+    #endregion
+
+    #region Helpers
+
     private static SearchAvailableSlotsQuery CreateQuery(
         FakeReadService readService)
     {
@@ -478,4 +489,6 @@ public sealed class SearchAvailableSlotsHandlerTests
             return Task.FromResult(Windows);
         }
     }
+
+    #endregion
 }

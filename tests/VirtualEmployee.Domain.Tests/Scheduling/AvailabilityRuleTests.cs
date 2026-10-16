@@ -8,6 +8,8 @@ public sealed class AvailabilityRuleTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 10, 9, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public void Constructor_WithValidData_ShouldCreateActiveRule()
     {
@@ -37,6 +39,54 @@ public sealed class AvailabilityRuleTests
         Assert.Equal(CreatedAt, rule.CreatedAt);
         Assert.Equal(CreatedAt, rule.UpdatedAt);
     }
+
+    [Fact]
+    public void Update_WithChanges_ShouldPreserveIdentityAndCreatedAt()
+    {
+        var rule = CreateRule();
+        var id = rule.Id;
+        var tenantId = rule.TenantId;
+        var locationId = rule.LocationId;
+        var professionalId = rule.ProfessionalId;
+        var updatedAt = CreatedAt.AddHours(1);
+
+        rule.Update(
+            DayOfWeek.Tuesday,
+            new TimeOnly(13, 0),
+            new TimeOnly(18, 0),
+            false,
+            updatedAt);
+
+        Assert.Equal(id, rule.Id);
+        Assert.Equal(tenantId, rule.TenantId);
+        Assert.Equal(locationId, rule.LocationId);
+        Assert.Equal(professionalId, rule.ProfessionalId);
+        Assert.Equal(DayOfWeek.Tuesday, rule.DayOfWeek);
+        Assert.Equal(new TimeOnly(13, 0), rule.StartTime);
+        Assert.Equal(new TimeOnly(18, 0), rule.EndTime);
+        Assert.False(rule.IsActive);
+        Assert.Equal(CreatedAt, rule.CreatedAt);
+        Assert.Equal(updatedAt, rule.UpdatedAt);
+    }
+
+    [Fact]
+    public void Update_WithoutChanges_ShouldPreserveUpdatedAt()
+    {
+        var rule = CreateRule();
+
+        rule.Update(
+            rule.DayOfWeek,
+            rule.StartTime,
+            rule.EndTime,
+            rule.IsActive,
+            CreatedAt.AddHours(1));
+
+        Assert.Equal(CreatedAt, rule.UpdatedAt);
+    }
+
+    #endregion
+
+    #region Theories
 
     [Theory]
     [InlineData(0, "id")]
@@ -105,50 +155,6 @@ public sealed class AvailabilityRuleTests
         Assert.Equal("endTime", exception.ParamName);
     }
 
-    [Fact]
-    public void Update_WithChanges_ShouldPreserveIdentityAndCreatedAt()
-    {
-        var rule = CreateRule();
-        var id = rule.Id;
-        var tenantId = rule.TenantId;
-        var locationId = rule.LocationId;
-        var professionalId = rule.ProfessionalId;
-        var updatedAt = CreatedAt.AddHours(1);
-
-        rule.Update(
-            DayOfWeek.Tuesday,
-            new TimeOnly(13, 0),
-            new TimeOnly(18, 0),
-            false,
-            updatedAt);
-
-        Assert.Equal(id, rule.Id);
-        Assert.Equal(tenantId, rule.TenantId);
-        Assert.Equal(locationId, rule.LocationId);
-        Assert.Equal(professionalId, rule.ProfessionalId);
-        Assert.Equal(DayOfWeek.Tuesday, rule.DayOfWeek);
-        Assert.Equal(new TimeOnly(13, 0), rule.StartTime);
-        Assert.Equal(new TimeOnly(18, 0), rule.EndTime);
-        Assert.False(rule.IsActive);
-        Assert.Equal(CreatedAt, rule.CreatedAt);
-        Assert.Equal(updatedAt, rule.UpdatedAt);
-    }
-
-    [Fact]
-    public void Update_WithoutChanges_ShouldPreserveUpdatedAt()
-    {
-        var rule = CreateRule();
-
-        rule.Update(
-            rule.DayOfWeek,
-            rule.StartTime,
-            rule.EndTime,
-            rule.IsActive,
-            CreatedAt.AddHours(1));
-
-        Assert.Equal(CreatedAt, rule.UpdatedAt);
-    }
-
     [Theory]
     [InlineData(-1, 9, 12)]
     [InlineData(7, 9, 12)]
@@ -176,6 +182,10 @@ public sealed class AvailabilityRuleTests
         Assert.Equal(CreatedAt, rule.UpdatedAt);
     }
 
+    #endregion
+
+    #region Helpers
+
     private static AvailabilityRule CreateRule(
         DayOfWeek dayOfWeek = DayOfWeek.Monday)
     {
@@ -189,4 +199,6 @@ public sealed class AvailabilityRuleTests
             new TimeOnly(12, 0),
             CreatedAt);
     }
+
+    #endregion
 }

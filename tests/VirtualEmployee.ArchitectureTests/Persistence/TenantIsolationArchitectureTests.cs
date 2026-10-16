@@ -8,6 +8,8 @@ namespace VirtualEmployee.ArchitectureTests.Persistence;
 
 public sealed class TenantIsolationArchitectureTests
 {
+    #region Facts
+
     [Fact]
     public void TenantScopedEntities_ShouldHaveIsolationSafeguards()
     {
@@ -50,10 +52,16 @@ public sealed class TenantIsolationArchitectureTests
         }
     }
 
+    #endregion
+
+    #region Helpers
+
     private static bool IsTenantScopedEntity(
         IReadOnlyEntityType entityType)
     {
         return typeof(ITenantScoped)
             .IsAssignableFrom(entityType.ClrType);
     }
+
+    #endregion
 }

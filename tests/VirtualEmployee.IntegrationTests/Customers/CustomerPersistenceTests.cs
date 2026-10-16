@@ -24,6 +24,8 @@ public sealed class CustomerPersistenceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task Customer_ShouldBeInvisibleToAnotherTenant()
     {
@@ -171,7 +173,7 @@ public sealed class CustomerPersistenceTests
         }
     }
 
-[Fact]
+    [Fact]
     public async Task CustomerServices_ShouldIsolateCustomersAndBusinessesByTenant()
     {
         var tenantAId = Guid.NewGuid();
@@ -311,6 +313,10 @@ public sealed class CustomerPersistenceTests
             await CleanupAsync(ownerTenantId);
         }
     }
+
+    #endregion
+
+    #region Theories
 
     [Theory]
     [InlineData(false)]
@@ -600,6 +606,10 @@ public sealed class CustomerPersistenceTests
         }
     }
 
+    #endregion
+
+    #region Helpers
+
     private AppDbContext CreateContext(Guid tenantId)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -651,4 +661,6 @@ public sealed class CustomerPersistenceTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }

@@ -36,6 +36,8 @@ public sealed class ProfessionalsEndpointsTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task GetProfessionals_ShouldReturnOnlyProfessionalsFromCurrentTenant()
     {
@@ -366,100 +368,6 @@ public sealed class ProfessionalsEndpointsTests
             Assert.True(persistedLink.IsActive);
             Assert.Equal(CreatedAt, persistedLink.CreatedAt);
             Assert.True(persistedLink.UpdatedAt > CreatedAt);
-        }
-        finally
-        {
-            await CleanupAsync(tenantId);
-        }
-    }
-
-    [Theory]
-    [InlineData("missing")]
-    [InlineData("null")]
-    [InlineData("empty-guid")]
-    [InlineData("duplicate")]
-    public async Task ProfessionalLocations_WithInvalidRequest_ShouldReturnBadRequestAndPreserveLink(
-        string invalidCase)
-    {
-        var tenantId = Guid.NewGuid();
-        var businessId = Guid.NewGuid();
-        var professionalId = Guid.NewGuid();
-        var locationId = Guid.NewGuid();
-
-        try
-        {
-            await SeedAsync(
-                tenantId,
-                businessId,
-                professionalId,
-                "Professional");
-
-            await using (var context = new AppDbContext(
-                CreateOptions(),
-                CreateTenantContext(tenantId)))
-            {
-                context.Locations.Add(
-                    new Location(
-                        locationId,
-                        tenantId,
-                        businessId,
-                        "Location",
-                        "BR",
-                        "America/Sao_Paulo",
-                        CreatedAt));
-
-                context.ProfessionalLocations.Add(
-                    new ProfessionalLocation(
-                        tenantId,
-                        professionalId,
-                        locationId,
-                        CreatedAt));
-
-                await context.SaveChangesAsync();
-            }
-
-            object payload = invalidCase switch
-            {
-                "missing" => new { },
-                "null" => new { locationIds = (Guid[]?)null },
-                "empty-guid" => new
-                {
-                    locationIds = new[] { locationId, Guid.Empty }
-                },
-                "duplicate" => new
-                {
-                    locationIds = new[] { locationId, locationId }
-                },
-                _ => throw new ArgumentOutOfRangeException(nameof(invalidCase))
-            };
-
-            await using var factory = CreateFactory();
-            using var client = factory.CreateClient();
-
-            client.DefaultRequestHeaders.Add(
-                "X-Tenant-Id",
-                tenantId.ToString());
-
-            using var response = await client.PutAsJsonAsync(
-                $"/api/v1/professionals/{professionalId}/locations",
-                payload);
-
-            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-
-            await using var verificationContext = new AppDbContext(
-                CreateOptions(),
-                CreateTenantContext(tenantId));
-
-            var link = await verificationContext.ProfessionalLocations
-                .AsNoTracking()
-                .SingleAsync();
-
-            Assert.Equal(tenantId, link.TenantId);
-            Assert.Equal(professionalId, link.ProfessionalId);
-            Assert.Equal(locationId, link.LocationId);
-            Assert.True(link.IsActive);
-            Assert.Equal(CreatedAt, link.CreatedAt);
-            Assert.Equal(CreatedAt, link.UpdatedAt);
         }
         finally
         {
@@ -835,40 +743,6 @@ public sealed class ProfessionalsEndpointsTests
         {
             await CleanupAsync(tenantId);
         }
-    }
-
-    private async Task SeedAsync(
-        Guid tenantId,
-        Guid businessId,
-        Guid professionalId,
-        string name)
-    {
-        await using var context = new AppDbContext(
-            CreateOptions(),
-            CreateTenantContext(tenantId));
-
-        context.Tenants.Add(
-            new Tenant(tenantId, $"HTTP Tenant {tenantId}"));
-
-        context.Businesses.Add(
-            new Business(
-                businessId,
-                tenantId,
-                BusinessTypeIds.Barbershop,
-                "HTTP Business",
-                CreatedAt));
-
-        await context.SaveChangesAsync();
-
-        context.Professionals.Add(
-            new Professional(
-                professionalId,
-                tenantId,
-                businessId,
-                name,
-                CreatedAt));
-
-        await context.SaveChangesAsync();
     }
 
     [Fact]
@@ -2584,6 +2458,104 @@ public sealed class ProfessionalsEndpointsTests
         }
     }
 
+    #endregion
+
+    #region Theories
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("null")]
+    [InlineData("empty-guid")]
+    [InlineData("duplicate")]
+    public async Task ProfessionalLocations_WithInvalidRequest_ShouldReturnBadRequestAndPreserveLink(
+        string invalidCase)
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+        var professionalId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(
+                tenantId,
+                businessId,
+                professionalId,
+                "Professional");
+
+            await using (var context = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId)))
+            {
+                context.Locations.Add(
+                    new Location(
+                        locationId,
+                        tenantId,
+                        businessId,
+                        "Location",
+                        "BR",
+                        "America/Sao_Paulo",
+                        CreatedAt));
+
+                context.ProfessionalLocations.Add(
+                    new ProfessionalLocation(
+                        tenantId,
+                        professionalId,
+                        locationId,
+                        CreatedAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            object payload = invalidCase switch
+            {
+                "missing" => new { },
+                "null" => new { locationIds = (Guid[]?)null },
+                "empty-guid" => new
+                {
+                    locationIds = new[] { locationId, Guid.Empty }
+                },
+                "duplicate" => new
+                {
+                    locationIds = new[] { locationId, locationId }
+                },
+                _ => throw new ArgumentOutOfRangeException(nameof(invalidCase))
+            };
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var response = await client.PutAsJsonAsync(
+                $"/api/v1/professionals/{professionalId}/locations",
+                payload);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            await using var verificationContext = new AppDbContext(
+                CreateOptions(),
+                CreateTenantContext(tenantId));
+
+            var link = await verificationContext.ProfessionalLocations
+                .AsNoTracking()
+                .SingleAsync();
+
+            Assert.Equal(tenantId, link.TenantId);
+            Assert.Equal(professionalId, link.ProfessionalId);
+            Assert.Equal(locationId, link.LocationId);
+            Assert.True(link.IsActive);
+            Assert.Equal(CreatedAt, link.CreatedAt);
+            Assert.Equal(CreatedAt, link.UpdatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -3531,6 +3503,45 @@ public sealed class ProfessionalsEndpointsTests
             await CleanupAsync(tenantId);
         }
     }
+
+    #endregion
+
+    #region Helpers
+
+    private async Task SeedAsync(
+        Guid tenantId,
+        Guid businessId,
+        Guid professionalId,
+        string name)
+    {
+        await using var context = new AppDbContext(
+            CreateOptions(),
+            CreateTenantContext(tenantId));
+
+        context.Tenants.Add(
+            new Tenant(tenantId, $"HTTP Tenant {tenantId}"));
+
+        context.Businesses.Add(
+            new Business(
+                businessId,
+                tenantId,
+                BusinessTypeIds.Barbershop,
+                "HTTP Business",
+                CreatedAt));
+
+        await context.SaveChangesAsync();
+
+        context.Professionals.Add(
+            new Professional(
+                professionalId,
+                tenantId,
+                businessId,
+                name,
+                CreatedAt));
+
+        await context.SaveChangesAsync();
+    }
+
     private async Task CleanupAsync(Guid tenantId)
     {
         await using var context = new AppDbContext(
@@ -3602,6 +3613,7 @@ public sealed class ProfessionalsEndpointsTests
             await context.SaveChangesAsync();
         }
     }
+
     private DbContextOptions<AppDbContext> CreateOptions()
     {
         return new DbContextOptionsBuilder<AppDbContext>()
@@ -3638,4 +3650,6 @@ public sealed class ProfessionalsEndpointsTests
                 });
             });
     }
+
+    #endregion
 }

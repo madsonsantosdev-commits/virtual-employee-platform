@@ -16,6 +16,8 @@ public sealed class AppDbContextTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task ShouldPersistAndRetrieveTenant()
     {
@@ -56,4 +58,6 @@ public sealed class AppDbContextTests
 
         await dbContext.SaveChangesAsync();
     }
+
+    #endregion
 }

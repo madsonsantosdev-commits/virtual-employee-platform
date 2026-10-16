@@ -12,6 +12,8 @@ public sealed class ReplaceLocationServicesHandlerTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_WithValidServices_ShouldReplaceServices()
     {
@@ -241,6 +243,10 @@ public sealed class ReplaceLocationServicesHandlerTests
         Assert.False(writeService.SaveChangesCalled);
     }
 
+    #endregion
+
+    #region Helpers
+
     private static Location CreateLocation(
         Guid id,
         Guid tenantId,
@@ -272,4 +278,6 @@ public sealed class ReplaceLocationServicesHandlerTests
             60,
             CreatedAt);
     }
+
+    #endregion
 }

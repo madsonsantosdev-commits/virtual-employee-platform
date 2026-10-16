@@ -8,6 +8,8 @@ public sealed class BusinessTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 9, 23, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public void Constructor_WithValidData_ShouldCreateBusiness()
     {
@@ -149,7 +151,7 @@ public void Update_WithValidData_ShouldUpdateMutableFields()
     Assert.Equal(updatedAt, business.UpdatedAt);
 }
 
-[Fact]
+    [Fact]
 public void Update_ShouldPreserveStructuralFields()
 {
     var id = Guid.NewGuid();
@@ -176,7 +178,7 @@ public void Update_ShouldPreserveStructuralFields()
     Assert.Equal(createdAt, business.CreatedAt);
 }
 
-[Fact]
+    [Fact]
     public void Update_WithEmptyBusinessTypeId_ShouldThrow()
     {
         var business = CreateBusiness();
@@ -218,6 +220,10 @@ public void Update_ShouldPreserveStructuralFields()
                 DateTimeOffset.UtcNow));
     }
 
+    #endregion
+
+    #region Helpers
+
     private static Business CreateBusiness()
     {
         return new Business(
@@ -228,4 +234,6 @@ public void Update_ShouldPreserveStructuralFields()
             new DateTimeOffset(
                 2026, 9, 23, 12, 0, 0, TimeSpan.Zero));
     }
+
+    #endregion
 }

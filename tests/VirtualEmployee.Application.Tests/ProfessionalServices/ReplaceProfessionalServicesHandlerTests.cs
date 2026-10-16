@@ -11,6 +11,8 @@ public sealed class ReplaceProfessionalServicesHandlerTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 10, 7, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_WithValidServices_ShouldReplaceServices()
     {
@@ -171,6 +173,10 @@ public sealed class ReplaceProfessionalServicesHandlerTests
             writeService);
     }
 
+    #endregion
+
+    #region Helpers
+
     private static void AssertFailure(
         ProfessionalServiceOperationResult result,
         ProfessionalServiceOperationError expectedError,
@@ -268,4 +274,6 @@ public sealed class ReplaceProfessionalServicesHandlerTests
             return Task.CompletedTask;
         }
     }
+
+    #endregion
 }

@@ -35,6 +35,8 @@ public sealed class AvailabilitySlotsEndpointsTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task SearchSlots_WithValidServices_ShouldReturnOrderedUtcSlots()
     {
@@ -317,6 +319,10 @@ public sealed class AvailabilitySlotsEndpointsTests
             await CleanupAsync(tenantId);
         }
     }
+
+    #endregion
+
+    #region Theories
 
     [Theory]
     [InlineData("{}")]
@@ -876,6 +882,11 @@ public sealed class AvailabilitySlotsEndpointsTests
             await CleanupAsync(tenantId);
         }
     }
+
+    #endregion
+
+    #region Helpers
+
     private WebApplicationFactory<Program> CreateFactory()
     {
         return new WebApplicationFactory<Program>()
@@ -1040,4 +1051,6 @@ public sealed class AvailabilitySlotsEndpointsTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }

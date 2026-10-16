@@ -5,6 +5,28 @@ namespace VirtualEmployee.Application.Tests.Customers;
 
 public sealed class CustomerPhoneNormalizerTests
 {
+    #region Facts
+
+    [Fact]
+    public void TryNormalize_ShouldBeIdempotent()
+    {
+        Assert.True(
+            CustomerPhoneNormalizer.TryNormalize(
+                "+55 (11) 99999-0001",
+                out var first));
+
+        Assert.True(
+            CustomerPhoneNormalizer.TryNormalize(
+                first,
+                out var second));
+
+        Assert.Equal(first, second);
+    }
+
+    #endregion
+
+    #region Theories
+
     [Theory]
     [InlineData("+5511999990001", "+5511999990001")]
     [InlineData("  +55 (11) 99999-0001  ", "+5511999990001")]
@@ -49,19 +71,5 @@ public sealed class CustomerPhoneNormalizerTests
         Assert.Equal(string.Empty, normalized);
     }
 
-    [Fact]
-    public void TryNormalize_ShouldBeIdempotent()
-    {
-        Assert.True(
-            CustomerPhoneNormalizer.TryNormalize(
-                "+55 (11) 99999-0001",
-                out var first));
-
-        Assert.True(
-            CustomerPhoneNormalizer.TryNormalize(
-                first,
-                out var second));
-
-        Assert.Equal(first, second);
-    }
+    #endregion
 }

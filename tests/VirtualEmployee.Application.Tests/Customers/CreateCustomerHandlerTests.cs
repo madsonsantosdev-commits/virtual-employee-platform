@@ -13,6 +13,8 @@ public sealed class CreateCustomerHandlerTests
     private static readonly DateTimeOffset Now =
         new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
 
+    #region Theories
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -167,6 +169,10 @@ public sealed class CreateCustomerHandlerTests
         Assert.False(service.Saved);
     }
 
+    #endregion
+
+    #region Helpers
+
     private static CreateCustomerHandler CreateHandler(
         FakeWriteService service,
         Guid tenantId)
@@ -232,4 +238,6 @@ public sealed class CreateCustomerHandlerTests
             return Task.CompletedTask;
         }
     }
+
+    #endregion
 }

@@ -33,7 +33,9 @@ public sealed class ScheduleBlocksEndpointsTests
         _fixture = fixture;
     }
 
-     [Fact]
+    #region Facts
+
+    [Fact]
     public async Task ScheduleBlocks_WithoutIdempotencyKey_ShouldRejectWithoutPersisting()
     {
         var tenantId = Guid.NewGuid();
@@ -285,6 +287,10 @@ public sealed class ScheduleBlocksEndpointsTests
             await CleanupAsync(tenantId);
         }
     }
+
+    #endregion
+
+    #region Theories
 
     [Theory]
     [InlineData(false)]
@@ -651,6 +657,11 @@ public sealed class ScheduleBlocksEndpointsTests
             await CleanupAsync(tenantId);
         }
     }
+
+    #endregion
+
+    #region Helpers
+
     private WebApplicationFactory<Program> CreateFactory(
         DateTimeOffset? now = null)
     {
@@ -677,6 +688,7 @@ public sealed class ScheduleBlocksEndpointsTests
                 });
             });
     }
+
     private WebApplicationFactory<Program> CreateFactory()
     {
         return new WebApplicationFactory<Program>()
@@ -702,6 +714,7 @@ public sealed class ScheduleBlocksEndpointsTests
                 });
             });
     }
+
     private sealed class FixedTimeProvider(DateTimeOffset now)
         : TimeProvider
     {
@@ -804,4 +817,6 @@ public sealed class ScheduleBlocksEndpointsTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }
