@@ -615,12 +615,81 @@ Inclui criação, listagem e consulta por ID.
 Atualização e exclusão de Customers não estão expostas pela API.
 
 ## 8. Booking Quote
-`POST /booking/quote`
+
+Implementação validada em 16/10/2026.
+O header `X-Tenant-Id` é temporário para desenvolvimento.
+
+`POST /api/v1/booking/quote`
+
+Calcula preço e duração dos serviços selecionados na unidade.
+A cotação é informativa, não é persistida e não reserva horário.
+
+### Entrada
+
 ```json
-{"locationId":"<uuid>","serviceIds":["<corte-id>","<barba-id>"]}
+{
+  "locationId": "<location-id>",
+  "serviceIds": ["<corte-id>", "<barba-id>"]
+}
 ```
 
-Backend valida que todos os Services estão disponíveis na Location. Quote é informativo; CreateAppointment recalcula tudo. Preço/duração vêm de Service (ou do próprio COMBO selecionado), sem override por Location no MVP.
+- LocationId e pelo menos um ServiceId são obrigatórios.
+- IDs vazios, malformados ou duplicados são rejeitados.
+- Location e Business devem estar ativos no tenant atual.
+- Todos os Services devem estar ativos, pertencer ao Business da
+  Location e ser oferecidos nela via LocationService.
+
+### Resposta
+
+Retorna `200` com os itens na ordem dos ServiceIds solicitados
+e os totais calculados no backend.
+
+```json
+{
+  "locationId": "<location-id>",
+  "items": [
+    {
+      "serviceId": "<corte-id>",
+      "name": "Corte masculino premium",
+      "price": 65.00,
+      "durationMinutes": 45
+    },
+    {
+      "serviceId": "<barba-id>",
+      "name": "Barba",
+      "price": 35.00,
+      "durationMinutes": 20
+    }
+  ],
+  "totalPrice": 100.00,
+  "totalDurationMinutes": 65
+}
+```
+
+### Regras de cálculo
+
+- Preço e duração vêm dos Services, sem override por Location.
+- Os totais são a soma dos valores dos serviços selecionados.
+- COMBO usa preço e duração próprios, sem expandir seus componentes.
+- Oferecer os componentes na unidade não oferece o COMBO automaticamente:
+  ele exige seu próprio vínculo LocationService.
+- Não há substituição automática de serviços individuais por COMBO.
+- Preço total zero é aceito.
+- Overflow de preço ou duração total acima de int.MaxValue é rejeitado.
+- Cada consulta usa os valores atuais do catálogo.
+- A cotação não avalia profissional, agenda, bloqueios ou ocupação.
+
+| Resultado | HTTP |
+| --- | --- |
+| Cotação calculada | 200 |
+| Payload incompleto, IDs vazios, malformados ou duplicados | 400 |
+| Location, Business ou Service inexistente ou de outro tenant | 404 |
+| Location ou Business inativo | 409 |
+| Service inativo, de outro Business ou não oferecido na unidade | 409 |
+| Totais inválidos ou acima dos limites suportados | 409 |
+
+CreateAppointment deverá revalidar os recursos e recalcular os valores.
+A cotação não garante preço futuro nem disponibilidade para agendamento.
 
 ## 9. Available Slots
 

@@ -93,6 +93,25 @@ Selecionar Location
 
 Para serviços individuais, duração total é soma. COMBO usa preço/duração próprios.
 
+### Booking Quote — implementação em 16/10/2026
+
+O endpoint `POST /api/v1/booking/quote` calcula preço e duração dos
+serviços selecionados, sem persistir a cotação.
+
+- Location e Business devem estar ativos no tenant atual.
+- Todos os Services devem estar ativos, pertencer ao Business da
+  Location e possuir vínculo LocationService com a unidade.
+- IDs vazios ou duplicados são rejeitados.
+- Os itens preservam a ordem dos serviços solicitados.
+- Preço e duração vêm do catálogo, sem override por unidade.
+- COMBO usa seus próprios valores e exige vínculo explícito com a unidade.
+- Não há expansão dos componentes nem sugestão automática de COMBO.
+- Os totais são recalculados em cada consulta, com proteção contra overflow.
+
+A cotação não avalia elegibilidade de profissional ou disponibilidade
+de horários. Não constitui reserva nem garantia de preço futuro.
+CreateAppointment deverá revalidar os recursos e recalcular os valores.
+
 ## 7. Geração de slots
 Entrada conceitual:
 ```text
