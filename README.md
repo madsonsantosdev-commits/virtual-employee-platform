@@ -93,7 +93,7 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] Descontar bloqueios da unidade e do profissional na busca de slots
 - [ ] Avaliação de impacto dos bloqueios sobre Appointments
 - [ ] Descontar agendamentos ocupantes na busca de slots
-- [ ] Booking Quote: cálculo de preço e duração no backend
+- [x] Booking Quote: cálculo de preço e duração no backend
 - [ ] Appointment e proteção contra agendamentos concorrentes
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -102,26 +102,33 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 15/10/2026
+### Última validação local — 16/10/2026
 
-- Suíte completa: 563 testes passaram, sem falhas ou ignorados.
-- Customers: 16 testes de domínio, 20 de normalização de telefone, 13 do handler de criação, 13 de persistência/serviços e 18 HTTP.
-- Validados telefone obrigatório, normalização, nome e e-mail opcionais e rejeição de e-mail inválido.
-- Validados Business inexistente, inativo ou de outro tenant e isolamento na leitura e escrita.
-- Validação manual no PowerShell: criação 201, Location da consulta e consulta por ID 200.
-- Telefone persistido em formato canônico; nome e e-mail sem espaços nas extremidades.
+- Suíte completa: 603 testes passaram, sem falhas ou ignorados.
+- Booking Quote: 18 testes de Application, 2 de leitura no PostgreSQL e 20 HTTP.
+- Validados recursos ativos, vínculo de todos os serviços com a unidade, Business e isolamento entre tenants.
+- Validados IDs inválidos ou duplicados, ordem dos itens, preço zero e limites dos totais.
+- COMBO usa preço e duração próprios; alterações no catálogo são refletidas na próxima consulta.
+- Validação manual no PowerShell: serviços individuais retornaram 100,00 e 65 minutos; COMBO retornou 90,00 e 60 minutos.
+- COMBO sem vínculo com a unidade retornou 409; após associação explícita, a cotação retornou 200.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
-de elegibilidade, AvailabilityRules, a busca inicial de slots e
-ScheduleBlocks estão integrados à `main`.
+de elegibilidade, AvailabilityRules, a busca inicial de slots,
+ScheduleBlocks e Customers estão integrados à `main`.
 
-Customers está implementado na branch `feature/customers`,
+Booking Quote está implementado na branch `feature/booking-quote`,
 com validação automatizada e manual concluída e integração à `main` pendente.
 
-A busca considera agenda semanal, elegibilidade e bloqueios ativos.
+A cotação é informativa, não é persistida e não reserva horário.
+CreateAppointment deverá revalidar os recursos e recalcular os valores.
+
+A busca de slots considera agenda semanal, elegibilidade e bloqueios ativos.
 Appointments ainda não são descontados.
 Slots representam disponibilidade calculada; não constituem reserva.
 
-As próximas capacidades são Booking Quote e Appointments,
-incluindo ocupação da agenda, idempotência e proteção contra concorrência.
+A próxima capacidade funcional é Appointments, incluindo ocupação da agenda,
+idempotência e proteção contra agendamentos concorrentes.
 A avaliação de impacto dos bloqueios depende da implementação de Appointments.
+
+Antes dessa etapa, está prevista a padronização da navegação dos arquivos
+de testes com regiões Facts, Theories e Helpers.

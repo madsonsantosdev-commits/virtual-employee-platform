@@ -26,6 +26,8 @@ using VirtualEmployee.Application.ScheduleBlocks;
 using VirtualEmployee.Infrastructure.ScheduleBlocks;
 using VirtualEmployee.Application.Customers;
 using VirtualEmployee.Infrastructure.Customers;
+using VirtualEmployee.Application.BookingQuotes;
+using VirtualEmployee.Infrastructure.BookingQuotes;
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -71,6 +73,7 @@ public static class DependencyInjection
         services.AddScoped<IScheduleBlockRemovalService, ScheduleBlockRemovalService>();
         services.AddScoped<ICustomerReadService, CustomerReadService>();
         services.AddScoped<ICustomerWriteService, CustomerWriteService>();
+        services.AddScoped<IBookingQuoteReadService, BookingQuoteReadService>();
         return services;
     }
 }

@@ -29,6 +29,7 @@ using VirtualEmployee.Application.ScheduleBlocks.RemoveScheduleBlock;
 using VirtualEmployee.Application.Customers.CreateCustomer;
 using VirtualEmployee.Application.Customers.GetCustomerById;
 using VirtualEmployee.Application.Customers.GetCustomers;
+using VirtualEmployee.Application.BookingQuotes.GetBookingQuote;
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenAPI
@@ -71,6 +72,7 @@ builder.Services.AddScoped<RemoveScheduleBlockHandler>();
 builder.Services.AddScoped<CreateCustomerHandler>();
 builder.Services.AddScoped<GetCustomersHandler>();
 builder.Services.AddScoped<GetCustomerByIdHandler>();
+builder.Services.AddScoped<GetBookingQuoteHandler>();
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
 
@@ -101,6 +103,7 @@ app.MapAvailabilityRulesEndpoints();
 app.MapAvailabilitySlotsEndpoints();
 app.MapScheduleBlocksEndpoints();
 app.MapCustomersEndpoints();
+app.MapBookingQuotesEndpoints();
 app.Run();
 
 public partial class Program;
