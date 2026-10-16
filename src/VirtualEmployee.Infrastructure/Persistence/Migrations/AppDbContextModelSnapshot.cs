@@ -448,6 +448,149 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                     b.ToTable("professional_services", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.Appointment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("customer_id");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<Guid>("LocationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("location_id");
+
+                    b.Property<Guid>("ProfessionalId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("professional_id");
+
+                    b.Property<DateTimeOffset?>("ReservationExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reservation_expires_at");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<int>("TotalDurationMinutesSnapshot")
+                        .HasColumnType("integer")
+                        .HasColumnName("total_duration_minutes_snapshot");
+
+                    b.Property<decimal>("TotalPriceSnapshot")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)")
+                        .HasColumnName("total_price_snapshot");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "BusinessId");
+
+                    b.HasIndex("TenantId", "CustomerId", "StartsAt");
+
+                    b.HasIndex("TenantId", "LocationId", "StartsAt");
+
+                    b.HasIndex("TenantId", "ProfessionalId", "LocationId");
+
+                    b.HasIndex("TenantId", "ProfessionalId", "StartsAt");
+
+                    b.HasIndex("TenantId", "Status", "ReservationExpiresAt");
+
+                    b.ToTable("appointments", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_appointments_duration_matches_window", "ends_at = starts_at + total_duration_minutes_snapshot * interval '1 minute'");
+
+                            t.HasCheckConstraint("CK_appointments_pending_expiration", "status <> 'PENDING' OR (reservation_expires_at IS NOT NULL AND reservation_expires_at > created_at AND reservation_expires_at <= starts_at)");
+
+                            t.HasCheckConstraint("CK_appointments_status", "status IN ('PENDING', 'CONFIRMED', 'CONFIRMED_BY_CLIENT', 'RESCHEDULE_REQUESTED', 'CANCELLED_BY_CLIENT', 'CANCELLED_BY_BUSINESS', 'COMPLETED', 'NO_SHOW', 'EXPIRED')");
+
+                            t.HasCheckConstraint("CK_appointments_time_window", "starts_at < ends_at");
+
+                            t.HasCheckConstraint("CK_appointments_total_duration", "total_duration_minutes_snapshot > 0");
+
+                            t.HasCheckConstraint("CK_appointments_total_price", "total_price_snapshot >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.AppointmentItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AppointmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("appointment_id");
+
+                    b.Property<int>("DurationMinutesSnapshot")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_minutes_snapshot");
+
+                    b.Property<decimal>("PriceSnapshot")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)")
+                        .HasColumnName("price_snapshot");
+
+                    b.Property<Guid>("ServiceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("service_id");
+
+                    b.Property<string>("ServiceNameSnapshot")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("service_name_snapshot");
+
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ServiceId");
+
+                    b.HasIndex("TenantId", "AppointmentId", "ServiceId")
+                        .IsUnique();
+
+                    b.ToTable("appointment_items", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_appointment_items_duration", "duration_minutes_snapshot > 0");
+
+                            t.HasCheckConstraint("CK_appointment_items_price", "price_snapshot >= 0");
+
+                            t.HasCheckConstraint("CK_appointment_items_service_name", "length(btrim(service_name_snapshot)) > 0");
+                        });
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.AvailabilityRule", b =>
                 {
                     b.Property<Guid>("Id")
@@ -822,6 +965,46 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.Appointment", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Businesses.Business", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "BusinessId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualEmployee.Domain.Customers.Customer", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "CustomerId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualEmployee.Domain.Professionals.ProfessionalLocation", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ProfessionalId", "LocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.AppointmentItem", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Scheduling.Appointment", null)
+                        .WithMany("Items")
+                        .HasForeignKey("TenantId", "AppointmentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualEmployee.Domain.Services.Service", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "ServiceId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.AvailabilityRule", b =>
                 {
                     b.HasOne("VirtualEmployee.Domain.Professionals.ProfessionalLocation", null)
@@ -909,6 +1092,11 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.Appointment", b =>
+                {
+                    b.Navigation("Items");
                 });
 #pragma warning restore 612, 618
         }

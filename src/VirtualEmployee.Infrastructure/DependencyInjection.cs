@@ -28,6 +28,9 @@ using VirtualEmployee.Application.Customers;
 using VirtualEmployee.Infrastructure.Customers;
 using VirtualEmployee.Application.BookingQuotes;
 using VirtualEmployee.Infrastructure.BookingQuotes;
+using VirtualEmployee.Application.Appointments;
+using VirtualEmployee.Infrastructure.Appointments;
+
 namespace VirtualEmployee.Infrastructure;
 
 public static class DependencyInjection
@@ -51,6 +54,57 @@ public static class DependencyInjection
         services.AddScoped<ITenantContextInitializer>(serviceProvider =>
             serviceProvider.GetRequiredService<TenantContext>());
 
+        services.AddOptions<AppointmentReservationOptions>()
+            .Configure(options =>
+            {
+                var section = AppointmentReservationOptions.SectionName;
+
+                var lifetime = configuration[
+                    $"{section}:LifetimeMinutes"];
+
+                if (lifetime is not null)
+                {
+                    options.LifetimeMinutes =
+                        int.TryParse(lifetime, out var minutes)
+                            ? minutes
+                            : 0;
+                }
+
+                var interval = configuration[
+                    $"{section}:ExpirationIntervalSeconds"];
+
+                if (interval is not null)
+                {
+                    options.ExpirationIntervalSeconds =
+                        int.TryParse(interval, out var seconds)
+                            ? seconds
+                            : 0;
+                }
+
+                var enabled = configuration[
+                    $"{section}:ExpirationWorkerEnabled"];
+
+                if (enabled is not null)
+                {
+                    if (!bool.TryParse(enabled, out var parsedEnabled))
+                    {
+                        throw new InvalidOperationException(
+                            "ExpirationWorkerEnabled must be true or false.");
+                    }
+
+                    options.ExpirationWorkerEnabled = parsedEnabled;
+                }
+            })
+            .Validate(
+                options => options.LifetimeMinutes > 0,
+                "Reservation lifetime must be a positive integer.")
+            .Validate(
+                options => options.ExpirationIntervalSeconds > 0,
+                "Expiration interval must be a positive integer.")
+            .ValidateOnStart();
+
+        services.AddHostedService<AppointmentExpirationWorker>();
+        services.AddScoped<IAppointmentCreationService,AppointmentCreationService>();
         services.AddScoped<IBusinessReadService, BusinessReadService>();
         services.AddScoped<IBusinessWriteService, BusinessWriteService>();
         services.AddScoped<ILocationReadService, LocationReadService>();
@@ -74,6 +128,8 @@ public static class DependencyInjection
         services.AddScoped<ICustomerReadService, CustomerReadService>();
         services.AddScoped<ICustomerWriteService, CustomerWriteService>();
         services.AddScoped<IBookingQuoteReadService, BookingQuoteReadService>();
+        services.AddScoped<IAppointmentReadService, AppointmentReadService>();
+        services.AddScoped<IAppointmentExpirationService, AppointmentExpirationService>();
         return services;
     }
 }

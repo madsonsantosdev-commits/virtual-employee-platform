@@ -188,6 +188,25 @@ Evitar enriquecer Customer com dados pessoais sem finalidade definida.
 Principal agregado operacional do Scheduling.
 
 Campos principais: `AppointmentId`, `TenantId`, `BusinessId`, `LocationId`, `CustomerId`, `ProfessionalId`, `StartsAt`, `EndsAt`, `TotalPriceSnapshot`, `TotalDurationMinutesSnapshot`, `Status`, `ReservationExpiresAt`, cancelamento e auditoria.
+### Implementação incremental — 16/10/2026
+
+Implementados Appointment, AppointmentItem, criação idempotente,
+consulta por ID, ocupação na busca de slots e expiração configurável.
+
+O agregado nasce PENDING, calcula totais e término a partir dos itens
+e preserva snapshots comerciais. A reserva tem prazo configurável,
+limitado ao início do atendimento.
+
+A persistência protege referências entre tenants e impede sobreposição
+do mesmo profissional, inclusive entre unidades diferentes.
+Appointment, itens e resposta idempotente são gravados atomicamente.
+
+O replay preserva a resposta original; a consulta por ID retorna
+o estado atual. Expiração não remove itens nem modifica os snapshots.
+
+Campos de cancelamento, histórico de transições e fluxos de listagem,
+cancelamento, reagendamento e pagamento permanecem previstos
+para próximas etapas.
 
 ### Regra de unidade
 Todo Appointment ocorre em exatamente uma Location.

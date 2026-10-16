@@ -247,6 +247,71 @@ updated_at timestamptz NOT NULL
 ```
 AppointmentItems preservam snapshots de serviço/preço/duração para verdade histórica e Analytics.
 
+### Implementação incremental de Appointments — 16/10/2026
+
+A tabela appointments está implementada com os campos descritos acima,
+exceto cancellation_reason e cancelled_at, previstos para a entrega
+de cancelamento.
+
+```text
+appointment_items
+id uuid PK
+tenant_id uuid NOT NULL
+appointment_id uuid NOT NULL
+service_id uuid NOT NULL
+service_name_snapshot text NOT NULL
+price_snapshot numeric(12,2) NOT NULL
+duration_minutes_snapshot integer NOT NULL
+```
+
+Referências implementadas, com exclusão restrita:
+- appointments(tenant_id, business_id) -> businesses(tenant_id, id);
+- appointments(tenant_id, customer_id) -> customers(tenant_id, id);
+- appointments(tenant_id, professional_id, location_id) ->
+  professional_locations(tenant_id, professional_id, location_id);
+- appointment_items(tenant_id, appointment_id) ->
+  appointments(tenant_id, id);
+- appointment_items(tenant_id, service_id) -> services(tenant_id, id).
+
+Chaves e restrições:
+- Chave alternativa (tenant_id, id) em appointments e customers.
+- Índice único em appointment_items(tenant_id, appointment_id, service_id).
+- CHECKs exigem intervalo válido, duração positiva e preço não negativo.
+- EndsAt deve corresponder a StartsAt mais a duração total em minutos.
+- Status é limitado aos estados operacionais previstos.
+- PENDING exige expiração posterior à criação e não posterior ao início.
+- Itens exigem nome de snapshot não vazio, preço não negativo e duração positiva.
+- Appointments e itens possuem filtros de consulta e proteção de escrita
+  por tenant; TenantId é token de concorrência.
+- Status de Appointment também é token de concorrência.
+
+A constraint ex_appointments_no_overlap usa btree_gist e protege
+TenantId + ProfessionalId + intervalo [StartsAt, EndsAt), sem LocationId.
+Aplica-se a PENDING, CONFIRMED, CONFIRMED_BY_CLIENT e RESCHEDULE_REQUESTED.
+A passagem do prazo não remove a restrição: EXPIRED precisa ser persistido.
+
+Índices de appointments:
+- (tenant_id, business_id);
+- (tenant_id, customer_id, starts_at);
+- (tenant_id, location_id, starts_at);
+- (tenant_id, professional_id, location_id);
+- (tenant_id, professional_id, starts_at);
+- (tenant_id, status, reservation_expires_at).
+
+AppointmentItems também possui índice em (tenant_id, service_id).
+
+A idempotência reutiliza idempotency_records, com Operation = CreateAppointment.
+Appointment, itens e resposta original são gravados na mesma transação.
+A mesma chave lógica é serializada por advisory lock transacional;
+a proteção de horário permanece na exclusion constraint.
+
+Migrations:
+- 20261016170029_AddAppointments;
+- 20261016190726_AddAppointmentOverlapProtection.
+
+Histórico de transições e operações de cancelamento/reagendamento
+permanecem para próximas etapas.
+
 ## Payment / PaymentAttempt / Refund
 Payment é obrigação financeira lógica; PaymentAttempt é cada tentativa concreta no provider; Refund integral no MVP referencia Payment e PaymentAttempt confirmado. `Payment.Amount == Appointment.TotalPriceSnapshot` para SERVICE.
 

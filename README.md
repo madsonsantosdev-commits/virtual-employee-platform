@@ -92,9 +92,13 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] ScheduleBlocks: criação idempotente, consulta e desativação
 - [x] Descontar bloqueios da unidade e do profissional na busca de slots
 - [ ] Avaliação de impacto dos bloqueios sobre Appointments
-- [ ] Descontar agendamentos ocupantes na busca de slots
+- [x] Descontar agendamentos ocupantes na busca de slots
 - [x] Booking Quote: cálculo de preço e duração no backend
-- [ ] Appointment e proteção contra agendamentos concorrentes
+- [x] Appointments: criação idempotente, snapshots e consulta por ID
+- [x] Proteção contra agendamentos concorrentes entre unidades
+- [x] Expiração de reservas PENDING com worker configurável
+- [ ] Listagem, cancelamento e reagendamento de Appointments
+- [ ] Confirmação de Appointments por pagamento integral
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
 - [ ] Conversation Engine e AI Gateway
@@ -104,31 +108,41 @@ A autenticação e a autorização de produção ainda estão pendentes.
 
 ### Última validação local — 16/10/2026
 
-- Suíte completa: 603 testes passaram, sem falhas ou ignorados.
-- Booking Quote: 18 testes de Application, 2 de leitura no PostgreSQL e 20 HTTP.
-- Validados recursos ativos, vínculo de todos os serviços com a unidade, Business e isolamento entre tenants.
-- Validados IDs inválidos ou duplicados, ordem dos itens, preço zero e limites dos totais.
-- COMBO usa preço e duração próprios; alterações no catálogo são refletidas na próxima consulta.
-- Validação manual no PowerShell: serviços individuais retornaram 100,00 e 65 minutos; COMBO retornou 90,00 e 60 minutos.
-- COMBO sem vínculo com a unidade retornou 409; após associação explícita, a cotação retornou 200.
+- Suíte completa: 745 testes passaram, sem falhas ou ignorados.
+- Appointments: 43 testes de domínio, 17 do handler de criação, 54 de persistência/serviços e 24 HTTP.
+- Integração com slots: 4 novos testes de Application.
+- Validados snapshots, UTC, elegibilidade, agenda, bloqueios e isolamento entre tenants.
+- Concorrência validada no PostgreSQL: sobreposição rejeitada inclusive entre unidades; intervalos adjacentes aceitos.
+- Idempotência validada com replay, offsets equivalentes, conflito de conteúdo e chamadas concorrentes.
+- Expiração validada no limite do prazo, com preservação dos snapshots e isolamento por tenant.
+- Validação manual: criação 201, PENDING, preço 65,00 e duração de 45 minutos.
+- Worker habilitado manualmente com reserva de 1 minuto: transição automática para EXPIRED confirmada por consulta à API.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
-de elegibilidade, AvailabilityRules, a busca inicial de slots,
-ScheduleBlocks e Customers estão integrados à `main`.
+de elegibilidade, AvailabilityRules, busca de slots, ScheduleBlocks,
+Customers e Booking Quote estão integrados à `main`.
+A organização dos testes em regiões Facts, Theories e Helpers também
+está integrada.
 
-Booking Quote está implementado na branch `feature/booking-quote`,
-com validação automatizada e manual concluída e integração à `main` pendente.
+A primeira entrega de Appointments está implementada na branch
+`feature/appointments`, com validação automatizada e manual concluída
+e integração à `main` pendente.
 
-A cotação é informativa, não é persistida e não reserva horário.
-CreateAppointment deverá revalidar os recursos e recalcular os valores.
+A criação revalida recursos e disponibilidade, calcula os valores no
+backend e persiste Appointment, itens e resposta idempotente atomicamente.
+A consulta por ID retorna o estado atual; o replay retorna a resposta
+original da criação e não reativa reservas expiradas.
 
-A busca de slots considera agenda semanal, elegibilidade e bloqueios ativos.
-Appointments ainda não são descontados.
-Slots representam disponibilidade calculada; não constituem reserva.
+A busca de slots considera agenda semanal, elegibilidade, bloqueios
+e agendamentos nos estados que ocupam agenda, inclusive em outras
+unidades do mesmo profissional dentro do tenant.
 
-A próxima capacidade funcional é Appointments, incluindo ocupação da agenda,
-idempotência e proteção contra agendamentos concorrentes.
-A avaliação de impacto dos bloqueios depende da implementação de Appointments.
+O prazo padrão da reserva é de 10 minutos, limitado ao início do atendimento.
+O worker de expiração fica desabilitado por padrão e exige ativação explícita.
+Quando habilitado, o intervalo padrão entre ciclos é de 30 segundos.
+Reservas PENDING continuam ocupando agenda até a expiração ser materializada.
 
-Antes dessa etapa, está prevista a padronização da navegação dos arquivos
-de testes com regiões Facts, Theories e Helpers.
+Permanecem pendentes listagem, cancelamento, reagendamento e integração
+com pagamentos, incluindo confirmação por pagamento integral.
+A avaliação de impacto dos bloqueios sobre Appointments também permanece
+pendente.

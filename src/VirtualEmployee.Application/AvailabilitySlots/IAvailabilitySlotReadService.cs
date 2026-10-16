@@ -37,4 +37,10 @@ public interface IAvailabilitySlotReadService
         DateTimeOffset to,
         Guid? professionalId,
         CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<OccupiedAppointmentWindow>> GetOccupiedAppointmentsAsync(
+        IReadOnlyList<Guid> professionalIds,
+        DateTimeOffset from,
+        DateTimeOffset to,
+        CancellationToken cancellationToken = default);
 }

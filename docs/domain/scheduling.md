@@ -56,7 +56,8 @@ AvailabilityRule(Location, Professional)
 A leitura e a substituição de AvailabilityRules estão implementadas.
 A busca inicial de slots por agenda semanal e elegibilidade também está
 implementada. ScheduleBlocks ativos são descontados da busca.
-Appointments permanecem pendentes e ainda não são descontados.
+Desde 16/10/2026, Appointments nos estados ocupantes também são
+descontados, considerando o profissional em todas as unidades do tenant.
 
 As janelas usam dia da semana de 0 (domingo) a 6 (sábado) e horários
 locais da Location. Cada janela deve começar e terminar no mesmo dia,
@@ -160,11 +161,12 @@ Decisões de cálculo:
 A consulta permite selecionar um Professional ou buscar todos os elegíveis.
 Ausência de elegibilidade ou agenda produz lista vazia.
 
-Desde a entrega de 14/10/2026, a busca desconta ScheduleBlocks ativos.
-Appointments ainda não são descontados.
-O fluxo completo descrito acima permanece como objetivo das próximas etapas.
-Consultar slots não reserva horário; CreateAppointment deverá revalidar
-a disponibilidade e aplicar a proteção de concorrência.
+Desde 14/10/2026, a busca desconta ScheduleBlocks ativos.
+Desde 16/10/2026, também desconta Appointments nos estados ocupantes,
+inclusive quando o profissional está reservado em outra unidade do tenant.
+Os filtros preservam a grade de inícios e aceitam intervalos adjacentes.
+Consultar slots não reserva horário; CreateAppointment revalida
+a disponibilidade e aplica a proteção de concorrência no PostgreSQL.
 
 ## 8. CreateAppointment
 Command conceitual:
@@ -186,8 +188,23 @@ Backend revalida Location, LocationServices, ProfessionalLocation, ProfessionalS
 Quando exige pagamento:
 ```text
 Status = PENDING
-ReservationExpiresAt = CreatedAt + 10 minutos (default MVP)
+ReservationExpiresAt = MIN(StartsAt, CreatedAt + prazo configurado)
+Prazo padrão = 10 minutos
 ```
+### Implementação incremental — 16/10/2026
+
+Criação idempotente e consulta por ID estão implementadas.
+Appointment, itens e resposta idempotente são gravados atomicamente.
+Os snapshots preservam nome, preço e duração observados na criação.
+
+A mesma chave lógica é serializada por lock transacional.
+A exclusion constraint impede sobreposição para o profissional em todo
+o tenant. Deadlocks têm até três tentativas, com nova transação
+e revalidação completa.
+
+Replay devolve a resposta original e não altera o estado atual.
+Listagem, cancelamento, reagendamento e confirmação por pagamento
+permanecem pendentes.
 
 ## 9. Estados que ocupam agenda
 Ocupam: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`.
@@ -206,7 +223,22 @@ Se A vence, B não persiste Appointment e recebe `409 SLOT_UNAVAILABLE` com alte
 > **Desculpe, este horário acabou de ser preenchido. Escolha um dos horários disponíveis abaixo.**
 
 ## 11. PENDING e pagamento tardio
-Após 10 minutos sem confirmação, PENDING -> EXPIRED. Pagamento confirmado após EXPIRED não reativa Appointment; inicia compensação/refund integral.
+Ao atingir ReservationExpiresAt, a reserva PENDING torna-se elegível
+para expiração. O worker materializa EXPIRED e libera o intervalo.
+Enquanto a transição não for persistida, PENDING continua ocupando agenda.
+
+Configuração em Scheduling:Reservations:
+- LifetimeMinutes: padrão 10, inteiro positivo;
+- ExpirationWorkerEnabled: padrão false, exige ativação explícita;
+- ExpirationIntervalSeconds: padrão 30, inteiro positivo.
+
+Quando habilitado, o worker executa um ciclo na inicialização e depois
+periodicamente, usando um escopo novo por tenant.
+Repetir a expiração não altera registros já expirados.
+
+Regra prevista para a integração financeira: pagamento confirmado após
+EXPIRED não reativa Appointment; deve iniciar compensação/refund integral.
+Essa integração ainda não está implementada.
 
 ## 12. Reagendamento
 Mantém AppointmentId e AppointmentItems quando composição comercial não muda.
