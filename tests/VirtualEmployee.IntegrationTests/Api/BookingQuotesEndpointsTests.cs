@@ -31,7 +31,9 @@ public sealed class BookingQuotesEndpointsTests
     {
         _fixture = fixture;
     }
+
     #region Facts
+
     [Fact]
     public async Task BookingQuote_ShouldCalculateTotalsAndPreserveRequestedOrder()
     {
@@ -299,7 +301,9 @@ public sealed class BookingQuotesEndpointsTests
     }
 
     #endregion
+
     #region Theories
+
     [Theory]
     [InlineData("missing-location")]
     [InlineData("empty-location")]
@@ -593,8 +597,11 @@ public sealed class BookingQuotesEndpointsTests
             await CleanupAsync(tenantBId);
         }
     }
-#endregion
+
+    #endregion
+
     #region Helpers
+
     private WebApplicationFactory<Program> CreateFactory()
     {
         return new WebApplicationFactory<Program>()
@@ -729,5 +736,6 @@ public sealed class BookingQuotesEndpointsTests
             await context.SaveChangesAsync();
         }
     }
+
     #endregion
 }

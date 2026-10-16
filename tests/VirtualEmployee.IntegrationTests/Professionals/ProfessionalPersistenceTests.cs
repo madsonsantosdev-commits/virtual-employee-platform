@@ -24,6 +24,8 @@ public sealed class ProfessionalPersistenceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task Professional_ShouldPersistAndLoadOperationalData()
     {
@@ -581,40 +583,6 @@ public sealed class ProfessionalPersistenceTests
         }
     }
 
-    [Theory]
-    [InlineData(EntityState.Added)]
-    [InlineData(EntityState.Modified)]
-    [InlineData(EntityState.Deleted)]
-    public async Task SaveChanges_WithProfessionalFromAnotherTenant_ShouldThrow(
-        EntityState state)
-    {
-        var options = CreateOptions();
-
-        var tenantAId = Guid.NewGuid();
-        var tenantBId = Guid.NewGuid();
-
-        await using var context = new AppDbContext(
-            options,
-            CreateTenantContext(tenantAId));
-
-        var professionalFromTenantB = new Professional(
-            Guid.NewGuid(),
-            tenantBId,
-            Guid.NewGuid(),
-            "Professional B",
-            CreatedAt);
-
-        context.Entry(professionalFromTenantB).State = state;
-
-        var exception =
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => context.SaveChangesAsync());
-
-        Assert.Equal(
-            "Cross-tenant data modification is not allowed.",
-            exception.Message);
-    }
-
     [Fact]
     public async Task ProfessionalReadService_ShouldReturnOnlyCurrentTenantData()
     {
@@ -755,6 +723,44 @@ public sealed class ProfessionalPersistenceTests
         }
     }
 
+    #endregion
+
+    #region Theories
+
+    [Theory]
+    [InlineData(EntityState.Added)]
+    [InlineData(EntityState.Modified)]
+    [InlineData(EntityState.Deleted)]
+    public async Task SaveChanges_WithProfessionalFromAnotherTenant_ShouldThrow(
+        EntityState state)
+    {
+        var options = CreateOptions();
+
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+
+        await using var context = new AppDbContext(
+            options,
+            CreateTenantContext(tenantAId));
+
+        var professionalFromTenantB = new Professional(
+            Guid.NewGuid(),
+            tenantBId,
+            Guid.NewGuid(),
+            "Professional B",
+            CreatedAt);
+
+        context.Entry(professionalFromTenantB).State = state;
+
+        var exception =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => context.SaveChangesAsync());
+
+        Assert.Equal(
+            "Cross-tenant data modification is not allowed.",
+            exception.Message);
+    }
+
     [Theory]
     [InlineData(EntityState.Modified)]
     [InlineData(EntityState.Deleted)]
@@ -869,6 +875,11 @@ public sealed class ProfessionalPersistenceTests
             }
         }
     }
+
+    #endregion
+
+    #region Helpers
+
     private DbContextOptions<AppDbContext> CreateOptions()
     {
         return new DbContextOptionsBuilder<AppDbContext>()
@@ -922,4 +933,6 @@ public sealed class ProfessionalPersistenceTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }

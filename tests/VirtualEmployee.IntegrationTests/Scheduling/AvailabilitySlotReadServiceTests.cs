@@ -27,6 +27,8 @@ public sealed class AvailabilitySlotReadServiceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task GetEligibleWindows_ShouldRequireAllServicesAndActiveRulesForRequestedDay()
     {
@@ -225,6 +227,10 @@ public sealed class AvailabilitySlotReadServiceTests
         }
     }
 
+    #endregion
+
+    #region Helpers
+
     private AppDbContext CreateContext(Guid tenantId)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -274,4 +280,6 @@ public sealed class AvailabilitySlotReadServiceTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }

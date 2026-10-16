@@ -30,6 +30,8 @@ public sealed class CustomersEndpointsTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task Customers_ShouldIsolateListAndLookupByTenant()
     {
@@ -223,6 +225,58 @@ public sealed class CustomersEndpointsTests
             await CleanupAsync(tenantId);
         }
     }
+
+    [Fact]
+    public async Task Customers_WithoutRecords_ShouldReturnEmptyListAndLookupStatuses()
+    {
+        var tenantId = Guid.NewGuid();
+        var businessId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(tenantId, businessId);
+
+            await using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                tenantId.ToString());
+
+            using var listResponse = await client.GetAsync(
+                "/api/v1/customers");
+
+            Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+
+            var customers = await listResponse.Content
+                .ReadFromJsonAsync<List<CustomerResponse>>();
+
+            Assert.NotNull(customers);
+            Assert.Empty(customers);
+
+            using var missingResponse = await client.GetAsync(
+                $"/api/v1/customers/{Guid.NewGuid()}");
+
+            Assert.Equal(
+                HttpStatusCode.NotFound,
+                missingResponse.StatusCode);
+
+            using var emptyIdResponse = await client.GetAsync(
+                $"/api/v1/customers/{Guid.Empty}");
+
+            Assert.Equal(
+                HttpStatusCode.BadRequest,
+                emptyIdResponse.StatusCode);
+        }
+        finally
+        {
+            await CleanupAsync(tenantId);
+        }
+    }
+
+    #endregion
+
+    #region Theories
 
     [Theory]
     [InlineData("missing-business")]
@@ -459,53 +513,9 @@ public sealed class CustomersEndpointsTests
         }
     }
 
-    [Fact]
-    public async Task Customers_WithoutRecords_ShouldReturnEmptyListAndLookupStatuses()
-    {
-        var tenantId = Guid.NewGuid();
-        var businessId = Guid.NewGuid();
+    #endregion
 
-        try
-        {
-            await SeedAsync(tenantId, businessId);
-
-            await using var factory = CreateFactory();
-            using var client = factory.CreateClient();
-
-            client.DefaultRequestHeaders.Add(
-                "X-Tenant-Id",
-                tenantId.ToString());
-
-            using var listResponse = await client.GetAsync(
-                "/api/v1/customers");
-
-            Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
-
-            var customers = await listResponse.Content
-                .ReadFromJsonAsync<List<CustomerResponse>>();
-
-            Assert.NotNull(customers);
-            Assert.Empty(customers);
-
-            using var missingResponse = await client.GetAsync(
-                $"/api/v1/customers/{Guid.NewGuid()}");
-
-            Assert.Equal(
-                HttpStatusCode.NotFound,
-                missingResponse.StatusCode);
-
-            using var emptyIdResponse = await client.GetAsync(
-                $"/api/v1/customers/{Guid.Empty}");
-
-            Assert.Equal(
-                HttpStatusCode.BadRequest,
-                emptyIdResponse.StatusCode);
-        }
-        finally
-        {
-            await CleanupAsync(tenantId);
-        }
-    }
+    #region Helpers
 
     private WebApplicationFactory<Program> CreateFactory()
     {
@@ -582,4 +592,6 @@ public sealed class CustomersEndpointsTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }

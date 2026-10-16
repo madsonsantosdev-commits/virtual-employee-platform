@@ -7,6 +7,8 @@ public sealed class SlotCalculatorTests
 {
     private static readonly DateOnly Date = new(2026, 10, 19);
 
+    #region Facts
+
     [Fact]
     public void Calculate_ShouldRespectDurationAndInterval()
     {
@@ -105,6 +107,10 @@ public sealed class SlotCalculatorTests
         Assert.Empty(slots);
     }
 
+    #endregion
+
+    #region Theories
+
     [Theory]
     [InlineData(0, 15)]
     [InlineData(-1, 15)]
@@ -136,4 +142,6 @@ public sealed class SlotCalculatorTests
                 durationMinutes: 30,
                 slotIntervalMinutes: 15));
     }
+
+    #endregion
 }

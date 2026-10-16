@@ -11,6 +11,8 @@ public sealed class ReplaceAvailabilityRulesHandlerTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 10, 9, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_WithAdjacentWindows_ShouldReplaceOrderedRules()
     {
@@ -60,7 +62,33 @@ public sealed class ReplaceAvailabilityRulesHandlerTests
         Assert.True(service.SaveChangesCalled);
     }
 
-        [Theory]
+    [Fact]
+    public async Task HandleAsync_WithInactiveLink_ShouldRejectWithoutWriting()
+    {
+        var service = new FakeWriteService();
+        service.Link.Update(false, CreatedAt.AddHours(1));
+
+        var handler = new ReplaceAvailabilityRulesHandler(service);
+
+        var result = await handler.HandleAsync(
+            new ReplaceAvailabilityRulesCommand(
+                service.Location.Id,
+                service.Professional.Id,
+                [Window(1, 9, 12)]));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(
+            AvailabilityRuleOperationError.InactiveProfessionalLocation,
+            result.Error);
+        Assert.Null(service.ReplacedRules);
+        Assert.False(service.SaveChangesCalled);
+    }
+
+    #endregion
+
+    #region Theories
+
+    [Theory]
     [InlineData(true, AvailabilityRuleOperationError.LocationNotFound)]
     [InlineData(false, AvailabilityRuleOperationError.ProfessionalNotFound)]
     public async Task HandleAsync_WithUnknownResource_ShouldRejectWithoutWriting(
@@ -82,28 +110,6 @@ public sealed class ReplaceAvailabilityRulesHandlerTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(expectedError, result.Error);
-        Assert.Null(service.ReplacedRules);
-        Assert.False(service.SaveChangesCalled);
-    }
-
-    [Fact]
-    public async Task HandleAsync_WithInactiveLink_ShouldRejectWithoutWriting()
-    {
-        var service = new FakeWriteService();
-        service.Link.Update(false, CreatedAt.AddHours(1));
-
-        var handler = new ReplaceAvailabilityRulesHandler(service);
-
-        var result = await handler.HandleAsync(
-            new ReplaceAvailabilityRulesCommand(
-                service.Location.Id,
-                service.Professional.Id,
-                [Window(1, 9, 12)]));
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal(
-            AvailabilityRuleOperationError.InactiveProfessionalLocation,
-            result.Error);
         Assert.Null(service.ReplacedRules);
         Assert.False(service.SaveChangesCalled);
     }
@@ -164,7 +170,7 @@ public sealed class ReplaceAvailabilityRulesHandlerTests
         Assert.False(service.SaveChangesCalled);
     }
 
-        [Theory]
+    [Theory]
     [InlineData("business",
         AvailabilityRuleOperationError.ProfessionalFromAnotherBusiness)]
     [InlineData("missing-link",
@@ -227,6 +233,11 @@ public sealed class ReplaceAvailabilityRulesHandlerTests
         Assert.Null(service.ReplacedRules);
         Assert.False(service.SaveChangesCalled);
     }
+
+    #endregion
+
+    #region Helpers
+
     private static AvailabilityRuleInput Window(
         int day,
         int startHour,
@@ -330,4 +341,6 @@ public sealed class ReplaceAvailabilityRulesHandlerTests
             return Task.CompletedTask;
         }
     }
+
+    #endregion
 }

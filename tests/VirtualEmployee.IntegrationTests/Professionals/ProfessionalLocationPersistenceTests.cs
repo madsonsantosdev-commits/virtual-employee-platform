@@ -24,6 +24,8 @@ public sealed class ProfessionalLocationPersistenceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task ProfessionalLocation_ShouldPersistAndLoadOperationalData()
     {
@@ -75,50 +77,6 @@ public sealed class ProfessionalLocationPersistenceTests
         {
             await CleanupAsync(tenantId);
         }
-    }
-
-    private async Task SeedAsync(
-        Guid tenantId,
-        Guid businessId,
-        Guid professionalId,
-        Guid locationId)
-    {
-        await using var context = new AppDbContext(
-            CreateOptions(),
-            CreateTenantContext(tenantId));
-
-        context.Tenants.Add(
-            new Tenant(tenantId, "Professional Location Tenant"));
-
-        context.Businesses.Add(
-            new Business(
-                businessId,
-                tenantId,
-                BusinessTypeIds.Barbershop,
-                "Professional Location Business",
-                CreatedAt));
-
-        await context.SaveChangesAsync();
-
-        context.Professionals.Add(
-            new Professional(
-                professionalId,
-                tenantId,
-                businessId,
-                "Professional",
-                CreatedAt));
-
-        context.Locations.Add(
-            new Location(
-                locationId,
-                tenantId,
-                businessId,
-                "Location",
-                "BR",
-                "America/Sao_Paulo",
-                CreatedAt));
-
-        await context.SaveChangesAsync();
     }
 
     [Fact]
@@ -338,50 +296,6 @@ public sealed class ProfessionalLocationPersistenceTests
         {
             await CleanupAsync(tenantAId);
             await CleanupAsync(tenantBId);
-        }
-    }
-    private async Task CleanupAsync(Guid tenantId)
-    {
-        await using var context = new AppDbContext(
-            CreateOptions(),
-            CreateTenantContext(tenantId));
-
-        // Each test owns a newly generated tenant.
-        var links = await context.ProfessionalLocations
-            .Where(x => x.TenantId == tenantId)
-            .ToListAsync();
-
-        context.ProfessionalLocations.RemoveRange(links);
-        await context.SaveChangesAsync();
-
-        var professionals = await context.Professionals
-            .Where(x => x.TenantId == tenantId)
-            .ToListAsync();
-
-        context.Professionals.RemoveRange(professionals);
-        await context.SaveChangesAsync();
-
-        var locations = await context.Locations
-            .Where(x => x.TenantId == tenantId)
-            .ToListAsync();
-
-        context.Locations.RemoveRange(locations);
-        await context.SaveChangesAsync();
-
-        var businesses = await context.Businesses
-            .Where(x => x.TenantId == tenantId)
-            .ToListAsync();
-
-        context.Businesses.RemoveRange(businesses);
-        await context.SaveChangesAsync();
-
-        var tenant = await context.Tenants
-            .SingleOrDefaultAsync(x => x.Id == tenantId);
-
-        if (tenant is not null)
-        {
-            context.Tenants.Remove(tenant);
-            await context.SaveChangesAsync();
         }
     }
 
@@ -724,6 +638,10 @@ public sealed class ProfessionalLocationPersistenceTests
         }
     }
 
+    #endregion
+
+    #region Theories
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -992,6 +910,100 @@ public sealed class ProfessionalLocationPersistenceTests
             await CleanupAsync(tenantBId);
         }
     }
+
+    #endregion
+
+    #region Helpers
+
+    private async Task SeedAsync(
+        Guid tenantId,
+        Guid businessId,
+        Guid professionalId,
+        Guid locationId)
+    {
+        await using var context = new AppDbContext(
+            CreateOptions(),
+            CreateTenantContext(tenantId));
+
+        context.Tenants.Add(
+            new Tenant(tenantId, "Professional Location Tenant"));
+
+        context.Businesses.Add(
+            new Business(
+                businessId,
+                tenantId,
+                BusinessTypeIds.Barbershop,
+                "Professional Location Business",
+                CreatedAt));
+
+        await context.SaveChangesAsync();
+
+        context.Professionals.Add(
+            new Professional(
+                professionalId,
+                tenantId,
+                businessId,
+                "Professional",
+                CreatedAt));
+
+        context.Locations.Add(
+            new Location(
+                locationId,
+                tenantId,
+                businessId,
+                "Location",
+                "BR",
+                "America/Sao_Paulo",
+                CreatedAt));
+
+        await context.SaveChangesAsync();
+    }
+
+    private async Task CleanupAsync(Guid tenantId)
+    {
+        await using var context = new AppDbContext(
+            CreateOptions(),
+            CreateTenantContext(tenantId));
+
+        // Each test owns a newly generated tenant.
+        var links = await context.ProfessionalLocations
+            .Where(x => x.TenantId == tenantId)
+            .ToListAsync();
+
+        context.ProfessionalLocations.RemoveRange(links);
+        await context.SaveChangesAsync();
+
+        var professionals = await context.Professionals
+            .Where(x => x.TenantId == tenantId)
+            .ToListAsync();
+
+        context.Professionals.RemoveRange(professionals);
+        await context.SaveChangesAsync();
+
+        var locations = await context.Locations
+            .Where(x => x.TenantId == tenantId)
+            .ToListAsync();
+
+        context.Locations.RemoveRange(locations);
+        await context.SaveChangesAsync();
+
+        var businesses = await context.Businesses
+            .Where(x => x.TenantId == tenantId)
+            .ToListAsync();
+
+        context.Businesses.RemoveRange(businesses);
+        await context.SaveChangesAsync();
+
+        var tenant = await context.Tenants
+            .SingleOrDefaultAsync(x => x.Id == tenantId);
+
+        if (tenant is not null)
+        {
+            context.Tenants.Remove(tenant);
+            await context.SaveChangesAsync();
+        }
+    }
+
     private DbContextOptions<AppDbContext> CreateOptions()
     {
         return new DbContextOptionsBuilder<AppDbContext>()
@@ -1006,4 +1018,6 @@ public sealed class ProfessionalLocationPersistenceTests
 
         return context;
     }
+
+    #endregion
 }

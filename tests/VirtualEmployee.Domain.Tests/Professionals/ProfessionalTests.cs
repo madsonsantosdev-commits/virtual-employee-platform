@@ -4,6 +4,8 @@ namespace VirtualEmployee.Domain.Tests.Professionals;
 
 public sealed class ProfessionalTests
 {
+    #region Facts
+
     [Fact]
     public void Constructor_ShouldCreateActiveProfessional_WhenDataIsValid()
     {
@@ -105,4 +107,6 @@ public sealed class ProfessionalTests
         Assert.Equal(createdAt, professional.CreatedAt);
         Assert.Equal(updatedAt, professional.UpdatedAt);
     }
+
+    #endregion
 }

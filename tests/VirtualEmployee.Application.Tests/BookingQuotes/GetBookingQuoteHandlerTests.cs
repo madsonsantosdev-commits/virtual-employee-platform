@@ -10,6 +10,8 @@ namespace VirtualEmployee.Application.Tests.BookingQuotes;
 
 public sealed class GetBookingQuoteHandlerTests
 {
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_ShouldCalculateTotalsAndPreserveRequestedOrder()
     {
@@ -109,6 +111,10 @@ public sealed class GetBookingQuoteHandlerTests
         Assert.Equal(0m, result.Response.TotalPrice);
         Assert.Equal(45, result.Response.TotalDurationMinutes);
     }
+
+    #endregion
+
+    #region Theories
 
     [Theory]
     [InlineData("empty-location")]
@@ -315,6 +321,10 @@ public sealed class GetBookingQuoteHandlerTests
         Assert.Null(result.Response);
     }
 
+    #endregion
+
+    #region Helpers
+
     private sealed class FakeReadService : IBookingQuoteReadService
     {
         public static readonly DateTimeOffset CreatedAt =
@@ -411,4 +421,6 @@ public sealed class GetBookingQuoteHandlerTests
             return Task.FromResult(ServicesOffered);
         }
     }
+
+    #endregion
 }

@@ -8,6 +8,64 @@ public sealed class ScheduleBlockTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 10, 14, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
+    [Fact]
+    public void Constructor_ShouldAllowBlockAcrossDays()
+    {
+        var start = new DateTimeOffset(
+            2026, 10, 19, 22, 0, 0, TimeSpan.Zero);
+
+        var block = CreateBlock(start, start.AddHours(8));
+
+        Assert.Equal(start.AddHours(8), block.EndsAt);
+        Assert.Equal(20, block.EndsAt.Day);
+    }
+
+    [Fact]
+    public void Overlaps_ShouldCompareInstantsAcrossOffsets()
+    {
+        var block = CreateBlock(CreatedAt, CreatedAt.AddHours(1));
+
+        var start = CreatedAt.AddMinutes(30)
+            .ToOffset(TimeSpan.FromHours(-3));
+
+        var end = CreatedAt.AddMinutes(90)
+            .ToOffset(TimeSpan.FromHours(2));
+
+        Assert.True(block.Overlaps(start, end));
+    }
+
+    [Fact]
+    public void Deactivate_ShouldPreserveDataAndIgnoreRepeatedDeactivation()
+    {
+        var block = CreateBlock(CreatedAt, CreatedAt.AddHours(1));
+        var id = block.Id;
+        var deactivatedAt = CreatedAt.AddHours(2);
+
+        block.Deactivate(
+            deactivatedAt.ToOffset(TimeSpan.FromHours(-3)));
+
+        Assert.False(block.IsActive);
+        Assert.Equal(id, block.Id);
+        Assert.Equal(CreatedAt, block.StartsAt);
+        Assert.Equal(CreatedAt.AddHours(1), block.EndsAt);
+        Assert.Equal(CreatedAt, block.CreatedAt);
+        Assert.Equal(deactivatedAt, block.UpdatedAt);
+        Assert.Equal(TimeSpan.Zero, block.UpdatedAt.Offset);
+
+        Assert.False(
+            block.Overlaps(CreatedAt, CreatedAt.AddMinutes(30)));
+
+        block.Deactivate(CreatedAt.AddHours(3));
+
+        Assert.Equal(deactivatedAt, block.UpdatedAt);
+    }
+
+    #endregion
+
+    #region Theories
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -78,18 +136,6 @@ public sealed class ScheduleBlockTests
             CreateBlock(CreatedAt, CreatedAt.AddHours(hours)));
     }
 
-    [Fact]
-    public void Constructor_ShouldAllowBlockAcrossDays()
-    {
-        var start = new DateTimeOffset(
-            2026, 10, 19, 22, 0, 0, TimeSpan.Zero);
-
-        var block = CreateBlock(start, start.AddHours(8));
-
-        Assert.Equal(start.AddHours(8), block.EndsAt);
-        Assert.Equal(20, block.EndsAt.Day);
-    }
-
     [Theory]
     [InlineData(-60, 0, false)]
     [InlineData(60, 120, false)]
@@ -112,20 +158,6 @@ public sealed class ScheduleBlockTests
         Assert.Equal(expected, overlaps);
     }
 
-    [Fact]
-    public void Overlaps_ShouldCompareInstantsAcrossOffsets()
-    {
-        var block = CreateBlock(CreatedAt, CreatedAt.AddHours(1));
-
-        var start = CreatedAt.AddMinutes(30)
-            .ToOffset(TimeSpan.FromHours(-3));
-
-        var end = CreatedAt.AddMinutes(90)
-            .ToOffset(TimeSpan.FromHours(2));
-
-        Assert.True(block.Overlaps(start, end));
-    }
-
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
@@ -139,31 +171,9 @@ public sealed class ScheduleBlockTests
                 CreatedAt.AddHours(hours)));
     }
 
-    [Fact]
-    public void Deactivate_ShouldPreserveDataAndIgnoreRepeatedDeactivation()
-    {
-        var block = CreateBlock(CreatedAt, CreatedAt.AddHours(1));
-        var id = block.Id;
-        var deactivatedAt = CreatedAt.AddHours(2);
+    #endregion
 
-        block.Deactivate(
-            deactivatedAt.ToOffset(TimeSpan.FromHours(-3)));
-
-        Assert.False(block.IsActive);
-        Assert.Equal(id, block.Id);
-        Assert.Equal(CreatedAt, block.StartsAt);
-        Assert.Equal(CreatedAt.AddHours(1), block.EndsAt);
-        Assert.Equal(CreatedAt, block.CreatedAt);
-        Assert.Equal(deactivatedAt, block.UpdatedAt);
-        Assert.Equal(TimeSpan.Zero, block.UpdatedAt.Offset);
-
-        Assert.False(
-            block.Overlaps(CreatedAt, CreatedAt.AddMinutes(30)));
-
-        block.Deactivate(CreatedAt.AddHours(3));
-
-        Assert.Equal(deactivatedAt, block.UpdatedAt);
-    }
+    #region Helpers
 
     private static ScheduleBlock CreateBlock(
         DateTimeOffset startsAt,
@@ -178,4 +188,6 @@ public sealed class ScheduleBlockTests
             endsAt,
             CreatedAt);
     }
+
+    #endregion
 }

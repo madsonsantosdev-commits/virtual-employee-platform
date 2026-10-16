@@ -6,6 +6,60 @@ namespace VirtualEmployee.Application.Tests.ScheduleBlocks;
 
 public sealed class CreateScheduleBlockHandlerTests
 {
+    #region Facts
+
+    [Fact]
+    public async Task HandleAsync_ShouldAcceptMaximumKeyLength()
+    {
+        var service = new FakeCreationService();
+        var handler = new CreateScheduleBlockHandler(service);
+        var command = CreateCommand() with
+        {
+            IdempotencyKey = new string('A', 200)
+        };
+
+        var result = await handler.HandleAsync(command);
+
+        Assert.Same(service.Result, result);
+        Assert.NotNull(service.Command);
+        Assert.Equal(command.IdempotencyKey, service.Command.IdempotencyKey);
+        Assert.Equal(1, service.CallCount);
+    }
+
+    [Fact]
+    public async Task HandleAsync_ShouldPreserveReplayResult()
+    {
+        var response = new ScheduleBlockResponse(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            null,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddHours(1),
+            true,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        var service = new FakeCreationService
+        {
+            Result = CreateScheduleBlockResult.Success(
+                response,
+                isReplay: true)
+        };
+
+        var handler = new CreateScheduleBlockHandler(service);
+
+        var result = await handler.HandleAsync(CreateCommand());
+
+        Assert.Same(service.Result, result);
+        Assert.True(result.IsSuccess);
+        Assert.True(result.IsReplay);
+        Assert.Same(response, result.Response);
+    }
+
+    #endregion
+
+    #region Theories
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -111,53 +165,9 @@ public sealed class CreateScheduleBlockHandlerTests
         Assert.Null(service.Command);
     }
 
-    [Fact]
-    public async Task HandleAsync_ShouldAcceptMaximumKeyLength()
-    {
-        var service = new FakeCreationService();
-        var handler = new CreateScheduleBlockHandler(service);
-        var command = CreateCommand() with
-        {
-            IdempotencyKey = new string('A', 200)
-        };
+    #endregion
 
-        var result = await handler.HandleAsync(command);
-
-        Assert.Same(service.Result, result);
-        Assert.NotNull(service.Command);
-        Assert.Equal(command.IdempotencyKey, service.Command.IdempotencyKey);
-        Assert.Equal(1, service.CallCount);
-    }
-
-    [Fact]
-    public async Task HandleAsync_ShouldPreserveReplayResult()
-    {
-        var response = new ScheduleBlockResponse(
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            null,
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow.AddHours(1),
-            true,
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow);
-
-        var service = new FakeCreationService
-        {
-            Result = CreateScheduleBlockResult.Success(
-                response,
-                isReplay: true)
-        };
-
-        var handler = new CreateScheduleBlockHandler(service);
-
-        var result = await handler.HandleAsync(CreateCommand());
-
-        Assert.Same(service.Result, result);
-        Assert.True(result.IsSuccess);
-        Assert.True(result.IsReplay);
-        Assert.Same(response, result.Response);
-    }
+    #region Helpers
 
     private static CreateScheduleBlockCommand CreateCommand()
     {
@@ -193,4 +203,6 @@ public sealed class CreateScheduleBlockHandlerTests
             return Task.FromResult(Result);
         }
     }
+
+    #endregion
 }

@@ -25,6 +25,8 @@ public sealed class BookingQuoteReadServiceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task ReadService_ShouldReadResourcesAndRequireEveryLocationService()
     {
@@ -229,6 +231,10 @@ public sealed class BookingQuoteReadServiceTests
         }
     }
 
+    #endregion
+
+    #region Helpers
+
     private AppDbContext CreateContext(Guid tenantId)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -336,4 +342,6 @@ public sealed class BookingQuoteReadServiceTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }

@@ -25,6 +25,8 @@ public sealed class TenantIsolationTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     // =========================================================
     // Business
     // =========================================================
@@ -851,6 +853,11 @@ public sealed class TenantIsolationTests
             tenantAId,
             tenantBId);
     }
+
+    #endregion
+
+    #region Helpers
+
     // =========================================================
     // Helpers
     // =========================================================
@@ -962,4 +969,6 @@ public sealed class TenantIsolationTests
 
         await dbContext.SaveChangesAsync();
     }
+
+    #endregion
 }

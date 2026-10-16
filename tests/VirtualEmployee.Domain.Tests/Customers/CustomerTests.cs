@@ -8,6 +8,8 @@ public sealed class CustomerTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public void Constructor_ShouldPreserveIdentityAndTrimContactData()
     {
@@ -34,51 +36,6 @@ public sealed class CustomerTests
         Assert.Equal(CreatedAt, customer.UpdatedAt);
         Assert.Equal(TimeSpan.Zero, customer.CreatedAt.Offset);
         Assert.Equal(TimeSpan.Zero, customer.UpdatedAt.Offset);
-    }
-
-    [Theory]
-    [InlineData(null, null)]
-    [InlineData("", "")]
-    [InlineData("   ", "   ")]
-    public void Constructor_ShouldNormalizeEmptyOptionalFields(
-        string? name,
-        string? email)
-    {
-        var customer = CreateCustomer(name, email);
-
-        Assert.Null(customer.Name);
-        Assert.Null(customer.Email);
-        Assert.Equal("+5511999990001", customer.Phone);
-    }
-
-    [Theory]
-    [InlineData("id")]
-    [InlineData("tenant")]
-    [InlineData("business")]
-    public void Constructor_WithEmptyIdentity_ShouldThrow(string field)
-    {
-        Assert.Throws<ArgumentException>(() =>
-            new Customer(
-                field == "id" ? Guid.Empty : Guid.NewGuid(),
-                field == "tenant" ? Guid.Empty : Guid.NewGuid(),
-                field == "business" ? Guid.Empty : Guid.NewGuid(),
-                "+5511999990001",
-                CreatedAt));
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void Constructor_WithEmptyPhone_ShouldThrow(string? phone)
-    {
-        Assert.Throws<ArgumentException>(() =>
-            new Customer(
-                Guid.NewGuid(),
-                Guid.NewGuid(),
-                Guid.NewGuid(),
-                phone!,
-                CreatedAt));
     }
 
     [Fact]
@@ -135,6 +92,55 @@ public sealed class CustomerTests
         Assert.Equal(updatedAt, customer.UpdatedAt);
     }
 
+    #endregion
+
+    #region Theories
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", "")]
+    [InlineData("   ", "   ")]
+    public void Constructor_ShouldNormalizeEmptyOptionalFields(
+        string? name,
+        string? email)
+    {
+        var customer = CreateCustomer(name, email);
+
+        Assert.Null(customer.Name);
+        Assert.Null(customer.Email);
+        Assert.Equal("+5511999990001", customer.Phone);
+    }
+
+    [Theory]
+    [InlineData("id")]
+    [InlineData("tenant")]
+    [InlineData("business")]
+    public void Constructor_WithEmptyIdentity_ShouldThrow(string field)
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new Customer(
+                field == "id" ? Guid.Empty : Guid.NewGuid(),
+                field == "tenant" ? Guid.Empty : Guid.NewGuid(),
+                field == "business" ? Guid.Empty : Guid.NewGuid(),
+                "+5511999990001",
+                CreatedAt));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Constructor_WithEmptyPhone_ShouldThrow(string? phone)
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new Customer(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                phone!,
+                CreatedAt));
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -158,6 +164,10 @@ public sealed class CustomerTests
         Assert.Equal(CreatedAt, customer.UpdatedAt);
     }
 
+    #endregion
+
+    #region Helpers
+
     private static Customer CreateCustomer(
         string? name = null,
         string? email = null)
@@ -171,4 +181,6 @@ public sealed class CustomerTests
             name,
             email);
     }
+
+    #endregion
 }

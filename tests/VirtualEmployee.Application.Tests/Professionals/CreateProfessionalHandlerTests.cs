@@ -8,6 +8,8 @@ namespace VirtualEmployee.Application.Tests.Professionals;
 
 public sealed class CreateProfessionalHandlerTests
 {
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_ShouldCreateProfessional_WhenBusinessExists()
     {
@@ -81,6 +83,10 @@ public sealed class CreateProfessionalHandlerTests
         Assert.Equal(0, writeService.SaveCalls);
     }
 
+    #endregion
+
+    #region Helpers
+
     private sealed class FakeTenantContext : ITenantContext
     {
         public FakeTenantContext(Guid tenantId)
@@ -140,4 +146,6 @@ public sealed class CreateProfessionalHandlerTests
             return Task.CompletedTask;
         }
     }
+
+    #endregion
 }

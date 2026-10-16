@@ -11,6 +11,8 @@ public sealed class ReplaceProfessionalLocationsHandlerTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 10, 6, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_WithValidLocations_ShouldReplaceLocations()
     {
@@ -166,6 +168,10 @@ public sealed class ReplaceProfessionalLocationsHandlerTests
             writeService);
     }
 
+    #endregion
+
+    #region Helpers
+
     private static void AssertRejected(
         ProfessionalLocationOperationResult result,
         ProfessionalLocationOperationError expectedError,
@@ -261,4 +267,6 @@ public sealed class ReplaceProfessionalLocationsHandlerTests
             return Task.CompletedTask;
         }
     }
+
+    #endregion
 }

@@ -7,6 +7,8 @@ public sealed class ProfessionalLocationTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 10, 6, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public void Constructor_ShouldCreateActiveLink()
     {
@@ -26,34 +28,6 @@ public sealed class ProfessionalLocationTests
         Assert.True(link.IsActive);
         Assert.Equal(CreatedAt, link.CreatedAt);
         Assert.Equal(CreatedAt, link.UpdatedAt);
-    }
-
-    [Theory]
-    [InlineData("tenantId")]
-    [InlineData("professionalId")]
-    [InlineData("locationId")]
-    public void Constructor_WithEmptyId_ShouldThrow(string parameterName)
-    {
-        var tenantId = parameterName == "tenantId"
-            ? Guid.Empty
-            : Guid.NewGuid();
-
-        var professionalId = parameterName == "professionalId"
-            ? Guid.Empty
-            : Guid.NewGuid();
-
-        var locationId = parameterName == "locationId"
-            ? Guid.Empty
-            : Guid.NewGuid();
-
-        var exception = Assert.Throws<ArgumentException>(() =>
-            new ProfessionalLocation(
-                tenantId,
-                professionalId,
-                locationId,
-                CreatedAt));
-
-        Assert.Equal(parameterName, exception.ParamName);
     }
 
     [Fact]
@@ -91,4 +65,38 @@ public sealed class ProfessionalLocationTests
         Assert.Equal(professionalId, link.ProfessionalId);
         Assert.Equal(locationId, link.LocationId);
     }
+
+    #endregion
+
+    #region Theories
+
+    [Theory]
+    [InlineData("tenantId")]
+    [InlineData("professionalId")]
+    [InlineData("locationId")]
+    public void Constructor_WithEmptyId_ShouldThrow(string parameterName)
+    {
+        var tenantId = parameterName == "tenantId"
+            ? Guid.Empty
+            : Guid.NewGuid();
+
+        var professionalId = parameterName == "professionalId"
+            ? Guid.Empty
+            : Guid.NewGuid();
+
+        var locationId = parameterName == "locationId"
+            ? Guid.Empty
+            : Guid.NewGuid();
+
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new ProfessionalLocation(
+                tenantId,
+                professionalId,
+                locationId,
+                CreatedAt));
+
+        Assert.Equal(parameterName, exception.ParamName);
+    }
+
+    #endregion
 }

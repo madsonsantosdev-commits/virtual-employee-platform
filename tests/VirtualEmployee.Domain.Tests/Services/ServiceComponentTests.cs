@@ -4,6 +4,8 @@ namespace VirtualEmployee.Domain.Tests.Services;
 
 public sealed class ServiceComponentTests
 {
+    #region Facts
+
     [Fact]
     public void Constructor_WithValidData_ShouldCreateComponent()
     {
@@ -103,6 +105,11 @@ public sealed class ServiceComponentTests
         Assert.Throws<ArgumentOutOfRangeException>(
             () => component.UpdateSortOrder(-1));
     }
+
+    #endregion
+
+    #region Helpers
+
     private static ServiceComponent CreateComponent(
         Guid? tenantId = null,
         Guid? comboServiceId = null,
@@ -116,4 +123,6 @@ public sealed class ServiceComponentTests
             sortOrder,
             DateTimeOffset.UtcNow);
     }
+
+    #endregion
 }

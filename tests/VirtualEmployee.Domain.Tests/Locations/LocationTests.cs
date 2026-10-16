@@ -7,6 +7,8 @@ public sealed class LocationTests
     private static readonly DateTimeOffset CreatedAt =
         new(2026, 9, 24, 12, 0, 0, TimeSpan.Zero);
 
+    #region Facts
+
     [Fact]
     public void Constructor_WithValidData_ShouldCreateLocation()
     {
@@ -321,18 +323,6 @@ public sealed class LocationTests
         Assert.Equal(CreatedAt, location.CreatedAt);
     }
 
-    private static Location CreateLocation()
-    {
-        return new Location(
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            "Unidade Centro",
-            "BR",
-            "America/Sao_Paulo",
-            CreatedAt);
-    }
-
     [Fact]
     public void Constructor_WithBlankOptionalValues_ShouldStoreNull()
     {
@@ -350,4 +340,22 @@ public sealed class LocationTests
         Assert.Null(location.Phone);
         Assert.Null(location.Address);
     }
+
+    #endregion
+
+    #region Helpers
+
+    private static Location CreateLocation()
+    {
+        return new Location(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "Unidade Centro",
+            "BR",
+            "America/Sao_Paulo",
+            CreatedAt);
+    }
+
+    #endregion
 }

@@ -7,6 +7,8 @@ namespace VirtualEmployee.Application.Tests.Professionals;
 
 public sealed class UpdateProfessionalHandlerTests
 {
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_ShouldUpdateProfessional_AndPreserveIdentity()
     {
@@ -75,6 +77,10 @@ public sealed class UpdateProfessionalHandlerTests
         Assert.Equal(0, writeService.SaveCalls);
     }
 
+    #endregion
+
+    #region Helpers
+
     private sealed class FakeProfessionalWriteService
         : IProfessionalWriteService
     {
@@ -115,4 +121,6 @@ public sealed class UpdateProfessionalHandlerTests
             return Task.CompletedTask;
         }
     }
+
+    #endregion
 }

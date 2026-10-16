@@ -4,6 +4,8 @@ namespace VirtualEmployee.Domain.Tests.Services;
 
 public sealed class LocationServiceTests
 {
+    #region Facts
+
     [Fact]
     public void Constructor_WithValidValues_ShouldCreateLocationService()
     {
@@ -62,4 +64,6 @@ public sealed class LocationServiceTests
 
         Assert.Equal("serviceId", exception.ParamName);
     }
+
+    #endregion
 }

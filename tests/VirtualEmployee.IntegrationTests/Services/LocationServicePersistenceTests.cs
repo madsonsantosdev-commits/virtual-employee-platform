@@ -25,6 +25,8 @@ public sealed class LocationServicePersistenceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task LocationService_WithValidLocationAndService_ShouldBePersisted()
     {
@@ -437,6 +439,7 @@ public sealed class LocationServicePersistenceTests
             tenantAId,
             tenantBId);
     }
+
     [Fact]
     public async Task ReplaceAsync_ShouldReplaceLocationServicesAndRemainIdempotent()
     {
@@ -650,6 +653,10 @@ public sealed class LocationServicePersistenceTests
             tenantId);
     }
 
+    #endregion
+
+    #region Helpers
+
     private async Task CreateCompleteScenarioAsync(
         DbContextOptions<AppDbContext> options,
         Guid tenantId,
@@ -840,4 +847,6 @@ public sealed class LocationServicePersistenceTests
 
         await dbContext.SaveChangesAsync();
     }
+
+    #endregion
 }

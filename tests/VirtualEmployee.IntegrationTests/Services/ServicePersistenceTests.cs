@@ -24,6 +24,8 @@ public sealed class ServicePersistenceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task Services_ShouldBeIsolatedByTenant()
     {
@@ -455,6 +457,7 @@ public sealed class ServicePersistenceTests
             tenantAId,
             tenantBId);
     }
+
     [Fact]
     public async Task ReplaceComponentsAsync_ShouldRemoveAddAndReorderComponents()
     {
@@ -618,6 +621,11 @@ public sealed class ServicePersistenceTests
             options,
             tenantId);
     }
+
+    #endregion
+
+    #region Helpers
+
     private DbContextOptions<AppDbContext> CreateOptions()
     {
         return new DbContextOptionsBuilder<AppDbContext>()
@@ -750,4 +758,6 @@ public sealed class ServicePersistenceTests
 
         await dbContext.SaveChangesAsync();
     }
+
+    #endregion
 }

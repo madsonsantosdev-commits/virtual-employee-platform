@@ -28,6 +28,8 @@ public sealed class AvailabilityRulePersistenceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task AvailabilityRule_ShouldPersistAndLoadLocalTimes()
     {
@@ -481,6 +483,10 @@ public sealed class AvailabilityRulePersistenceTests
         }
     }
 
+    #endregion
+
+    #region Theories
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -750,6 +756,10 @@ public sealed class AvailabilityRulePersistenceTests
         }
     }
 
+    #endregion
+
+    #region Helpers
+
     private AppDbContext CreateContext(Guid tenantId)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -845,4 +855,6 @@ public sealed class AvailabilityRulePersistenceTests
             await context.SaveChangesAsync();
         }
     }
+
+    #endregion
 }

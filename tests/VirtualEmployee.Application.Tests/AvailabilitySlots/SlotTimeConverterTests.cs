@@ -6,6 +6,8 @@ namespace VirtualEmployee.Application.Tests.AvailabilitySlots;
 
 public sealed class SlotTimeConverterTests
 {
+    #region Facts
+
     [Fact]
     public void TryConvert_ShouldConvertLocalTimesToUtc()
     {
@@ -56,6 +58,25 @@ public sealed class SlotTimeConverterTests
             result.EndsAt);
     }
 
+    [Fact]
+    public void TryConvert_WithNormalDaylightTime_ShouldPreserveDuration()
+    {
+        var result = SlotTimeConverter.TryConvert(
+            Guid.NewGuid(),
+            Slot(2026, 7, 1, 9, 0, 10, 0),
+            CreateDaylightTimezone());
+
+        Assert.NotNull(result);
+        Assert.Equal(
+            new DateTimeOffset(2026, 7, 1, 13, 0, 0, TimeSpan.Zero),
+            result.StartsAt);
+        Assert.Equal(TimeSpan.FromHours(1), result.EndsAt - result.StartsAt);
+    }
+
+    #endregion
+
+    #region Theories
+
     [Theory]
     [InlineData(3, 8, 2, 15, 3, 15)]
     [InlineData(3, 8, 1, 30, 2, 30)]
@@ -95,20 +116,9 @@ public sealed class SlotTimeConverterTests
         Assert.Null(result);
     }
 
-    [Fact]
-    public void TryConvert_WithNormalDaylightTime_ShouldPreserveDuration()
-    {
-        var result = SlotTimeConverter.TryConvert(
-            Guid.NewGuid(),
-            Slot(2026, 7, 1, 9, 0, 10, 0),
-            CreateDaylightTimezone());
+    #endregion
 
-        Assert.NotNull(result);
-        Assert.Equal(
-            new DateTimeOffset(2026, 7, 1, 13, 0, 0, TimeSpan.Zero),
-            result.StartsAt);
-        Assert.Equal(TimeSpan.FromHours(1), result.EndsAt - result.StartsAt);
-    }
+    #region Helpers
 
     private static LocalSlot Slot(
         int year,
@@ -159,4 +169,6 @@ public sealed class SlotTimeConverterTests
             "TestSummer",
             [rule]);
     }
+
+    #endregion
 }

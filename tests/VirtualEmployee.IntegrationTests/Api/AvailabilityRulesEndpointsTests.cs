@@ -32,7 +32,9 @@ public sealed class AvailabilityRulesEndpointsTests
     {
         _fixture = fixture;
     }
+
     #region Facts
+
     [Fact]
     public async Task AvailabilityRules_WithValidWindows_ShouldReplaceAndReturnOrderedList()
     {
@@ -484,7 +486,9 @@ public sealed class AvailabilityRulesEndpointsTests
     }
 
     #endregion
+
     #region Theories
+
     [Theory]
     [InlineData("{}")]
     [InlineData("{\"rules\":null}")]
@@ -799,8 +803,10 @@ public sealed class AvailabilityRulesEndpointsTests
     }
 
     #endregion
+
     #region Helpers
-     private AppDbContext CreateContext(Guid tenantId)
+
+    private AppDbContext CreateContext(Guid tenantId)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseNpgsql(_fixture.ConnectionString)
@@ -917,5 +923,6 @@ public sealed class AvailabilityRulesEndpointsTests
             await context.SaveChangesAsync();
         }
     }
+
     #endregion
 }

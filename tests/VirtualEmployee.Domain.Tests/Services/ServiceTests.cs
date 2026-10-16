@@ -4,6 +4,8 @@ namespace VirtualEmployee.Domain.Tests.Services;
 
 public sealed class ServiceTests
 {
+    #region Facts
+
     [Fact]
     public void Constructor_WithValidData_ShouldCreateService()
     {
@@ -181,6 +183,10 @@ public sealed class ServiceTests
                 DateTimeOffset.UtcNow));
     }
 
+    #endregion
+
+    #region Helpers
+
     private static Service CreateService(
         Guid? id = null,
         Guid? tenantId = null,
@@ -200,4 +206,6 @@ public sealed class ServiceTests
             durationMinutes,
             DateTimeOffset.UtcNow);
     }
+
+    #endregion
 }

@@ -6,6 +6,8 @@ namespace VirtualEmployee.Application.Tests.Services;
 
 public sealed class UpdateServiceHandlerTests
 {
+    #region Facts
+
     [Fact]
     public async Task HandleAsync_WithSingleService_ShouldUpdateService()
     {
@@ -423,6 +425,10 @@ public sealed class UpdateServiceHandlerTests
         Assert.Equal(1, writeService.SaveChangesCallCount);
     }
 
+    #endregion
+
+    #region Helpers
+
     private static Service CreateService(
         Guid tenantId,
         Guid businessId,
@@ -441,4 +447,6 @@ public sealed class UpdateServiceHandlerTests
             durationMinutes,
             DateTimeOffset.UtcNow);
     }
+
+    #endregion
 }

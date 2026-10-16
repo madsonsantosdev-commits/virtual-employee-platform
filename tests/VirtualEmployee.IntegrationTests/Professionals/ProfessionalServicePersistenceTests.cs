@@ -25,6 +25,8 @@ public sealed class ProfessionalServicePersistenceTests
         _fixture = fixture;
     }
 
+    #region Facts
+
     [Fact]
     public async Task ProfessionalService_ShouldPersistAndLoadOperationalData()
     {
@@ -628,6 +630,10 @@ public sealed class ProfessionalServicePersistenceTests
         }
     }
 
+    #endregion
+
+    #region Theories
+
     [Theory]
     [InlineData(EntityState.Added)]
     [InlineData(EntityState.Modified)]
@@ -907,6 +913,11 @@ public sealed class ProfessionalServicePersistenceTests
             await CleanupAsync(tenantId);
         }
     }
+
+    #endregion
+
+    #region Helpers
+
     private async Task SeedAsync(
         Guid tenantId,
         Guid businessId,
@@ -1008,4 +1019,6 @@ public sealed class ProfessionalServicePersistenceTests
 
         return context;
     }
+
+    #endregion
 }
