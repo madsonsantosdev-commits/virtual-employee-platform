@@ -799,7 +799,8 @@ Rotas implementadas:
 - `GET /api/v1/appointments/{appointmentId}`
 
 O header `X-Tenant-Id` é temporário para desenvolvimento.
-Cancelamento, reagendamento e confirmação por pagamento permanecem pendentes.
+Cancelamento idempotente foi validado em 19/10/2026.
+Reagendamento e confirmação por pagamento permanecem pendentes.
 
 #### Listagem paginada
 
@@ -1003,8 +1004,94 @@ Fluxo: `PENDING -> Payment -> PaymentAttempt -> webhook confirmado -> Payment CO
 ### Reschedule
 `POST /appointments/{id}/reschedule` requer `Idempotency-Key`. Pode mudar Location quando elegibilidade/disponibilidade forem satisfeitas. Se futura diferença comercial exigir ajuste financeiro, MVP usa cancelamento/novo booking; sem pagamento complementar/refund parcial.
 
-### Cancel
-`POST /appointments/{id}/cancel` requer `Idempotency-Key`.
+### Cancelamento — implementação em 19/10/2026
+
+`POST /api/v1/appointments/{appointmentId}/cancel`
+
+Exige `Idempotency-Key` com até 200 caracteres, sem espaços
+ou caracteres de controle.
+
+Entrada:
+
+```json
+{
+  "cancelledBy": "CLIENT",
+  "reason": "Cliente solicitou"
+}
+```
+
+- AppointmentId deve ser um GUID não vazio.
+- cancelledBy aceita exatamente CLIENT ou BUSINESS.
+- reason é obrigatório e recebe Trim antes da validação de tamanho.
+- O motivo normalizado deve conter entre 1 e 500 caracteres.
+- O tenant é resolvido pelo mecanismo de contexto atual.
+- cancelledBy informa a origem operacional; não representa autenticação
+  nem autorização do solicitante. Essas proteções permanecem pendentes.
+
+Retorna 200 com a auditoria do cancelamento:
+
+```json
+{
+  "id": "<appointment-id>",
+  "status": "CANCELLED_BY_CLIENT",
+  "cancellationReason": "Cliente solicitou",
+  "cancelledAt": "2026-10-19T23:07:00.236501+00:00",
+  "updatedAt": "2026-10-19T23:07:00.236501+00:00"
+}
+```
+
+BUSINESS resulta em CANCELLED_BY_BUSINESS.
+Datas são persistidas em UTC, com precisão de microssegundos.
+
+Podem ser cancelados os estados PENDING, CONFIRMED,
+CONFIRMED_BY_CLIENT e RESCHEDULE_REQUESTED.
+PENDING exige que o prazo da reserva ainda não tenha vencido.
+COMPLETED, NO_SHOW e cancelamento pela outra origem não permitem
+a operação. EXPIRED retorna RESERVATION_EXPIRED.
+
+A transação persiste a alteração do Appointment e a resposta idempotente
+atomicamente. O intervalo deixa de ocupar agenda após o commit.
+Itens, snapshots comerciais e prazo original da reserva são preservados.
+O cancelamento não depende de recursos do catálogo continuarem ativos.
+
+Idempotência:
+- Escopo: TenantId + Operation CancelAppointment + IdempotencyKey.
+- Hash considera AppointmentId, origem e motivo normalizado.
+- Mesma chave e conteúdo retornam a resposta original.
+- Mesma chave com conteúdo diferente retorna IDEMPOTENCY_CONFLICT.
+- Nova chave para a mesma origem e motivo preserva a auditoria original
+  e registra a resposta para a nova chave.
+- Nova chave com outra origem ou motivo em agendamento já cancelado
+  retorna INVALID_APPOINTMENT_STATE.
+
+Ao tentar cancelar PENDING vencido, o backend materializa EXPIRED
+e retorna RESERVATION_EXPIRED, sem registrar resposta idempotente
+de cancelamento. Um registro já EXPIRED também retorna esse conflito.
+
+Atualizações concorrentes são protegidas pelo token de Status.
+Quando outra operação vence a disputa, o cancelamento retorna
+CONCURRENCY_CONFLICT e sua transação é revertida.
+O cliente pode consultar o estado atual e repetir a solicitação
+com a mesma chave.
+
+| Resultado | HTTP | Código |
+| --- | --- | --- |
+| Cancelamento ou replay concluído | 200 | — |
+| Entrada ou chave inválida | 400 | — |
+| Agendamento inexistente ou de outro tenant | 404 | — |
+| Estado ou dados de cancelamento incompatíveis | 409 | INVALID_APPOINTMENT_STATE |
+| Reserva expirada | 409 | RESERVATION_EXPIRED |
+| Chave reutilizada com outro conteúdo | 409 | IDEMPOTENCY_CONFLICT |
+| Disputa de atualização | 409 | CONCURRENCY_CONFLICT |
+
+A resposta de cancelamento contém motivo e data.
+As consultas gerais de Appointments retornam o status atualizado;
+seu DTO atual não inclui os campos de auditoria do cancelamento.
+
+Esta entrega não solicita nem confirma refund.
+Política financeira, confirmação por pagamento e estornos permanecem
+para a integração de Payments e Refunds.
+
 
 Estados operacionais previstos: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`, `COMPLETED`, `NO_SHOW`, `EXPIRED`. Reschedule não cria estado permanente `RESCHEDULED`; mantém histórico/evento e retorna ao estado operacional apropriado.
 

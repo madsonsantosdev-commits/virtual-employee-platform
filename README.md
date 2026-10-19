@@ -98,7 +98,9 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] Proteção contra agendamentos concorrentes entre unidades
 - [x] Expiração de reservas PENDING com worker configurável
 - [x] Listagem paginada de Appointments com filtros e isolamento por tenant
-- [ ] Cancelamento e reagendamento de Appointments
+- [x] Cancelamento idempotente de Appointments com motivo e auditoria
+- [x] Liberação da agenda após cancelamento persistido
+- [ ] Reagendamento de Appointments
 - [ ] Confirmação de Appointments por pagamento integral
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -109,34 +111,44 @@ A autenticação e a autorização de produção ainda estão pendentes.
 
 ### Última validação local — 19/10/2026
 
-- Suíte completa: 801 testes passaram, sem falhas ou ignorados.
-- Listagem de Appointments: 21 testes de Application e 35 HTTP com PostgreSQL.
-- Validados paginação, ordenação, snapshots e contagem após os filtros.
-- Validados filtros por unidade, profissional, cliente, status e período.
-- Período considera sobreposição, aceita offsets equivalentes e exclui intervalos adjacentes.
-- Validados parâmetros inválidos, filtros combinados e isolamento de itens e contagem entre tenants.
-- Validação manual: listagem paginada e consulta por cliente com status EXPIRED retornaram 200.
-- O agendamento existente foi retornado com seus snapshots e estado atual preservados.
+- Suíte completa: 893 testes passaram, sem falhas ou ignorados.
+- Cancelamento: 25 testes de domínio, 24 do handler, 20 de persistência/serviço e 23 HTTP.
+- Validadas origens CLIENT e BUSINESS, motivo obrigatório e limite de 500 caracteres após Trim.
+- Validados auditoria em UTC, preservação dos snapshots e liberação do intervalo para nova reserva.
+- Idempotência validada com replay, normalização do motivo e conflito de conteúdo.
+- Concorrência validada com mesma chave, chaves diferentes e disputa com expiração.
+- Validados isolamento entre tenants, integridade no PostgreSQL e expiração no limite do prazo.
+- Validação manual: cancelamento 200, replay 200 com mesmo corpo e consulta com CANCELLED_BY_CLIENT.
+- Motivo com acentos preservado; preço de 65,00 e duração de 45 minutos mantidos.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
 de elegibilidade, AvailabilityRules, busca de slots, ScheduleBlocks,
-Customers, Booking Quote e a primeira entrega de Appointments estão
+Customers, Booking Quote, criação e listagem de Appointments estão
 integrados à `main`.
 A organização dos testes em regiões Facts, Theories e Helpers também
 está integrada.
 
-A listagem de Appointments está implementada na branch
-`feature/appointments-list`, com validação automatizada e manual concluída
-e integração à `main` pendente.
+O cancelamento de Appointments está implementado na branch
+`feature/appointments-cancel`, com validação automatizada e manual
+concluída e integração à `main` pendente.
 
 A criação revalida recursos e disponibilidade, calcula os valores no
 backend e persiste Appointment, itens e resposta idempotente atomicamente.
-As consultas retornam o estado atual; o replay retorna a resposta
-original da criação e não reativa reservas expiradas.
+As consultas retornam o estado atual; o replay de criação preserva
+a resposta original e não reativa reservas expiradas ou canceladas.
 
 A listagem possui filtros opcionais, paginação e ordenação por início
 e ID. Itens e contagem respeitam o tenant atual.
 Consultar agendamentos não altera seu estado nem materializa expiração.
+
+O cancelamento grava estado, motivo, data e resposta idempotente
+na mesma transação. O intervalo é liberado quando a transação confirma.
+Itens e snapshots comerciais são preservados.
+O replay de cancelamento devolve a resposta original.
+
+A tentativa de cancelar uma reserva PENDING vencida materializa EXPIRED
+e retorna conflito, sem registrar cancelamento.
+A disputa entre cancelamento e expiração respeita o token de concorrência.
 
 A busca de slots considera agenda semanal, elegibilidade, bloqueios
 e agendamentos nos estados que ocupam agenda, inclusive em outras
@@ -145,9 +157,11 @@ unidades do mesmo profissional dentro do tenant.
 O prazo padrão da reserva é de 10 minutos, limitado ao início do atendimento.
 O worker de expiração fica desabilitado por padrão e exige ativação explícita.
 Quando habilitado, o intervalo padrão entre ciclos é de 30 segundos.
-Reservas PENDING continuam ocupando agenda até a expiração ser materializada.
+Reservas PENDING continuam ocupando agenda até a expiração ou
+o cancelamento serem persistidos.
 
-Permanecem pendentes cancelamento, reagendamento e integração com
-pagamentos, incluindo confirmação por pagamento integral.
+Permanecem pendentes reagendamento, histórico de transições e integração
+com pagamentos, incluindo confirmação por pagamento integral e refunds.
+O cancelamento atual não solicita nem confirma estorno.
 A avaliação de impacto dos bloqueios sobre Appointments também permanece
 pendente.

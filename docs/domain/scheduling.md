@@ -203,7 +203,8 @@ o tenant. Deadlocks têm até três tentativas, com nova transação
 e revalidação completa.
 
 Replay devolve a resposta original e não altera o estado atual.
-Cancelamento, reagendamento e confirmação por pagamento permanecem pendentes.
+Cancelamento foi implementado em 19/10/2026.
+Reagendamento e confirmação por pagamento permanecem pendentes.
 
 ### Listagem de Appointments — 19/10/2026
 
@@ -279,7 +280,28 @@ Indisponibilidade(Location[, Professional])
 O sistema propõe; cliente decide. Nunca mover sem consentimento.
 
 ## 14. Cancelamento
-Cancelamento muda estado e libera slot imediatamente. Refund é processo financeiro separado e assíncrono.
+
+Implementado em 19/10/2026.
+
+- CLIENT resulta em CANCELLED_BY_CLIENT.
+- BUSINESS resulta em CANCELLED_BY_BUSINESS.
+- Estados que ocupam agenda podem ser cancelados; PENDING exige prazo vigente.
+- Motivo obrigatório, normalizado com Trim e limitado a 500 caracteres.
+- CancelledAt e UpdatedAt são gravados em UTC.
+- Itens, snapshots e prazo original da reserva são preservados.
+- O intervalo é liberado após a confirmação da transação.
+
+Cancelamento e resposta idempotente são gravados atomicamente.
+Mesma chave e conteúdo retornam a resposta original.
+Outra chave para a mesma origem e motivo preserva a auditoria original;
+mudança de origem ou motivo após cancelamento retorna conflito.
+
+Uma tentativa sobre PENDING vencido materializa EXPIRED e retorna
+conflito, sem registrar cancelamento.
+O token de Status protege a disputa entre cancelamento e expiração.
+
+Refund é processo financeiro separado e assíncrono.
+Esta entrega não solicita nem confirma estorno.
 ### Implementação de ScheduleBlocks — 14/10/2026
 
 Criação, consulta e desativação estão implementadas.

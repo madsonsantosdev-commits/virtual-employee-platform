@@ -19,6 +19,7 @@ using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
 using VirtualEmployee.IntegrationTests.Infrastructure;
 using VirtualEmployee.Application.Appointments.GetAppointments;
+using VirtualEmployee.Application.Appointments.CancelAppointment;
 using Xunit;
 
 namespace VirtualEmployee.IntegrationTests.Api;
@@ -37,6 +38,179 @@ public sealed class AppointmentsEndpointsTests
     }
 
     #region Facts
+
+    [Fact]
+    public async Task Appointments_Cancel_ShouldPersistAndReplay()
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            var startsAt = new DateTimeOffset(
+                2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+            using var createResponse = await client.PostAsJsonAsync(
+                "/api/v1/appointments",
+                new
+                {
+                    customerId = data.CustomerId,
+                    locationId = data.LocationId,
+                    professionalId = data.ProfessionalId,
+                    serviceIds = new[] { data.ServiceId },
+                    startsAt
+                });
+
+            var createBody = await createResponse.Content
+                .ReadAsStringAsync();
+
+            Assert.True(
+                createResponse.StatusCode == HttpStatusCode.Created,
+                $"Criação HTTP: {(int)createResponse.StatusCode}" +
+                Environment.NewLine +
+                createBody);
+
+            var created = await createResponse.Content
+                .ReadFromJsonAsync<AppointmentResponse>();
+
+            Assert.NotNull(created);
+
+            var cancellationKey = Guid.NewGuid().ToString();
+
+            client.DefaultRequestHeaders.Remove("Idempotency-Key");
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                cancellationKey);
+
+            var url = $"/api/v1/appointments/{created.Id}/cancel";
+
+            using var cancelResponse = await client.PostAsJsonAsync(
+                url,
+                new
+                {
+                    cancelledBy = "CLIENT",
+                    reason = "  Cliente solicitou  "
+                });
+
+            var cancelBody = await cancelResponse.Content
+                .ReadAsStringAsync();
+
+            Assert.True(
+                cancelResponse.StatusCode == HttpStatusCode.OK,
+                $"Cancelamento HTTP: {(int)cancelResponse.StatusCode}" +
+                Environment.NewLine +
+                cancelBody);
+
+            var cancelled = await cancelResponse.Content
+                .ReadFromJsonAsync<CancelAppointmentResponse>();
+
+            Assert.NotNull(cancelled);
+            Assert.Equal(created.Id, cancelled.Id);
+            Assert.Equal("CANCELLED_BY_CLIENT", cancelled.Status);
+            Assert.Equal(
+                "Cliente solicitou",
+                cancelled.CancellationReason);
+            Assert.Equal(CreatedAt, cancelled.CancelledAt);
+            Assert.Equal(CreatedAt, cancelled.UpdatedAt);
+
+            using var replayResponse = await client.PostAsJsonAsync(
+                url,
+                new
+                {
+                    cancelledBy = "CLIENT",
+                    reason = "Cliente solicitou"
+                });
+
+            var replayBody = await replayResponse.Content
+                .ReadAsStringAsync();
+
+            Assert.True(
+                replayResponse.StatusCode == HttpStatusCode.OK,
+                $"Replay HTTP: {(int)replayResponse.StatusCode}" +
+                Environment.NewLine +
+                replayBody);
+
+            var replay = await replayResponse.Content
+                .ReadFromJsonAsync<CancelAppointmentResponse>();
+
+            Assert.Equal(cancelled, replay);
+
+            using var getResponse = await client.GetAsync(
+                $"/api/v1/appointments/{created.Id}");
+
+            var getBody = await getResponse.Content
+                .ReadAsStringAsync();
+
+            Assert.True(
+                getResponse.StatusCode == HttpStatusCode.OK,
+                $"Consulta HTTP: {(int)getResponse.StatusCode}" +
+                Environment.NewLine +
+                getBody);
+
+            var current = await getResponse.Content
+                .ReadFromJsonAsync<AppointmentResponse>();
+
+            Assert.NotNull(current);
+            Assert.Equal("CANCELLED_BY_CLIENT", current.Status);
+            Assert.Equal(created.StartsAt, current.StartsAt);
+            Assert.Equal(created.EndsAt, current.EndsAt);
+            Assert.Equal(created.TotalPrice, current.TotalPrice);
+            Assert.Equal(
+                created.TotalDurationMinutes,
+                current.TotalDurationMinutes);
+            Assert.Equal(
+                created.Items.ToArray(),
+                current.Items.ToArray());
+
+            await using var context = CreateContext(data.TenantId);
+
+            var persisted = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == created.Id);
+
+            Assert.Equal(
+                AppointmentStatus.CancelledByClient,
+                persisted.Status);
+            Assert.False(persisted.OccupiesSchedule);
+            Assert.Equal(
+                "Cliente solicitou",
+                persisted.CancellationReason);
+            Assert.Equal(CreatedAt, persisted.CancelledAt);
+
+            var cancellationRecord = await context.IdempotencyRecords
+                .AsNoTracking()
+                .SingleAsync(entity =>
+                    entity.Operation == "CancelAppointment");
+
+            Assert.Equal(cancellationKey, cancellationRecord.Key);
+
+            Assert.Equal(
+                2,
+                await context.IdempotencyRecords.CountAsync());
+            Assert.Equal(
+                1,
+                await context.Appointments.CountAsync());
+            Assert.Equal(
+                1,
+                await context.AppointmentItems.CountAsync());
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Fact]
     public async Task Appointments_List_ShouldApplyResourceAndStatusFilters()
@@ -477,9 +651,14 @@ public sealed class AppointmentsEndpointsTests
                     startsAt
                 });
 
-            Assert.Equal(
-                HttpStatusCode.Created,
-                createResponse.StatusCode);
+            var createBody = await createResponse.Content
+                .ReadAsStringAsync();
+
+            Assert.True(
+                createResponse.StatusCode == HttpStatusCode.Created,
+                $"Criação HTTP: {(int)createResponse.StatusCode}" +
+                Environment.NewLine +
+                createBody);
 
             var created = await createResponse.Content
                 .ReadFromJsonAsync<AppointmentResponse>();
@@ -868,6 +1047,601 @@ public sealed class AppointmentsEndpointsTests
     #endregion
 
     #region Theories
+
+    [Theory]
+    [InlineData(500)]
+    [InlineData(501)]
+    public async Task Appointments_Cancel_ShouldValidateNormalizedReasonLength(
+        int length)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                new DateTimeOffset(
+                    2026, 10, 26, 12, 0, 0, TimeSpan.Zero));
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            var normalizedReason = new string('a', length);
+
+            using var response = await client.PostAsJsonAsync(
+                $"/api/v1/appointments/{appointmentId}/cancel",
+                new
+                {
+                    cancelledBy = "CLIENT",
+                    reason = "  " + normalizedReason + "  "
+                });
+
+            Assert.Equal(
+                length == 500
+                    ? HttpStatusCode.OK
+                    : HttpStatusCode.BadRequest,
+                response.StatusCode);
+
+            await using var context = CreateContext(data.TenantId);
+
+            var persisted = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            if (length == 500)
+            {
+                var body = await response.Content
+                    .ReadFromJsonAsync<CancelAppointmentResponse>();
+
+                Assert.NotNull(body);
+                Assert.Equal(normalizedReason, body.CancellationReason);
+                Assert.Equal(normalizedReason, persisted.CancellationReason);
+                Assert.Equal(
+                    AppointmentStatus.CancelledByClient,
+                    persisted.Status);
+                Assert.Equal(CreatedAt, persisted.CancelledAt);
+            }
+            else
+            {
+                Assert.Equal(AppointmentStatus.Pending, persisted.Status);
+                Assert.Null(persisted.CancellationReason);
+                Assert.Null(persisted.CancelledAt);
+            }
+
+            Assert.Equal(
+                length == 500 ? 1 : 0,
+                await context.IdempotencyRecords.CountAsync());
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Appointments_Cancel_WithExpiredReservation_ShouldReturnConflict(
+        bool alreadyExpired)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var reservationCreatedAt = CreatedAt.AddMinutes(-10);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = new Appointment(
+                    appointmentId,
+                    data.TenantId,
+                    data.BusinessId,
+                    data.LocationId,
+                    data.CustomerId,
+                    data.ProfessionalId,
+                    new DateTimeOffset(
+                        2026, 10, 19, 12, 0, 0, TimeSpan.Zero),
+                    reservationCreatedAt,
+                    TimeSpan.FromMinutes(10),
+                    [
+                        new AppointmentItem(
+                            Guid.NewGuid(),
+                            data.TenantId,
+                            appointmentId,
+                            data.ServiceId,
+                            "Corte",
+                            65m,
+                            45)
+                    ]);
+
+                if (alreadyExpired)
+                {
+                    Assert.True(appointment.Expire(CreatedAt));
+                }
+
+                context.Appointments.Add(appointment);
+
+                await context.SaveChangesAsync();
+            }
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            using var response = await client.PostAsJsonAsync(
+                $"/api/v1/appointments/{appointmentId}/cancel",
+                new
+                {
+                    cancelledBy = "CLIENT",
+                    reason = "Cliente solicitou"
+                });
+
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+            var json = await response.Content.ReadAsStringAsync();
+
+            using var problem = System.Text.Json.JsonDocument.Parse(json);
+
+            Assert.Equal(
+                "RESERVATION_EXPIRED",
+                problem.RootElement.GetProperty("code").GetString());
+
+            Assert.Equal(
+                409,
+                problem.RootElement.GetProperty("status").GetInt32());
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var persisted = await context.Appointments
+                    .AsNoTracking()
+                    .Include(entity => entity.Items)
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(
+                    AppointmentStatus.Expired,
+                    persisted.Status);
+                Assert.False(persisted.OccupiesSchedule);
+                Assert.Null(persisted.CancellationReason);
+                Assert.Null(persisted.CancelledAt);
+                Assert.Equal(CreatedAt, persisted.UpdatedAt);
+                Assert.Equal(CreatedAt, persisted.ReservationExpiresAt);
+                Assert.Equal(65m, persisted.TotalPriceSnapshot);
+                Assert.Equal(45, persisted.TotalDurationMinutesSnapshot);
+                Assert.Single(persisted.Items);
+
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("CLIENT", "Outro motivo")]
+    [InlineData("BUSINESS", "Motivo original")]
+    public async Task Appointments_Cancel_WithSameKeyAndDifferentContent_ShouldReturnConflict(
+        string cancelledBy,
+        string reason)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                new DateTimeOffset(
+                    2026, 10, 19, 12, 0, 0, TimeSpan.Zero));
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                key);
+
+            var url = $"/api/v1/appointments/{appointmentId}/cancel";
+
+            using var firstResponse = await client.PostAsJsonAsync(
+                url,
+                new
+                {
+                    cancelledBy = "CLIENT",
+                    reason = "Motivo original"
+                });
+
+            Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+            var original = await firstResponse.Content
+                .ReadFromJsonAsync<CancelAppointmentResponse>();
+
+            Assert.NotNull(original);
+
+            using var conflictResponse = await client.PostAsJsonAsync(
+                url,
+                new
+                {
+                    cancelledBy,
+                    reason
+                });
+
+            Assert.Equal(
+                HttpStatusCode.Conflict,
+                conflictResponse.StatusCode);
+
+            var json = await conflictResponse.Content.ReadAsStringAsync();
+
+            using var problem = System.Text.Json.JsonDocument.Parse(json);
+
+            Assert.Equal(
+                "IDEMPOTENCY_CONFLICT",
+                problem.RootElement.GetProperty("code").GetString());
+
+            Assert.Equal(
+                409,
+                problem.RootElement.GetProperty("status").GetInt32());
+
+            await using var context = CreateContext(data.TenantId);
+
+            var persisted = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(
+                AppointmentStatus.CancelledByClient,
+                persisted.Status);
+            Assert.Equal(
+                "Motivo original",
+                persisted.CancellationReason);
+            Assert.Equal(original.CancelledAt, persisted.CancelledAt);
+            Assert.Equal(original.UpdatedAt, persisted.UpdatedAt);
+
+            Assert.Equal(
+                1,
+                await context.IdempotencyRecords.CountAsync());
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Appointments_Cancel_WithInvisibleAppointment_ShouldReturnNotFound(
+        bool belongsToAnotherTenant)
+    {
+        var current = new TestData();
+        var other = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(current);
+            await SeedAsync(other);
+
+            if (belongsToAnotherTenant)
+            {
+                await SeedListedAppointmentAsync(
+                    other,
+                    appointmentId,
+                    new DateTimeOffset(
+                        2026, 10, 19, 12, 0, 0, TimeSpan.Zero));
+            }
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                current.TenantId.ToString());
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            using var response = await client.PostAsJsonAsync(
+                $"/api/v1/appointments/{appointmentId}/cancel",
+                new
+                {
+                    cancelledBy = "CLIENT",
+                    reason = "Cliente solicitou"
+                });
+
+            Assert.Equal(
+                HttpStatusCode.NotFound,
+                response.StatusCode);
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                Assert.Equal(
+                    0,
+                    await context.Appointments.CountAsync());
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync());
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync());
+
+                if (belongsToAnotherTenant)
+                {
+                    var appointment = await context.Appointments
+                        .AsNoTracking()
+                        .SingleAsync(entity => entity.Id == appointmentId);
+
+                    Assert.Equal(
+                        AppointmentStatus.Pending,
+                        appointment.Status);
+                    Assert.Null(appointment.CancellationReason);
+                    Assert.Null(appointment.CancelledAt);
+                    Assert.Equal(CreatedAt, appointment.UpdatedAt);
+                }
+                else
+                {
+                    Assert.Equal(
+                        0,
+                        await context.Appointments.CountAsync());
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("{}", "valid-key")]
+    [InlineData(
+        "{\"cancelledBy\":\"CLIENT\"}",
+        "valid-key")]
+    [InlineData(
+        "{\"reason\":\"Motivo\"}",
+        "valid-key")]
+    [InlineData(
+        "{\"cancelledBy\":\"INVALID\",\"reason\":\"Motivo\"}",
+        "valid-key")]
+    [InlineData(
+        "{\"cancelledBy\":\"client\",\"reason\":\"Motivo\"}",
+        "valid-key")]
+    [InlineData(
+        "{\"cancelledBy\":1,\"reason\":\"Motivo\"}",
+        "valid-key")]
+    [InlineData(
+        "{\"cancelledBy\":\"CLIENT\",\"reason\":null}",
+        "valid-key")]
+    [InlineData(
+        "{\"cancelledBy\":\"CLIENT\",\"reason\":\"\"}",
+        "valid-key")]
+    [InlineData(
+        "{\"cancelledBy\":\"CLIENT\",\"reason\":\"   \"}",
+        "valid-key")]
+    [InlineData(
+        "{\"cancelledBy\":\"CLIENT\",\"reason\":\"Motivo\"}",
+        null)]
+    [InlineData(
+        "{\"cancelledBy\":\"CLIENT\",\"reason\":\"Motivo\"}",
+        "key with space")]
+    [InlineData(
+        "{\"cancelledBy\":\"CLIENT\",\"reason\":\"Motivo\"}",
+        "too-long")]
+    public async Task Appointments_Cancel_WithInvalidRequest_ShouldReturnBadRequest(
+        string json,
+        string? key)
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            if (key is not null)
+            {
+                client.DefaultRequestHeaders.Add(
+                    "Idempotency-Key",
+                    key == "too-long"
+                        ? new string('a', 201)
+                        : key);
+            }
+
+            using var content = new StringContent(
+                json,
+                System.Text.Encoding.UTF8,
+                "application/json");
+
+            using var response = await client.PostAsync(
+                $"/api/v1/appointments/{Guid.NewGuid()}/cancel",
+                content);
+
+            Assert.Equal(
+                HttpStatusCode.BadRequest,
+                response.StatusCode);
+
+            await using var context = CreateContext(data.TenantId);
+
+            Assert.Equal(
+                0,
+                await context.IdempotencyRecords.CountAsync());
+            Assert.Equal(
+                0,
+                await context.Appointments.CountAsync());
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("CLIENT", "CANCELLED_BY_CLIENT")]
+    [InlineData("BUSINESS", "CANCELLED_BY_BUSINESS")]
+    public async Task Appointments_Cancel_ShouldAllowNewBookingInReleasedInterval(
+        string cancelledBy,
+        string expectedStatus)
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            var payload = new
+            {
+                customerId = data.CustomerId,
+                locationId = data.LocationId,
+                professionalId = data.ProfessionalId,
+                serviceIds = new[] { data.ServiceId },
+                startsAt = new DateTimeOffset(
+                    2026, 10, 19, 12, 0, 0, TimeSpan.Zero)
+            };
+
+            using var createResponse = await client.PostAsJsonAsync(
+                "/api/v1/appointments",
+                payload);
+
+            Assert.Equal(
+                HttpStatusCode.Created,
+                createResponse.StatusCode);
+
+            var created = await createResponse.Content
+                .ReadFromJsonAsync<AppointmentResponse>();
+
+            Assert.NotNull(created);
+
+            client.DefaultRequestHeaders.Remove("Idempotency-Key");
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            using var cancelResponse = await client.PostAsJsonAsync(
+                $"/api/v1/appointments/{created.Id}/cancel",
+                new
+                {
+                    cancelledBy,
+                    reason = "Cancelamento solicitado"
+                });
+
+            Assert.Equal(
+                HttpStatusCode.OK,
+                cancelResponse.StatusCode);
+
+            var cancelled = await cancelResponse.Content
+                .ReadFromJsonAsync<CancelAppointmentResponse>();
+
+            Assert.NotNull(cancelled);
+            Assert.Equal(expectedStatus, cancelled.Status);
+
+            client.DefaultRequestHeaders.Remove("Idempotency-Key");
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            using var replacementResponse = await client.PostAsJsonAsync(
+                "/api/v1/appointments",
+                payload);
+
+            var replacementBody = await replacementResponse.Content
+                .ReadAsStringAsync();
+
+            Assert.True(
+                replacementResponse.StatusCode == HttpStatusCode.Created,
+                $"Nova reserva HTTP: {(int)replacementResponse.StatusCode}" +
+                Environment.NewLine +
+                replacementBody);
+
+            var replacement = await replacementResponse.Content
+                .ReadFromJsonAsync<AppointmentResponse>();
+
+            Assert.NotNull(replacement);
+            Assert.NotEqual(created.Id, replacement.Id);
+            Assert.Equal("PENDING", replacement.Status);
+            Assert.Equal(created.StartsAt, replacement.StartsAt);
+            Assert.Equal(created.EndsAt, replacement.EndsAt);
+
+            await using var context = CreateContext(data.TenantId);
+
+            Assert.Equal(2, await context.Appointments.CountAsync());
+            Assert.Equal(2, await context.AppointmentItems.CountAsync());
+            Assert.Equal(3, await context.IdempotencyRecords.CountAsync());
+
+            var original = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == created.Id);
+
+            Assert.False(original.OccupiesSchedule);
+            Assert.Equal(
+                "Cancelamento solicitado",
+                original.CancellationReason);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Theory]
     [InlineData("locationId=invalid")]

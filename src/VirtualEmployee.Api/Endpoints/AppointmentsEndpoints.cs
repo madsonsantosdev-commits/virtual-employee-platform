@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using VirtualEmployee.Application.Appointments.CreateAppointment;
 using VirtualEmployee.Application.Appointments.GetAppointmentById;
 using VirtualEmployee.Application.Appointments.GetAppointments;
+using VirtualEmployee.Application.Appointments.CancelAppointment;
 using VirtualEmployee.Domain.Scheduling;
 namespace VirtualEmployee.Api.Endpoints;
 
@@ -164,6 +165,81 @@ public static class AppointmentsEndpoints
 
                 return Results.Ok(result.Response);
             });
+
+        group.MapPost(
+            "/{appointmentId:guid}/cancel",
+            async (
+                Guid appointmentId,
+                CancelAppointmentRequest request,
+                [FromHeader(Name = "Idempotency-Key")]
+                string? idempotencyKey,
+                CancelAppointmentHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                AppointmentStatus? cancellationStatus =
+                    request.CancelledBy switch
+                    {
+                        "CLIENT" =>
+                            AppointmentStatus.CancelledByClient,
+                        "BUSINESS" =>
+                            AppointmentStatus.CancelledByBusiness,
+                        _ => null
+                    };
+
+                if (cancellationStatus is null)
+                {
+                    return Results.BadRequest();
+                }
+
+                var result = await handler.HandleAsync(
+                    new CancelAppointmentCommand(
+                        appointmentId,
+                        cancellationStatus.Value,
+                        request.Reason ?? string.Empty,
+                        idempotencyKey ?? string.Empty),
+                    cancellationToken);
+
+                if (result.IsSuccess && result.Response is { } response)
+                {
+                    return Results.Ok(response);
+                }
+
+                return result.Error switch
+                {
+                    CancelAppointmentError.InvalidRequest =>
+                        Results.BadRequest(),
+
+                    CancelAppointmentError.AppointmentNotFound =>
+                        Results.NotFound(),
+
+                    CancelAppointmentError.InvalidState =>
+                        Conflict(
+                            "INVALID_APPOINTMENT_STATE",
+                            "The current state or cancellation data " +
+                            "does not allow this operation."),
+
+                    CancelAppointmentError.ReservationExpired =>
+                        Conflict(
+                            "RESERVATION_EXPIRED",
+                            "The reservation has expired."),
+
+                    CancelAppointmentError.IdempotencyConflict =>
+                        Conflict(
+                            "IDEMPOTENCY_CONFLICT",
+                            "The key was already used with different content."),
+
+                    CancelAppointmentError.ConcurrencyConflict =>
+                        Conflict(
+                            "CONCURRENCY_CONFLICT",
+                            "The appointment changed during the operation. " +
+                            "Reload it and retry."),
+
+                    _ => Results.Problem(
+                        title: "Appointment cancellation failed",
+                        statusCode:
+                            StatusCodes.Status500InternalServerError)
+                };
+            });
         return app;
     }
 
@@ -185,4 +261,8 @@ public static class AppointmentsEndpoints
         Guid ProfessionalId,
         IReadOnlyList<Guid>? ServiceIds,
         DateTimeOffset StartsAt);
+
+    public sealed record CancelAppointmentRequest(
+        string? CancelledBy,
+        string? Reason);
 }
