@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualEmployee.Application.Appointments;
+using VirtualEmployee.Application.Appointments.GetAppointments;
 using VirtualEmployee.Domain.Scheduling;
 using VirtualEmployee.Infrastructure.Persistence;
 
@@ -25,11 +26,77 @@ public sealed class AppointmentReadService : IAppointmentReadService
                 entity => entity.Id == appointmentId,
                 cancellationToken);
 
-        if (appointment is null)
+        return appointment is null
+            ? null
+            : ToResponse(appointment);
+    }
+
+    public async Task<GetAppointmentsResponse> GetAllAsync(
+        GetAppointmentsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        var appointments = _dbContext.Appointments
+            .AsNoTracking()
+            .AsQueryable();
+
+        if (query.LocationId is Guid locationId)
         {
-            return null;
+            appointments = appointments.Where(
+                appointment => appointment.LocationId == locationId);
         }
 
+        if (query.ProfessionalId is Guid professionalId)
+        {
+            appointments = appointments.Where(
+                appointment =>
+                    appointment.ProfessionalId == professionalId);
+        }
+
+        if (query.CustomerId is Guid customerId)
+        {
+            appointments = appointments.Where(
+                appointment => appointment.CustomerId == customerId);
+        }
+
+        if (query.Status is { } status)
+        {
+            appointments = appointments.Where(
+                appointment => appointment.Status == status);
+        }
+
+        if (query.From is { } from &&
+            query.To is { } to)
+        {
+            appointments = appointments.Where(
+                appointment =>
+                    appointment.StartsAt < to &&
+                    from < appointment.EndsAt);
+        }
+
+        var totalCount = await appointments.CountAsync(
+            cancellationToken);
+
+        var offset = checked(
+            (int)(((long)query.Page - 1) * query.PageSize));
+
+        var page = await appointments
+            .OrderBy(appointment => appointment.StartsAt)
+            .ThenBy(appointment => appointment.Id)
+            .Skip(offset)
+            .Take(query.PageSize)
+            .Include(appointment => appointment.Items)
+            .ToListAsync(cancellationToken);
+
+        return new GetAppointmentsResponse(
+            page.Select(ToResponse).ToArray(),
+            query.Page,
+            query.PageSize,
+            totalCount);
+    }
+
+    private static AppointmentResponse ToResponse(
+        Appointment appointment)
+    {
         return new AppointmentResponse(
             appointment.Id,
             appointment.BusinessId,
@@ -54,7 +121,8 @@ public sealed class AppointmentReadService : IAppointmentReadService
             appointment.UpdatedAt);
     }
 
-    private static string ToResponseStatus(AppointmentStatus status)
+    private static string ToResponseStatus(
+        AppointmentStatus status)
     {
         return status switch
         {
@@ -67,7 +135,7 @@ public sealed class AppointmentReadService : IAppointmentReadService
             AppointmentStatus.Completed => "COMPLETED",
             AppointmentStatus.NoShow => "NO_SHOW",
             AppointmentStatus.Expired => "EXPIRED",
-            _ => throw new ArgumentOutOfRangeException(nameof(status))
+            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Appointment status is invalid.")
         };
     }
 }

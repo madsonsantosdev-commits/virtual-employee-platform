@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using VirtualEmployee.Application.Appointments.CreateAppointment;
 using VirtualEmployee.Application.Appointments.GetAppointmentById;
+using VirtualEmployee.Application.Appointments.GetAppointments;
+using VirtualEmployee.Domain.Scheduling;
 namespace VirtualEmployee.Api.Endpoints;
 
 public static class AppointmentsEndpoints
@@ -103,6 +105,65 @@ public static class AppointmentsEndpoints
                 : Results.Ok(response);
         });
 
+        group.MapGet(
+            "",
+            async (
+                Guid? locationId,
+                Guid? professionalId,
+                Guid? customerId,
+                string? status,
+                DateTimeOffset? from,
+                DateTimeOffset? to,
+                int? page,
+                int? pageSize,
+                GetAppointmentsHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                AppointmentStatus? parsedStatus = status switch
+                {
+                    null => null,
+                    "PENDING" => AppointmentStatus.Pending,
+                    "CONFIRMED" => AppointmentStatus.Confirmed,
+                    "CONFIRMED_BY_CLIENT" =>
+                        AppointmentStatus.ConfirmedByClient,
+                    "RESCHEDULE_REQUESTED" =>
+                        AppointmentStatus.RescheduleRequested,
+                    "CANCELLED_BY_CLIENT" =>
+                        AppointmentStatus.CancelledByClient,
+                    "CANCELLED_BY_BUSINESS" =>
+                        AppointmentStatus.CancelledByBusiness,
+                    "COMPLETED" => AppointmentStatus.Completed,
+                    "NO_SHOW" => AppointmentStatus.NoShow,
+                    "EXPIRED" => AppointmentStatus.Expired,
+                    _ => null
+                };
+
+                if (status is not null && parsedStatus is null)
+                {
+                    return Results.BadRequest();
+                }
+
+                var query = new GetAppointmentsQuery(
+                    LocationId: locationId,
+                    ProfessionalId: professionalId,
+                    CustomerId: customerId,
+                    Status: parsedStatus,
+                    From: from,
+                    To: to,
+                    Page: page ?? 1,
+                    PageSize: pageSize ?? 50);
+
+                var result = await handler.HandleAsync(
+                    query,
+                    cancellationToken);
+
+                if (!result.IsSuccess)
+                {
+                    return Results.BadRequest();
+                }
+
+                return Results.Ok(result.Response);
+            });
         return app;
     }
 

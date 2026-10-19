@@ -18,6 +18,7 @@ using VirtualEmployee.Domain.Tenants;
 using VirtualEmployee.Infrastructure.Persistence;
 using VirtualEmployee.Infrastructure.Tenancy;
 using VirtualEmployee.IntegrationTests.Infrastructure;
+using VirtualEmployee.Application.Appointments.GetAppointments;
 using Xunit;
 
 namespace VirtualEmployee.IntegrationTests.Api;
@@ -36,6 +37,386 @@ public sealed class AppointmentsEndpointsTests
     }
 
     #region Facts
+
+    [Fact]
+    public async Task Appointments_List_ShouldApplyResourceAndStatusFilters()
+    {
+        var data = new TestData();
+        var pendingId = Guid.NewGuid();
+        var expiredId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                pendingId,
+                startsAt);
+
+            await SeedListedAppointmentAsync(
+                data,
+                expiredId,
+                startsAt.AddHours(1));
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .SingleAsync(entity => entity.Id == expiredId);
+
+                Assert.True(
+                    appointment.Expire(CreatedAt.AddMinutes(10)));
+
+                await context.SaveChangesAsync();
+            }
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            var resourceFilters =
+                $"locationId={data.LocationId}" +
+                $"&professionalId={data.ProfessionalId}" +
+                $"&customerId={data.CustomerId}";
+
+            var cases = new (string Query, Guid[] ExpectedIds)[]
+            {
+                (
+                    $"locationId={data.LocationId}",
+                    [pendingId, expiredId]
+                ),
+                (
+                    $"professionalId={data.ProfessionalId}",
+                    [pendingId, expiredId]
+                ),
+                (
+                    $"customerId={data.CustomerId}",
+                    [pendingId, expiredId]
+                ),
+                (
+                    "status=PENDING",
+                    [pendingId]
+                ),
+                (
+                    "status=EXPIRED",
+                    [expiredId]
+                ),
+                (
+                    "status=CONFIRMED",
+                    []
+                ),
+                (
+                    resourceFilters + "&status=PENDING",
+                    [pendingId]
+                ),
+                (
+                    resourceFilters + "&status=EXPIRED",
+                    [expiredId]
+                ),
+                (
+                    $"locationId={Guid.NewGuid()}" +
+                    $"&professionalId={data.ProfessionalId}" +
+                    $"&customerId={data.CustomerId}&status=PENDING",
+                    []
+                ),
+                (
+                    $"locationId={data.LocationId}" +
+                    $"&professionalId={Guid.NewGuid()}" +
+                    $"&customerId={data.CustomerId}&status=PENDING",
+                    []
+                ),
+                (
+                    $"locationId={data.LocationId}" +
+                    $"&professionalId={data.ProfessionalId}" +
+                    $"&customerId={Guid.NewGuid()}&status=PENDING",
+                    []
+                )
+            };
+
+            foreach (var testCase in cases)
+            {
+                using var response = await client.GetAsync(
+                    $"/api/v1/appointments?{testCase.Query}");
+
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+                var body = await response.Content
+                    .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+                Assert.NotNull(body);
+                Assert.Equal(
+                    testCase.ExpectedIds.Length,
+                    body.TotalCount);
+
+                Assert.Equal(
+                    testCase.ExpectedIds,
+                    body.Items.Select(item => item.Id).ToArray());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Appointments_List_ShouldIsolateItemsAndCountByTenant()
+    {
+        var current = new TestData();
+        var other = new TestData();
+
+        var currentId = Guid.NewGuid();
+        var otherId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+        try
+        {
+            await SeedAsync(current);
+            await SeedAsync(other);
+
+            await SeedListedAppointmentAsync(
+                current,
+                currentId,
+                startsAt);
+
+            await SeedListedAppointmentAsync(
+                other,
+                otherId,
+                startsAt);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                current.TenantId.ToString());
+
+            using var response = await client.GetAsync(
+                "/api/v1/appointments");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var body = await response.Content
+                .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+            Assert.NotNull(body);
+            Assert.Equal(1, body.TotalCount);
+            Assert.Equal(currentId, Assert.Single(body.Items).Id);
+
+            // IDs de recursos do outro tenant não devem revelar registros.
+            var foreignFilters = new[]
+            {
+                $"locationId={other.LocationId}",
+                $"professionalId={other.ProfessionalId}",
+                $"customerId={other.CustomerId}"
+            };
+
+            foreach (var filter in foreignFilters)
+            {
+                using var filteredResponse = await client.GetAsync(
+                    $"/api/v1/appointments?{filter}");
+
+                Assert.Equal(
+                    HttpStatusCode.OK,
+                    filteredResponse.StatusCode);
+
+                var filteredBody = await filteredResponse.Content
+                    .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+                Assert.NotNull(filteredBody);
+                Assert.Empty(filteredBody.Items);
+                Assert.Equal(0, filteredBody.TotalCount);
+            }
+
+            // A requisição do outro tenant deve enxergar seu próprio registro.
+            using var otherClient = factory.CreateClient();
+
+            otherClient.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                other.TenantId.ToString());
+
+            using var otherResponse = await otherClient.GetAsync(
+                "/api/v1/appointments");
+
+            Assert.Equal(HttpStatusCode.OK, otherResponse.StatusCode);
+
+            var otherBody = await otherResponse.Content
+                .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+            Assert.NotNull(otherBody);
+            Assert.Equal(1, otherBody.TotalCount);
+            Assert.Equal(otherId, Assert.Single(otherBody.Items).Id);
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Appointments_ListWithoutRecords_ShouldReturnEmptyPage()
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            using var response = await client.GetAsync(
+                "/api/v1/appointments");
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var body = await response.Content
+                .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+            Assert.NotNull(body);
+            Assert.Empty(body.Items);
+            Assert.Equal(1, body.Page);
+            Assert.Equal(50, body.PageSize);
+            Assert.Equal(0, body.TotalCount);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Appointments_List_ShouldOrderPaginateAndReturnSnapshots()
+    {
+        var data = new TestData();
+
+        var firstStart = new DateTimeOffset(
+            2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        var thirdId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            // Insere fora da ordem cronológica para verificar o ORDER BY.
+            await SeedListedAppointmentAsync(
+                data,
+                thirdId,
+                firstStart.AddHours(2));
+
+            await SeedListedAppointmentAsync(
+                data,
+                firstId,
+                firstStart);
+
+            await SeedListedAppointmentAsync(
+                data,
+                secondId,
+                firstStart.AddHours(1));
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            using var firstResponse = await client.GetAsync(
+                "/api/v1/appointments?page=1&pageSize=2");
+
+            Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+            var firstPage = await firstResponse.Content
+                .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+            Assert.NotNull(firstPage);
+            Assert.Equal(1, firstPage.Page);
+            Assert.Equal(2, firstPage.PageSize);
+            Assert.Equal(3, firstPage.TotalCount);
+
+            Assert.Equal(
+                new[] { firstId, secondId },
+                firstPage.Items.Select(item => item.Id).ToArray());
+
+            var appointment = firstPage.Items[0];
+
+            Assert.Equal(data.BusinessId, appointment.BusinessId);
+            Assert.Equal(data.LocationId, appointment.LocationId);
+            Assert.Equal(data.CustomerId, appointment.CustomerId);
+            Assert.Equal(data.ProfessionalId, appointment.ProfessionalId);
+            Assert.Equal(firstStart, appointment.StartsAt);
+            Assert.Equal(firstStart.AddMinutes(45), appointment.EndsAt);
+            Assert.Equal("PENDING", appointment.Status);
+            Assert.Equal(65m, appointment.TotalPrice);
+            Assert.Equal(45, appointment.TotalDurationMinutes);
+            Assert.Equal(
+                CreatedAt.AddMinutes(10),
+                appointment.ReservationExpiresAt);
+            Assert.Equal(CreatedAt, appointment.CreatedAt);
+            Assert.Equal(CreatedAt, appointment.UpdatedAt);
+
+            var item = Assert.Single(appointment.Items);
+
+            Assert.Equal(data.ServiceId, item.ServiceId);
+            Assert.Equal("Corte histórico", item.Name);
+            Assert.Equal(65m, item.Price);
+            Assert.Equal(45, item.DurationMinutes);
+
+            using var secondResponse = await client.GetAsync(
+                "/api/v1/appointments?page=2&pageSize=2");
+
+            Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+            var secondPage = await secondResponse.Content
+                .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+            Assert.NotNull(secondPage);
+            Assert.Equal(2, secondPage.Page);
+            Assert.Equal(2, secondPage.PageSize);
+            Assert.Equal(3, secondPage.TotalCount);
+            Assert.Equal(thirdId, Assert.Single(secondPage.Items).Id);
+
+            using var beyondResponse = await client.GetAsync(
+                "/api/v1/appointments?page=3&pageSize=2");
+
+            Assert.Equal(HttpStatusCode.OK, beyondResponse.StatusCode);
+
+            var beyondPage = await beyondResponse.Content
+                .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+            Assert.NotNull(beyondPage);
+            Assert.Empty(beyondPage.Items);
+            Assert.Equal(3, beyondPage.TotalCount);
+            Assert.Equal(3, beyondPage.Page);
+            Assert.Equal(2, beyondPage.PageSize);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Fact]
     public async Task Appointments_ShouldRemoveOccupiedSlotsAndRestoreAfterExpiration()
@@ -489,6 +870,140 @@ public sealed class AppointmentsEndpointsTests
     #region Theories
 
     [Theory]
+    [InlineData("locationId=invalid")]
+    [InlineData("professionalId=invalid")]
+    [InlineData("customerId=invalid")]
+    [InlineData("locationId=00000000-0000-0000-0000-000000000000")]
+    [InlineData("professionalId=00000000-0000-0000-0000-000000000000")]
+    [InlineData("customerId=00000000-0000-0000-0000-000000000000")]
+    [InlineData("status=INVALID")]
+    [InlineData("status=1")]
+    [InlineData("status=Pending")]
+    [InlineData("status=")]
+    [InlineData("page=0")]
+    [InlineData("page=-1")]
+    [InlineData("page=invalid")]
+    [InlineData("page=2147483648")]
+    [InlineData("pageSize=0")]
+    [InlineData("pageSize=-1")]
+    [InlineData("pageSize=101")]
+    [InlineData("pageSize=invalid")]
+    [InlineData("page=2147483647&pageSize=100")]
+    [InlineData("from=invalid&to=2026-10-20T00:00:00Z")]
+    [InlineData("from=2026-10-19T00:00:00Z&to=invalid")]
+    [InlineData("from=2026-10-19T00:00:00Z")]
+    [InlineData("to=2026-10-20T00:00:00Z")]
+    [InlineData("from=2026-10-19T12:00:00Z&to=2026-10-19T12:00:00Z")]
+    [InlineData("from=2026-10-20T00:00:00Z&to=2026-10-19T00:00:00Z")]
+    public async Task Appointments_List_WithInvalidQuery_ShouldReturnBadRequest(
+        string query)
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            using var response = await client.GetAsync(
+                $"/api/v1/appointments?{query}");
+
+            Assert.Equal(
+                HttpStatusCode.BadRequest,
+                response.StatusCode);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(
+        "2026-10-19T12:15:00Z",
+        "2026-10-19T12:30:00Z",
+        1)]
+    [InlineData(
+        "2026-10-19T11:00:00Z",
+        "2026-10-19T13:00:00Z",
+        1)]
+    [InlineData(
+        "2026-10-19T12:00:00Z",
+        "2026-10-19T12:45:00Z",
+        1)]
+    [InlineData(
+        "2026-10-19T11:00:00Z",
+        "2026-10-19T12:00:00Z",
+        0)]
+    [InlineData(
+        "2026-10-19T12:45:00Z",
+        "2026-10-19T13:00:00Z",
+        0)]
+    [InlineData(
+        "2026-10-19T09:15:00-03:00",
+        "2026-10-19T09:30:00-03:00",
+        1)]
+    public async Task Appointments_List_WithPeriod_ShouldUseOverlap(
+        string from,
+        string to,
+        int expectedCount)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                new DateTimeOffset(
+                    2026, 10, 19, 12, 0, 0, TimeSpan.Zero));
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            var url =
+                "/api/v1/appointments" +
+                $"?from={Uri.EscapeDataString(from)}" +
+                $"&to={Uri.EscapeDataString(to)}";
+
+            using var response = await client.GetAsync(url);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var body = await response.Content
+                .ReadFromJsonAsync<GetAppointmentsResponse>();
+
+            Assert.NotNull(body);
+            Assert.Equal(expectedCount, body.TotalCount);
+            Assert.Equal(expectedCount, body.Items.Count);
+
+            if (expectedCount == 1)
+            {
+                Assert.Equal(
+                    appointmentId,
+                    Assert.Single(body.Items).Id);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
     [InlineData("customer")]
     [InlineData("location")]
     [InlineData("professional")]
@@ -807,6 +1322,35 @@ public sealed class AppointmentsEndpointsTests
 
     #region Helpers
 
+    private async Task SeedListedAppointmentAsync(TestData data, Guid appointmentId, DateTimeOffset startsAt)
+    {
+        await using var context = CreateContext(data.TenantId);
+
+        var appointment = new Appointment(
+            appointmentId,
+            data.TenantId,
+            data.BusinessId,
+            data.LocationId,
+            data.CustomerId,
+            data.ProfessionalId,
+            startsAt,
+            CreatedAt,
+            TimeSpan.FromMinutes(10),
+            [
+                new AppointmentItem(
+                    Guid.NewGuid(),
+                    data.TenantId,
+                    appointmentId,
+                    data.ServiceId,
+                    "Corte histórico",
+                    65m,
+                    45)
+            ]);
+
+        context.Appointments.Add(appointment);
+
+        await context.SaveChangesAsync();
+    }
     private sealed class TestData
     {
         public Guid TenantId { get; } = Guid.NewGuid();
