@@ -203,8 +203,20 @@ o tenant. Deadlocks têm até três tentativas, com nova transação
 e revalidação completa.
 
 Replay devolve a resposta original e não altera o estado atual.
-Listagem, cancelamento, reagendamento e confirmação por pagamento
-permanecem pendentes.
+Cancelamento, reagendamento e confirmação por pagamento permanecem pendentes.
+
+### Listagem de Appointments — 19/10/2026
+
+A listagem é paginada e restrita ao tenant atual.
+Permite combinar filtros por Location, Professional, Customer, status
+e período.
+
+O período usa sobreposição: StartsAt < to e from < EndsAt.
+Intervalos adjacentes não se sobrepõem.
+A ordenação é por StartsAt crescente e depois por Id.
+
+A consulta retorna o estado persistido e os snapshots comerciais.
+Não altera o estado do agendamento nem materializa expiração.
 
 ## 9. Estados que ocupam agenda
 Ocupam: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`.

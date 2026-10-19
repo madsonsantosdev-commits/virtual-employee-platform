@@ -97,7 +97,8 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] Appointments: criação idempotente, snapshots e consulta por ID
 - [x] Proteção contra agendamentos concorrentes entre unidades
 - [x] Expiração de reservas PENDING com worker configurável
-- [ ] Listagem, cancelamento e reagendamento de Appointments
+- [x] Listagem paginada de Appointments com filtros e isolamento por tenant
+- [ ] Cancelamento e reagendamento de Appointments
 - [ ] Confirmação de Appointments por pagamento integral
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -106,32 +107,36 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 16/10/2026
+### Última validação local — 19/10/2026
 
-- Suíte completa: 745 testes passaram, sem falhas ou ignorados.
-- Appointments: 43 testes de domínio, 17 do handler de criação, 54 de persistência/serviços e 24 HTTP.
-- Integração com slots: 4 novos testes de Application.
-- Validados snapshots, UTC, elegibilidade, agenda, bloqueios e isolamento entre tenants.
-- Concorrência validada no PostgreSQL: sobreposição rejeitada inclusive entre unidades; intervalos adjacentes aceitos.
-- Idempotência validada com replay, offsets equivalentes, conflito de conteúdo e chamadas concorrentes.
-- Expiração validada no limite do prazo, com preservação dos snapshots e isolamento por tenant.
-- Validação manual: criação 201, PENDING, preço 65,00 e duração de 45 minutos.
-- Worker habilitado manualmente com reserva de 1 minuto: transição automática para EXPIRED confirmada por consulta à API.
+- Suíte completa: 801 testes passaram, sem falhas ou ignorados.
+- Listagem de Appointments: 21 testes de Application e 35 HTTP com PostgreSQL.
+- Validados paginação, ordenação, snapshots e contagem após os filtros.
+- Validados filtros por unidade, profissional, cliente, status e período.
+- Período considera sobreposição, aceita offsets equivalentes e exclui intervalos adjacentes.
+- Validados parâmetros inválidos, filtros combinados e isolamento de itens e contagem entre tenants.
+- Validação manual: listagem paginada e consulta por cliente com status EXPIRED retornaram 200.
+- O agendamento existente foi retornado com seus snapshots e estado atual preservados.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
 de elegibilidade, AvailabilityRules, busca de slots, ScheduleBlocks,
-Customers e Booking Quote estão integrados à `main`.
+Customers, Booking Quote e a primeira entrega de Appointments estão
+integrados à `main`.
 A organização dos testes em regiões Facts, Theories e Helpers também
 está integrada.
 
-A primeira entrega de Appointments está implementada na branch
-`feature/appointments`, com validação automatizada e manual concluída
+A listagem de Appointments está implementada na branch
+`feature/appointments-list`, com validação automatizada e manual concluída
 e integração à `main` pendente.
 
 A criação revalida recursos e disponibilidade, calcula os valores no
 backend e persiste Appointment, itens e resposta idempotente atomicamente.
-A consulta por ID retorna o estado atual; o replay retorna a resposta
+As consultas retornam o estado atual; o replay retorna a resposta
 original da criação e não reativa reservas expiradas.
+
+A listagem possui filtros opcionais, paginação e ordenação por início
+e ID. Itens e contagem respeitam o tenant atual.
+Consultar agendamentos não altera seu estado nem materializa expiração.
 
 A busca de slots considera agenda semanal, elegibilidade, bloqueios
 e agendamentos nos estados que ocupam agenda, inclusive em outras
@@ -142,7 +147,7 @@ O worker de expiração fica desabilitado por padrão e exige ativação explíc
 Quando habilitado, o intervalo padrão entre ciclos é de 30 segundos.
 Reservas PENDING continuam ocupando agenda até a expiração ser materializada.
 
-Permanecem pendentes listagem, cancelamento, reagendamento e integração
-com pagamentos, incluindo confirmação por pagamento integral.
+Permanecem pendentes cancelamento, reagendamento e integração com
+pagamentos, incluindo confirmação por pagamento integral.
 A avaliação de impacto dos bloqueios sobre Appointments também permanece
 pendente.

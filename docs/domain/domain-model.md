@@ -204,7 +204,13 @@ Appointment, itens e resposta idempotente são gravados atomicamente.
 O replay preserva a resposta original; a consulta por ID retorna
 o estado atual. Expiração não remove itens nem modifica os snapshots.
 
-Campos de cancelamento, histórico de transições e fluxos de listagem,
+Desde 19/10/2026, a API também oferece listagem paginada, com filtros
+por unidade, profissional, cliente, status e sobreposição de período.
+Resultados e contagem respeitam o tenant atual.
+A listagem retorna o estado atual e os snapshots comerciais,
+sem alterar o agregado.
+
+Campos de cancelamento, histórico de transições e fluxos de
 cancelamento, reagendamento e pagamento permanecem previstos
 para próximas etapas.
 

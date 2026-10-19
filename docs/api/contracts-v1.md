@@ -788,15 +788,84 @@ AvailabilityRule -> ScheduleBlock -> Appointments.
 
 ## 10. Appointments
 
-### Implementação incremental — 16/10/2026
+### Implementação incremental — atualizada em 19/10/2026
+
+Criação e consulta por ID foram validadas em 16/10/2026.
+Listagem paginada foi validada em 19/10/2026.
 
 Rotas implementadas:
 - `POST /api/v1/appointments`
+- `GET /api/v1/appointments`
 - `GET /api/v1/appointments/{appointmentId}`
 
 O header `X-Tenant-Id` é temporário para desenvolvimento.
-A listagem, o cancelamento e o reagendamento descritos abaixo
-permanecem como contratos futuros.
+Cancelamento, reagendamento e confirmação por pagamento permanecem pendentes.
+
+#### Listagem paginada
+
+`GET /api/v1/appointments`
+
+Todos os filtros são opcionais e combinados com AND.
+
+| Parâmetro | Regra |
+| --- | --- |
+| locationId | GUID não vazio |
+| professionalId | GUID não vazio |
+| customerId | GUID não vazio |
+| status | Nome público do estado, em maiúsculas |
+| from | Início do período; exige to |
+| to | Fim do período; exige from e deve ser posterior a from |
+| page | Inteiro a partir de 1; padrão 1 |
+| pageSize | Inteiro entre 1 e 100; padrão 50 |
+
+Estados aceitos: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`,
+`RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`,
+`COMPLETED`, `NO_SHOW` e `EXPIRED`.
+Valores numéricos, vazios ou com outra capitalização são rejeitados.
+
+Datas são normalizadas para UTC.
+O filtro de período usa sobreposição:
+`StartsAt < to && from < EndsAt`.
+Agendamentos que terminam exatamente em from ou começam exatamente
+em to ficam fora do resultado.
+
+Exemplo:
+
+`GET /api/v1/appointments?status=EXPIRED&page=1&pageSize=5`
+
+Resposta sem registros:
+
+```json
+{
+  "items": [],
+  "page": 1,
+  "pageSize": 5,
+  "totalCount": 0
+}
+```
+
+Cada elemento de items usa o mesmo formato da consulta por ID,
+incluindo estado atual, auditoria e snapshots comerciais.
+Os itens comerciais de cada agendamento são ordenados por ServiceId.
+
+Os agendamentos são ordenados por StartsAt crescente e depois por Id.
+TotalCount considera todos os registros após os filtros, antes da paginação.
+Página além do resultado retorna items vazio, preservando TotalCount.
+
+Itens e contagem consideram somente o tenant atual.
+Filtros com IDs inexistentes ou de outro tenant retornam lista vazia.
+A consulta não exige que os recursos históricos estejam ativos.
+Sem filtro de status, todos os estados podem ser retornados.
+A leitura não altera estados nem materializa expiração.
+
+Contagem e página são lidas em consultas separadas; alterações concorrentes
+podem ser observadas entre essas leituras.
+
+| Resultado | HTTP |
+| --- | --- |
+| Consulta válida, com ou sem registros | 200 |
+| GUID, status, período ou paginação inválidos | 400 |
+| Deslocamento calculado da página acima de int.MaxValue | 400 |
 
 #### Criação e idempotência
 
@@ -901,8 +970,8 @@ Enquanto permanecer PENDING, o registro continua ocupando o intervalo,
 mesmo após o prazo.
 A confirmação por pagamento ainda não está implementada nesta entrega.
 
-`GET /appointments?locationId=<uuid>`
-`GET /appointments/{appointmentId}`
+`GET /api/v1/appointments?locationId=<uuid>`
+`GET /api/v1/appointments/{appointmentId}`
 
 `POST /appointments` requer `Idempotency-Key`.
 ```json
