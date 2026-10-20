@@ -210,9 +210,20 @@ Resultados e contagem respeitam o tenant atual.
 A listagem retorna o estado atual e os snapshots comerciais,
 sem alterar o agregado.
 
-Campos de cancelamento, histórico de transições e fluxos de
-cancelamento, reagendamento e pagamento permanecem previstos
-para próximas etapas.
+Desde 19/10/2026, o cancelamento registra CancellationReason e
+CancelledAt, preservando itens e snapshots comerciais.
+O motivo é obrigatório, recebe Trim e possui limite de 500 caracteres.
+As origens operacionais são cliente e estabelecimento.
+
+A mudança de estado e a resposta idempotente são persistidas
+atomicamente. O intervalo é liberado após o commit.
+O replay preserva a resposta e a auditoria originais.
+
+PENDING vencido segue o fluxo de expiração, sem registrar cancelamento.
+Concorrência com outras atualizações é protegida pelo token de Status.
+
+Histórico de transições, reagendamento e integração com pagamentos
+e refunds permanecem previstos para próximas etapas.
 
 ### Regra de unidade
 Todo Appointment ocorre em exatamente uma Location.

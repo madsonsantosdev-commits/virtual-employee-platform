@@ -21,7 +21,8 @@ public sealed class Appointment : ITenantScoped
 
     public AppointmentStatus Status { get; private set; }
     public DateTimeOffset? ReservationExpiresAt { get; private set; }
-
+    public string? CancellationReason { get; private set; }
+    public DateTimeOffset? CancelledAt { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
     public DateTimeOffset UpdatedAt { get; private set; }
 
@@ -164,6 +165,69 @@ public sealed class Appointment : ITenantScoped
         }
 
         Status = AppointmentStatus.Expired;
+        UpdatedAt = utcNow;
+
+        return true;
+    }
+
+    public bool Cancel(AppointmentStatus cancellationStatus,string reason, DateTimeOffset now)
+    {
+        if (cancellationStatus is not
+            (AppointmentStatus.CancelledByClient or
+             AppointmentStatus.CancelledByBusiness))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(cancellationStatus),
+                "Cancellation status must identify client or business.");
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            throw new ArgumentException(
+                "Cancellation reason cannot be empty.",
+                nameof(reason));
+        }
+
+        var utcNow = now.ToUniversalTime();
+
+        if (utcNow < UpdatedAt)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(now),
+                "Cancellation cannot precede the last update.");
+        }
+
+                var normalizedReason = reason.Trim();
+
+        if (normalizedReason.Length > 500)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(reason),
+                "Cancellation reason cannot exceed 500 characters.");
+        }
+
+        if (Status == cancellationStatus)
+        {
+            return false;
+        }
+
+        if (!OccupiesSchedule)
+        {
+            throw new InvalidOperationException(
+                "The current appointment status does not allow cancellation.");
+        }
+
+        if (Status == AppointmentStatus.Pending &&
+            ReservationExpiresAt is { } expiresAt &&
+            utcNow >= expiresAt)
+        {
+            throw new InvalidOperationException(
+                "An overdue pending reservation must expire.");
+        }
+
+        Status = cancellationStatus;
+        CancellationReason = normalizedReason;
+        CancelledAt = utcNow;
         UpdatedAt = utcNow;
 
         return true;

@@ -14,6 +14,7 @@ using Microsoft.Extensions.Options;
 using VirtualEmployee.Application.Appointments;
 using VirtualEmployee.Application.Appointments.CreateAppointment;
 using VirtualEmployee.Infrastructure.Appointments;
+using VirtualEmployee.Application.Appointments.CancelAppointment;
 using Xunit;
 
 namespace VirtualEmployee.IntegrationTests.Scheduling;
@@ -32,6 +33,625 @@ public sealed class AppointmentPersistenceTests
     }
 
     #region Facts
+
+    [Fact]
+    public async Task AppointmentCancellationService_WhenExpirationWins_ShouldNotOverwriteExpiredState()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var expiresAt = CreatedAt.AddMinutes(10);
+        var expiredCount = 0;
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            var interceptor = new BeforeCancellationSaveInterceptor(
+                async () =>
+                {
+                    await using var expirationContext =
+                        CreateContext(data.TenantId);
+
+                    var expirationService =
+                        new AppointmentExpirationService(
+                            expirationContext);
+
+                    expiredCount = await expirationService.ExpireDueAsync(
+                        expiresAt);
+                });
+
+            var command = new CancelAppointmentCommand(
+                appointmentId,
+                AppointmentStatus.CancelledByClient,
+                "Cliente solicitou",
+                Guid.NewGuid().ToString());
+
+            await using (var context = CreateContext(
+                data.TenantId,
+                interceptor))
+            {
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(
+                            expiresAt.AddSeconds(-1))));
+
+                var result = await handler.HandleAsync(command);
+
+                Assert.Equal(1, expiredCount);
+                Assert.Equal(
+                    CancelAppointmentError.ConcurrencyConflict,
+                    result.Error);
+                Assert.Null(result.Response);
+                Assert.Empty(context.ChangeTracker.Entries());
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .Include(entity => entity.Items)
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(
+                    AppointmentStatus.Expired,
+                    appointment.Status);
+                Assert.Equal(expiresAt, appointment.UpdatedAt);
+                Assert.Null(appointment.CancelledAt);
+                Assert.Null(appointment.CancellationReason);
+                Assert.False(appointment.OccupiesSchedule);
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+                Assert.Single(appointment.Items);
+
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync());
+            }
+
+            // Uma nova tentativa observa o estado vencedor.
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(expiresAt.AddSeconds(1))));
+
+                var retry = await handler.HandleAsync(command);
+
+                Assert.Equal(
+                    CancelAppointmentError.ReservationExpired,
+                    retry.Error);
+                Assert.Null(retry.Response);
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentCancellationService_WithConcurrentDifferentKeys_ShouldPersistOnlyOne()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var now = CreatedAt.AddMinutes(5);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            var firstCommand = new CancelAppointmentCommand(
+                appointmentId,
+                AppointmentStatus.CancelledByClient,
+                "Cliente solicitou",
+                Guid.NewGuid().ToString());
+
+            var secondCommand = new CancelAppointmentCommand(
+                appointmentId,
+                AppointmentStatus.CancelledByBusiness,
+                "Estabelecimento solicitou",
+                Guid.NewGuid().ToString());
+
+            var gate = new ConcurrentSaveGate();
+
+            await using var firstContext = CreateContext(
+                data.TenantId,
+                gate);
+
+            await using var secondContext = CreateContext(
+                data.TenantId,
+                gate);
+
+            var firstHandler = new CancelAppointmentHandler(
+                new AppointmentCancellationService(
+                    firstContext,
+                    new FixedTimeProvider(now)));
+
+            var secondHandler = new CancelAppointmentHandler(
+                new AppointmentCancellationService(
+                    secondContext,
+                    new FixedTimeProvider(now)));
+
+            using var timeout = new CancellationTokenSource(
+                TimeSpan.FromSeconds(30));
+
+            var results = await Task.WhenAll(
+                firstHandler.HandleAsync(
+                    firstCommand,
+                    timeout.Token),
+                secondHandler.HandleAsync(
+                    secondCommand,
+                    timeout.Token));
+
+            Assert.Equal(2, gate.Arrivals);
+
+            var winner = Assert.Single(
+                results,
+                result => result.IsSuccess);
+
+            var loser = Assert.Single(
+                results,
+                result => !result.IsSuccess);
+
+            Assert.Equal(
+                CancelAppointmentError.ConcurrencyConflict,
+                loser.Error);
+            Assert.Null(loser.Response);
+
+            var response = Assert.IsType<CancelAppointmentResponse>(
+                winner.Response);
+
+            var firstWon = results[0].IsSuccess;
+            var winningCommand = firstWon
+                ? firstCommand
+                : secondCommand;
+
+            var losingContext = firstWon
+                ? secondContext
+                : firstContext;
+
+            // A tentativa revertida não deve deixar alterações pendentes.
+            Assert.Empty(losingContext.ChangeTracker.Entries());
+
+            await using var readContext = CreateContext(data.TenantId);
+
+            var persisted = await readContext.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(
+                winningCommand.CancellationStatus,
+                persisted.Status);
+            Assert.Equal(
+                winningCommand.Reason,
+                persisted.CancellationReason);
+            Assert.Equal(response.CancelledAt, persisted.CancelledAt);
+            Assert.Equal(now, persisted.UpdatedAt);
+
+            var record = await readContext.IdempotencyRecords
+                .AsNoTracking()
+                .SingleAsync();
+
+            Assert.Equal("CancelAppointment", record.Operation);
+            Assert.Equal(winningCommand.IdempotencyKey, record.Key);
+
+            var storedResponse =
+                System.Text.Json.JsonSerializer
+                    .Deserialize<CancelAppointmentResponse>(
+                        record.ResponseJson);
+
+            Assert.Equal(response, storedResponse);
+            Assert.Equal(1, await readContext.Appointments.CountAsync());
+            Assert.Equal(1, await readContext.AppointmentItems.CountAsync());
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentCancellationService_WithConcurrentSameKey_ShouldReplayWinner()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var now = CreatedAt.AddMinutes(5);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            var command = new CancelAppointmentCommand(
+                appointmentId,
+                AppointmentStatus.CancelledByClient,
+                "Cliente solicitou",
+                Guid.NewGuid().ToString());
+
+            await using var firstContext = CreateContext(data.TenantId);
+            await using var secondContext = CreateContext(data.TenantId);
+
+            var firstHandler = new CancelAppointmentHandler(
+                new AppointmentCancellationService(
+                    firstContext,
+                    new FixedTimeProvider(now)));
+
+            var secondHandler = new CancelAppointmentHandler(
+                new AppointmentCancellationService(
+                    secondContext,
+                    new FixedTimeProvider(now.AddSeconds(1))));
+
+            var start = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            using var timeout = new CancellationTokenSource(
+                TimeSpan.FromSeconds(30));
+
+            async Task<CancelAppointmentResult> ExecuteAsync(
+                CancelAppointmentHandler handler)
+            {
+                await start.Task.WaitAsync(timeout.Token);
+
+                return await handler.HandleAsync(
+                    command,
+                    timeout.Token);
+            }
+
+            var firstTask = ExecuteAsync(firstHandler);
+            var secondTask = ExecuteAsync(secondHandler);
+
+            start.SetResult(true);
+
+            var results = await Task.WhenAll(
+                firstTask,
+                secondTask);
+
+            Assert.All(results, result => Assert.True(result.IsSuccess));
+
+            var firstResponse = Assert.IsType<CancelAppointmentResponse>(
+                results[0].Response);
+
+            var secondResponse = Assert.IsType<CancelAppointmentResponse>(
+                results[1].Response);
+
+            Assert.Equal(firstResponse, secondResponse);
+            Assert.Equal(appointmentId, firstResponse.Id);
+
+            Assert.Contains(
+                firstResponse.CancelledAt,
+                new[] { now, now.AddSeconds(1) });
+
+            await using var readContext = CreateContext(data.TenantId);
+
+            var appointment = await readContext.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(
+                AppointmentStatus.CancelledByClient,
+                appointment.Status);
+            Assert.Equal(
+                firstResponse.CancelledAt,
+                appointment.CancelledAt);
+            Assert.Equal(
+                firstResponse.UpdatedAt,
+                appointment.UpdatedAt);
+            Assert.Equal("Cliente solicitou", appointment.CancellationReason);
+
+            var record = await readContext.IdempotencyRecords
+                .AsNoTracking()
+                .SingleAsync();
+
+            Assert.Equal("CancelAppointment", record.Operation);
+            Assert.Equal(command.IdempotencyKey, record.Key);
+
+            var storedResponse =
+                System.Text.Json.JsonSerializer
+                    .Deserialize<CancelAppointmentResponse>(
+                        record.ResponseJson);
+
+            Assert.Equal(firstResponse, storedResponse);
+            Assert.Equal(1, await readContext.Appointments.CountAsync());
+            Assert.Equal(1, await readContext.AppointmentItems.CountAsync());
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentCancellationService_ShouldIsolateAppointmentAndKeyByTenant()
+    {
+        var current = new TestData();
+        var other = new TestData();
+
+        var currentId = Guid.NewGuid();
+        var otherId = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var now = CreatedAt.AddMinutes(5);
+
+        try
+        {
+            await SeedAsync(current);
+            await SeedAsync(other);
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        current,
+                        currentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        other,
+                        otherId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            var currentCommand = new CancelAppointmentCommand(
+                currentId,
+                AppointmentStatus.CancelledByClient,
+                "Cliente solicitou",
+                key);
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(now)));
+
+                Assert.True(
+                    (await handler.HandleAsync(currentCommand)).IsSuccess);
+            }
+
+            // A chave existente no primeiro tenant não deve gerar replay
+            // nem conflito ao consultar um agendamento invisível no segundo.
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(now)));
+
+                var result = await handler.HandleAsync(currentCommand);
+
+                Assert.Equal(
+                    CancelAppointmentError.AppointmentNotFound,
+                    result.Error);
+                Assert.Null(result.Response);
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync());
+
+                var untouched = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync();
+
+                Assert.Equal(otherId, untouched.Id);
+                Assert.Equal(AppointmentStatus.Pending, untouched.Status);
+                Assert.Null(untouched.CancelledAt);
+            }
+
+            // A mesma chave pode ser usada pelo outro tenant
+            // para cancelar seu próprio agendamento.
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(now)));
+
+                var result = await handler.HandleAsync(
+                    currentCommand with
+                    {
+                        AppointmentId = otherId
+                    });
+
+                Assert.True(result.IsSuccess);
+                Assert.NotNull(result.Response);
+                Assert.Equal(otherId, result.Response.Id);
+            }
+
+            foreach (var data in new[] { current, other })
+            {
+                await using var context = CreateContext(data.TenantId);
+
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync();
+
+                Assert.Equal(
+                    AppointmentStatus.CancelledByClient,
+                    appointment.Status);
+                Assert.Equal(now, appointment.CancelledAt);
+
+                var record = await context.IdempotencyRecords
+                    .AsNoTracking()
+                    .SingleAsync();
+
+                Assert.Equal(data.TenantId, record.TenantId);
+                Assert.Equal("CancelAppointment", record.Operation);
+                Assert.Equal(key, record.Key);
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentCancellationService_ShouldPersistAndReplayOriginalResponse()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var cancelledAt = CreatedAt.AddMinutes(5);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            var command = new CancelAppointmentCommand(
+                appointmentId,
+                AppointmentStatus.CancelledByClient,
+                "  Cliente solicitou  ",
+                key);
+
+            CancelAppointmentResponse original;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new AppointmentCancellationService(
+                    context,
+                    new FixedTimeProvider(cancelledAt));
+
+                var handler = new CancelAppointmentHandler(service);
+
+                var result = await handler.HandleAsync(command);
+
+                Assert.True(result.IsSuccess);
+
+                original = Assert.IsType<CancelAppointmentResponse>(
+                    result.Response);
+
+                Assert.Equal(appointmentId, original.Id);
+                Assert.Equal("CANCELLED_BY_CLIENT", original.Status);
+                Assert.Equal(
+                    "Cliente solicitou",
+                    original.CancellationReason);
+                Assert.Equal(cancelledAt, original.CancelledAt);
+                Assert.Equal(cancelledAt, original.UpdatedAt);
+            }
+
+            // O replay ocorre depois do prazo original da reserva.
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new AppointmentCancellationService(
+                    context,
+                    new FixedTimeProvider(CreatedAt.AddHours(3)));
+
+                var handler = new CancelAppointmentHandler(service);
+
+                var replay = await handler.HandleAsync(
+                    command with
+                    {
+                        Reason = "Cliente solicitou"
+                    });
+
+                Assert.True(replay.IsSuccess);
+                Assert.Equal(original, replay.Response);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .Include(entity => entity.Items)
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(
+                    AppointmentStatus.CancelledByClient,
+                    appointment.Status);
+                Assert.False(appointment.OccupiesSchedule);
+                Assert.Equal(
+                    "Cliente solicitou",
+                    appointment.CancellationReason);
+                Assert.Equal(cancelledAt, appointment.CancelledAt);
+                Assert.Equal(cancelledAt, appointment.UpdatedAt);
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+                Assert.Equal(45, appointment.TotalDurationMinutesSnapshot);
+                Assert.Single(appointment.Items);
+
+                var record = await context.IdempotencyRecords
+                    .AsNoTracking()
+                    .SingleAsync();
+
+                Assert.Equal("CancelAppointment", record.Operation);
+                Assert.Equal(key, record.Key);
+                Assert.Equal(cancelledAt, record.CreatedAt);
+                Assert.False(string.IsNullOrWhiteSpace(record.RequestHash));
+
+                var storedResponse =
+                    System.Text.Json.JsonSerializer
+                        .Deserialize<CancelAppointmentResponse>(
+                            record.ResponseJson);
+
+                Assert.Equal(original, storedResponse);
+                Assert.Equal(1, await context.Appointments.CountAsync());
+                Assert.Equal(1, await context.AppointmentItems.CountAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Fact]
     public async Task AppointmentExpiration_ShouldRespectDeadlineTenantAndIdempotency()
@@ -1098,6 +1718,471 @@ public sealed class AppointmentPersistenceTests
     #region Theories
 
     [Theory]
+    [InlineData(599, false)]
+    [InlineData(600, true)]
+    [InlineData(601, true)]
+    public async Task AppointmentCancellationService_ShouldRespectReservationDeadline(
+        int elapsedSeconds,
+        bool shouldExpire)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var now = CreatedAt.AddSeconds(elapsedSeconds);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            var command = new CancelAppointmentCommand(
+                appointmentId,
+                AppointmentStatus.CancelledByClient,
+                "Cliente solicitou",
+                Guid.NewGuid().ToString());
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(now)));
+
+                var result = await handler.HandleAsync(command);
+
+                Assert.Equal(!shouldExpire, result.IsSuccess);
+
+                if (shouldExpire)
+                {
+                    Assert.Equal(
+                        CancelAppointmentError.ReservationExpired,
+                        result.Error);
+                    Assert.Null(result.Response);
+                }
+                else
+                {
+                    Assert.NotNull(result.Response);
+                    Assert.Equal(now, result.Response.CancelledAt);
+                }
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .Include(entity => entity.Items)
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(
+                    shouldExpire
+                        ? AppointmentStatus.Expired
+                        : AppointmentStatus.CancelledByClient,
+                    appointment.Status);
+
+                Assert.False(appointment.OccupiesSchedule);
+                Assert.Equal(now, appointment.UpdatedAt);
+                Assert.Equal(
+                    CreatedAt.AddMinutes(10),
+                    appointment.ReservationExpiresAt);
+
+                if (shouldExpire)
+                {
+                    Assert.Null(appointment.CancellationReason);
+                    Assert.Null(appointment.CancelledAt);
+                }
+                else
+                {
+                    Assert.Equal(
+                        "Cliente solicitou",
+                        appointment.CancellationReason);
+                    Assert.Equal(now, appointment.CancelledAt);
+                }
+
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+                Assert.Equal(45, appointment.TotalDurationMinutesSnapshot);
+                Assert.Single(appointment.Items);
+
+                Assert.Equal(
+                    shouldExpire ? 0 : 1,
+                    await context.IdempotencyRecords.CountAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("reason")]
+    [InlineData("origin")]
+    [InlineData("appointment")]
+    public async Task AppointmentCancellationService_WithSameKeyAndDifferentContent_ShouldConflict(
+        string scenario)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var otherAppointmentId = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString();
+        var cancelledAt = CreatedAt.AddMinutes(5);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        otherAppointmentId,
+                        CreatedAt.AddHours(3)));
+
+                await context.SaveChangesAsync();
+            }
+
+            var command = new CancelAppointmentCommand(
+                appointmentId,
+                AppointmentStatus.CancelledByClient,
+                "Motivo original",
+                key);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(cancelledAt)));
+
+                var result = await handler.HandleAsync(command);
+
+                Assert.True(result.IsSuccess);
+            }
+
+            var conflictingCommand = scenario switch
+            {
+                "reason" => command with
+                {
+                    Reason = "Outro motivo"
+                },
+                "origin" => command with
+                {
+                    CancellationStatus =
+                        AppointmentStatus.CancelledByBusiness
+                },
+                "appointment" => command with
+                {
+                    AppointmentId = otherAppointmentId
+                },
+                _ => throw new ArgumentOutOfRangeException(nameof(scenario))
+            };
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(CreatedAt.AddMinutes(6))));
+
+                var result = await handler.HandleAsync(
+                    conflictingCommand);
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(
+                    CancelAppointmentError.IdempotencyConflict,
+                    result.Error);
+                Assert.Null(result.Response);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointments = await context.Appointments
+                    .AsNoTracking()
+                    .ToListAsync();
+
+                var cancelled = Assert.Single(
+                    appointments,
+                    entity => entity.Id == appointmentId);
+
+                Assert.Equal(
+                    AppointmentStatus.CancelledByClient,
+                    cancelled.Status);
+                Assert.Equal(
+                    "Motivo original",
+                    cancelled.CancellationReason);
+                Assert.Equal(cancelledAt, cancelled.CancelledAt);
+                Assert.Equal(cancelledAt, cancelled.UpdatedAt);
+
+                var untouched = Assert.Single(
+                    appointments,
+                    entity => entity.Id == otherAppointmentId);
+
+                Assert.Equal(
+                    AppointmentStatus.Pending,
+                    untouched.Status);
+                Assert.Null(untouched.CancellationReason);
+                Assert.Null(untouched.CancelledAt);
+                Assert.Equal(CreatedAt, untouched.UpdatedAt);
+
+                Assert.Equal(
+                    1,
+                    await context.IdempotencyRecords.CountAsync());
+                Assert.Equal(
+                    2,
+                    await context.AppointmentItems.CountAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("missing-reason")]
+    [InlineData("blank-reason")]
+    [InlineData("missing-date")]
+    [InlineData("date-before-creation")]
+    [InlineData("date-after-update")]
+    [InlineData("reason-without-cancellation")]
+    [InlineData("date-without-cancellation")]
+    public async Task AppointmentCancellation_WithInvalidData_ShouldReject(
+        string scenario)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            var status = "CANCELLED_BY_CLIENT";
+            string? reason = "Motivo válido";
+            DateTimeOffset? cancelledAt = CreatedAt.AddMinutes(5);
+            var updatedAt = CreatedAt.AddMinutes(5);
+
+            switch (scenario)
+            {
+                case "missing-reason":
+                    reason = null;
+                    break;
+
+                case "blank-reason":
+                    reason = "   ";
+                    break;
+
+                case "missing-date":
+                    cancelledAt = null;
+                    break;
+
+                case "date-before-creation":
+                    cancelledAt = CreatedAt.AddMinutes(-1);
+                    break;
+
+                case "date-after-update":
+                    cancelledAt = updatedAt.AddMinutes(1);
+                    break;
+
+                case "reason-without-cancellation":
+                    status = "PENDING";
+                    cancelledAt = null;
+                    break;
+
+                case "date-without-cancellation":
+                    status = "PENDING";
+                    reason = null;
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(scenario));
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                // SQL direto exercita o CHECK sem passar pelo domínio.
+                var exception = await Assert.ThrowsAsync<Npgsql.PostgresException>(
+                    async () =>
+                    {
+                        await context.Database.ExecuteSqlInterpolatedAsync(
+                            $"""
+                            UPDATE appointments
+                            SET status = {status},
+                                cancellation_reason = {reason},
+                                cancelled_at = {cancelledAt},
+                                updated_at = {updatedAt}
+                            WHERE tenant_id = {data.TenantId}
+                              AND id = {appointmentId}
+                            """);
+                    });
+
+                Assert.Equal("23514", exception.SqlState);
+                Assert.Equal(
+                    "CK_appointments_cancellation",
+                    exception.ConstraintName);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var persisted = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(AppointmentStatus.Pending, persisted.Status);
+                Assert.Null(persisted.CancellationReason);
+                Assert.Null(persisted.CancelledAt);
+                Assert.Equal(CreatedAt, persisted.UpdatedAt);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(AppointmentStatus.CancelledByClient)]
+    [InlineData(AppointmentStatus.CancelledByBusiness)]
+    public async Task AppointmentCancellation_ShouldPersistAuditAndReleaseInterval(
+        AppointmentStatus cancellationStatus)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var replacementId = Guid.NewGuid();
+
+        var startsAt = CreatedAt.AddHours(2);
+        var cancelledAt = CreatedAt.AddMinutes(5);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        startsAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .Include(entity => entity.Items)
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.True(appointment.Cancel(
+                    cancellationStatus,
+                    "  Cancelamento solicitado  ",
+                    cancelledAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            // Outro contexto confirma os valores efetivamente persistidos.
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .Include(entity => entity.Items)
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(cancellationStatus, appointment.Status);
+                Assert.False(appointment.OccupiesSchedule);
+                Assert.Equal(
+                    "Cancelamento solicitado",
+                    appointment.CancellationReason);
+                Assert.Equal(cancelledAt, appointment.CancelledAt);
+                Assert.Equal(cancelledAt, appointment.UpdatedAt);
+                Assert.Equal(CreatedAt, appointment.CreatedAt);
+
+                Assert.Equal(startsAt, appointment.StartsAt);
+                Assert.Equal(startsAt.AddMinutes(45), appointment.EndsAt);
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+                Assert.Equal(45, appointment.TotalDurationMinutesSnapshot);
+                Assert.Equal(
+                    CreatedAt.AddMinutes(10),
+                    appointment.ReservationExpiresAt);
+
+                var item = Assert.Single(appointment.Items);
+
+                Assert.Equal(data.ServiceId, item.ServiceId);
+                Assert.Equal("Corte", item.ServiceNameSnapshot);
+                Assert.Equal(65m, item.PriceSnapshot);
+                Assert.Equal(45, item.DurationMinutesSnapshot);
+            }
+
+            // A exclusion constraint deve permitir ocupar o horário liberado.
+            await using (var context = CreateContext(data.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        replacementId,
+                        startsAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointments = await context.Appointments
+                    .AsNoTracking()
+                    .ToListAsync();
+
+                Assert.Equal(2, appointments.Count);
+
+                var replacement = Assert.Single(
+                    appointments,
+                    entity => entity.Id == replacementId);
+
+                Assert.Equal(
+                    AppointmentStatus.Pending,
+                    replacement.Status);
+                Assert.True(replacement.OccupiesSchedule);
+                Assert.Null(replacement.CancellationReason);
+                Assert.Null(replacement.CancelledAt);
+
+                Assert.Equal(
+                    2,
+                    await context.AppointmentItems.CountAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
     [InlineData("missing-customer", CreateAppointmentError.CustomerNotFound)]
     [InlineData("missing-location", CreateAppointmentError.LocationNotFound)]
     [InlineData("missing-professional", CreateAppointmentError.ProfessionalNotFound)]
@@ -1429,11 +2514,21 @@ public sealed class AppointmentPersistenceTests
 
                 context.Appointments.Add(first);
 
-                // Bypass intencional para testar cada estado persistido,
-                // sem antecipar os futuros fluxos de transição do domínio.
-                context.Entry(first)
-                    .Property(entity => entity.Status)
-                    .CurrentValue = status;
+                if (status is AppointmentStatus.CancelledByClient
+                    or AppointmentStatus.CancelledByBusiness)
+                {
+                    first.Cancel(
+                        status,
+                        "Cancelamento para teste de sobreposição",
+                        CreatedAt.AddMinutes(5));
+                }
+                else
+                {
+                    // Prepara os demais estados para testar a constraint.
+                    context.Entry(first)
+                        .Property(entity => entity.Status)
+                        .CurrentValue = status;
+                }
 
                 await context.SaveChangesAsync();
             }
@@ -1971,7 +3066,30 @@ public sealed class AppointmentPersistenceTests
 
     #region Helpers
 
-        private sealed class FixedTimeProvider(DateTimeOffset now)
+    private sealed class BeforeCancellationSaveInterceptor(
+        Func<Task> beforeSave)
+        : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        private bool _executed;
+
+        public override async ValueTask<
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>>
+            SavingChangesAsync(
+                Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result,
+                CancellationToken cancellationToken = default)
+        {
+            if (!_executed)
+            {
+                _executed = true;
+                await beforeSave();
+            }
+
+            return result;
+        }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset now)
         : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;

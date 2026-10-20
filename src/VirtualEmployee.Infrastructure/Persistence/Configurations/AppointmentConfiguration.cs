@@ -44,6 +44,21 @@ public sealed class AppointmentConfiguration
                 "(reservation_expires_at IS NOT NULL AND " +
                 "reservation_expires_at > created_at AND " +
                 "reservation_expires_at <= starts_at)");
+
+            table.HasCheckConstraint(
+                "CK_appointments_cancellation",
+                "(" +
+                "status IN ('CANCELLED_BY_CLIENT', 'CANCELLED_BY_BUSINESS') " +
+                "AND cancellation_reason IS NOT NULL " +
+                "AND length(btrim(cancellation_reason)) > 0 " +
+                "AND cancelled_at IS NOT NULL " +
+                "AND cancelled_at >= created_at " +
+                "AND cancelled_at <= updated_at" +
+                ") OR (" +
+                "status NOT IN ('CANCELLED_BY_CLIENT', 'CANCELLED_BY_BUSINESS') " +
+                "AND cancellation_reason IS NULL " +
+                "AND cancelled_at IS NULL" +
+                ")");
         });
 
         builder.HasKey(x => x.Id);
@@ -111,6 +126,14 @@ public sealed class AppointmentConfiguration
 
         builder.Property(x => x.ReservationExpiresAt)
             .HasColumnName("reservation_expires_at")
+            .HasColumnType("timestamp with time zone");
+
+        builder.Property(x => x.CancellationReason)
+            .HasColumnName("cancellation_reason")
+            .HasMaxLength(500);
+
+        builder.Property(x => x.CancelledAt)
+            .HasColumnName("cancelled_at")
             .HasColumnType("timestamp with time zone");
 
         builder.Property(x => x.CreatedAt)

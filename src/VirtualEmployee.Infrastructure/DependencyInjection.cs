@@ -54,6 +54,7 @@ public static class DependencyInjection
         services.AddScoped<ITenantContextInitializer>(serviceProvider =>
             serviceProvider.GetRequiredService<TenantContext>());
 
+        services.AddScoped<IAppointmentCancellationService, AppointmentCancellationService>();
         services.AddOptions<AppointmentReservationOptions>()
             .Configure(options =>
             {
@@ -130,6 +131,7 @@ public static class DependencyInjection
         services.AddScoped<IBookingQuoteReadService, BookingQuoteReadService>();
         services.AddScoped<IAppointmentReadService, AppointmentReadService>();
         services.AddScoped<IAppointmentExpirationService, AppointmentExpirationService>();
+        services.AddScoped<IAppointmentCancellationService, AppointmentCancellationService>();
         return services;
     }
 }

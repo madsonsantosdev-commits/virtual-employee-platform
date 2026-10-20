@@ -249,9 +249,26 @@ AppointmentItems preservam snapshots de serviço/preço/duração para verdade h
 
 ### Implementação incremental de Appointments — 16/10/2026
 
-A tabela appointments está implementada com os campos descritos acima,
-exceto cancellation_reason e cancelled_at, previstos para a entrega
-de cancelamento.
+A tabela appointments está implementada com os campos descritos acima.
+Desde 19/10/2026, inclui cancellation_reason varchar(500) NULL
+e cancelled_at timestamptz NULL.
+
+A restrição CK_appointments_cancellation exige:
+- Estados cancelados com motivo não nulo e não vazio após btrim.
+- Data de cancelamento não nula, entre created_at e updated_at.
+- Demais estados com motivo e data de cancelamento nulos.
+
+A coluna varchar(500) limita o tamanho do motivo.
+A Application e o domínio aplicam Trim e validam o limite antes da escrita.
+
+A idempotência de cancelamento reutiliza idempotency_records,
+com Operation = CancelAppointment.
+Estado, auditoria e resposta são persistidos na mesma transação.
+A exclusão de sobreposição deixa de considerar o registro cancelado.
+
+Migrations de cancelamento:
+- 20261019204922_AddAppointmentCancellation
+- 20261019231745_LimitAppointmentCancellationReason
 
 ```text
 appointment_items
@@ -309,8 +326,8 @@ Migrations:
 - 20261016170029_AddAppointments;
 - 20261016190726_AddAppointmentOverlapProtection.
 
-Histórico de transições e operações de cancelamento/reagendamento
-permanecem para próximas etapas.
+Histórico de transições e operações de reagendamento permanecem
+para próximas etapas. Cancelamento está implementado desde 19/10/2026.
 
 ## Payment / PaymentAttempt / Refund
 Payment é obrigação financeira lógica; PaymentAttempt é cada tentativa concreta no provider; Refund integral no MVP referencia Payment e PaymentAttempt confirmado. `Payment.Amount == Appointment.TotalPriceSnapshot` para SERVICE.

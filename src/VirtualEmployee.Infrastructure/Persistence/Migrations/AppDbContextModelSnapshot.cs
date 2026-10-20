@@ -458,6 +458,15 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("business_id");
 
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("cancellation_reason");
+
+                    b.Property<DateTimeOffset?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cancelled_at");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
@@ -527,6 +536,8 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
 
                     b.ToTable("appointments", null, t =>
                         {
+                            t.HasCheckConstraint("CK_appointments_cancellation", "(status IN ('CANCELLED_BY_CLIENT', 'CANCELLED_BY_BUSINESS') AND cancellation_reason IS NOT NULL AND length(btrim(cancellation_reason)) > 0 AND cancelled_at IS NOT NULL AND cancelled_at >= created_at AND cancelled_at <= updated_at) OR (status NOT IN ('CANCELLED_BY_CLIENT', 'CANCELLED_BY_BUSINESS') AND cancellation_reason IS NULL AND cancelled_at IS NULL)");
+
                             t.HasCheckConstraint("CK_appointments_duration_matches_window", "ends_at = starts_at + total_duration_minutes_snapshot * interval '1 minute'");
 
                             t.HasCheckConstraint("CK_appointments_pending_expiration", "status <> 'PENDING' OR (reservation_expires_at IS NOT NULL AND reservation_expires_at > created_at AND reservation_expires_at <= starts_at)");
