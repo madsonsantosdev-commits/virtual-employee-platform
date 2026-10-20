@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -38,6 +39,450 @@ public sealed class AppointmentsEndpointsTests
     }
 
     #region Facts
+
+    [Fact]
+    public async Task Appointments_Reschedule_WithForeignAppointment_ShouldReturnNotFound()
+    {
+        var currentData = new TestData();
+        var foreignData = new TestData();
+
+        try
+        {
+            await SeedAsync(currentData);
+            await SeedAsync(foreignData);
+
+            var appointmentId = Guid.NewGuid();
+            var originalStart = new DateTimeOffset(
+                2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+            await SeedListedAppointmentAsync(
+                foreignData,
+                appointmentId,
+                originalStart);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                currentData.TenantId.ToString());
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/appointments/{appointmentId}/reschedule");
+
+            request.Headers.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            request.Content = JsonContent.Create(new
+            {
+                locationId = currentData.LocationId,
+                professionalId = currentData.ProfessionalId,
+                startsAt = originalStart.AddHours(1)
+            });
+
+            using var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.True(
+                response.StatusCode == HttpStatusCode.NotFound,
+                $"HTTP: {response.StatusCode}. Corpo: {body}");
+
+            await using (var currentContext = CreateContext(
+                currentData.TenantId))
+            {
+                Assert.False(
+                    await currentContext.Appointments.AnyAsync());
+
+                Assert.False(
+                    await currentContext.IdempotencyRecords.AnyAsync());
+            }
+
+            await using (var foreignContext = CreateContext(
+                foreignData.TenantId))
+            {
+                var persisted = await foreignContext.Appointments
+                    .AsNoTracking()
+                    .Include(appointment => appointment.Items)
+                    .SingleAsync(
+                        appointment => appointment.Id == appointmentId);
+
+                Assert.Equal(foreignData.LocationId, persisted.LocationId);
+                Assert.Equal(
+                    foreignData.ProfessionalId,
+                    persisted.ProfessionalId);
+                Assert.Equal(originalStart, persisted.StartsAt);
+                Assert.Equal(
+                    originalStart.AddMinutes(45),
+                    persisted.EndsAt);
+                Assert.Equal(persisted.CreatedAt, persisted.UpdatedAt);
+                Assert.Equal(
+                    persisted.CreatedAt.AddMinutes(10),
+                    persisted.ReservationExpiresAt);
+                Assert.Equal(65m, persisted.TotalPriceSnapshot);
+                Assert.Equal(45, persisted.TotalDurationMinutesSnapshot);
+                Assert.Single(persisted.Items);
+
+                Assert.False(
+                    await foreignContext.IdempotencyRecords.AnyAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(currentData.TenantId);
+            await CleanupAsync(foreignData.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Appointments_Reschedule_WithOccupiedDestination_ShouldReturnConflict()
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            var appointmentId = Guid.NewGuid();
+            var otherAppointmentId = Guid.NewGuid();
+
+            var originalStart = new DateTimeOffset(
+                2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+            var occupiedStart = originalStart.AddHours(1);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                originalStart);
+
+            await SeedListedAppointmentAsync(
+                data,
+                otherAppointmentId,
+                occupiedStart);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/appointments/{appointmentId}/reschedule");
+
+            request.Headers.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            request.Content = JsonContent.Create(new
+            {
+                locationId = data.LocationId,
+                professionalId = data.ProfessionalId,
+                startsAt = occupiedStart
+            });
+
+            using var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.True(
+                response.StatusCode == HttpStatusCode.Conflict,
+                $"HTTP: {response.StatusCode}. Corpo: {body}");
+
+            using var document = JsonDocument.Parse(body);
+
+            Assert.Equal(
+                "SLOT_UNAVAILABLE",
+                document.RootElement.GetProperty("code").GetString());
+
+            await using var context = CreateContext(data.TenantId);
+
+            var original = await context.Appointments
+                .AsNoTracking()
+                .Include(appointment => appointment.Items)
+                .SingleAsync(appointment => appointment.Id == appointmentId);
+
+            Assert.Equal(data.LocationId, original.LocationId);
+            Assert.Equal(data.ProfessionalId, original.ProfessionalId);
+            Assert.Equal(originalStart, original.StartsAt);
+            Assert.Equal(originalStart.AddMinutes(45), original.EndsAt);
+            Assert.Equal(original.CreatedAt, original.UpdatedAt);
+            Assert.Equal(
+                original.CreatedAt.AddMinutes(10),
+                original.ReservationExpiresAt);
+            Assert.Equal(65m, original.TotalPriceSnapshot);
+            Assert.Equal(45, original.TotalDurationMinutesSnapshot);
+            Assert.Single(original.Items);
+
+            var occupant = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(
+                    appointment => appointment.Id == otherAppointmentId);
+
+            Assert.Equal(occupiedStart, occupant.StartsAt);
+            Assert.Equal(occupiedStart.AddMinutes(45), occupant.EndsAt);
+            Assert.Equal(occupant.CreatedAt, occupant.UpdatedAt);
+
+            Assert.Equal(2, await context.Appointments.CountAsync());
+            Assert.Equal(2, await context.AppointmentItems.CountAsync());
+
+            Assert.False(
+                await context.IdempotencyRecords.AnyAsync(
+                    record => record.Operation == "RescheduleAppointment"));
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Appointments_Reschedule_ShouldPersistAndReplay()
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            var originalStart = new DateTimeOffset(
+                2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+            using var createRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                "/api/v1/appointments");
+
+            createRequest.Headers.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            createRequest.Content = JsonContent.Create(new
+            {
+                customerId = data.CustomerId,
+                locationId = data.LocationId,
+                professionalId = data.ProfessionalId,
+                serviceIds = new[] { data.ServiceId },
+                startsAt = originalStart
+            });
+
+            using var createResponse = await client.SendAsync(createRequest);
+            var createBody = await createResponse.Content.ReadAsStringAsync();
+
+            Assert.True(
+                createResponse.StatusCode == HttpStatusCode.Created,
+                $"Criação: {createResponse.StatusCode}. Corpo: {createBody}");
+
+            using var createdDocument = JsonDocument.Parse(createBody);
+            var created = createdDocument.RootElement;
+
+            var appointmentId = created.GetProperty("id").GetGuid();
+            var originalExpiration = created
+                .GetProperty("reservationExpiresAt")
+                .GetDateTimeOffset();
+
+            var newStart = originalStart.AddMinutes(15);
+            var key = Guid.NewGuid().ToString();
+            var url = $"/api/v1/appointments/{appointmentId}/reschedule";
+
+            using var rescheduleRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                url);
+
+            rescheduleRequest.Headers.Add("Idempotency-Key", key);
+
+            rescheduleRequest.Content = JsonContent.Create(new
+            {
+                locationId = data.LocationId,
+                professionalId = data.ProfessionalId,
+                startsAt = newStart
+            });
+
+            using var rescheduleResponse = await client.SendAsync(
+                rescheduleRequest);
+
+            var rescheduleBody = await rescheduleResponse.Content
+                .ReadAsStringAsync();
+
+            Assert.True(
+                rescheduleResponse.StatusCode == HttpStatusCode.OK,
+                $"Reagendamento: {rescheduleResponse.StatusCode}. " +
+                $"Corpo: {rescheduleBody}");
+
+            using var rescheduledDocument = JsonDocument.Parse(
+                rescheduleBody);
+
+            var rescheduled = rescheduledDocument.RootElement;
+
+            Assert.Equal(
+                appointmentId,
+                rescheduled.GetProperty("id").GetGuid());
+
+            Assert.Equal(
+                data.LocationId,
+                rescheduled.GetProperty("locationId").GetGuid());
+
+            Assert.Equal(
+                data.ProfessionalId,
+                rescheduled.GetProperty("professionalId").GetGuid());
+
+            Assert.Equal(
+                newStart,
+                rescheduled.GetProperty("startsAt").GetDateTimeOffset());
+
+            Assert.Equal(
+                newStart.AddMinutes(45),
+                rescheduled.GetProperty("endsAt").GetDateTimeOffset());
+
+            Assert.Equal(
+                "PENDING",
+                rescheduled.GetProperty("status").GetString());
+
+            Assert.Equal(
+                originalExpiration,
+                rescheduled.GetProperty("reservationExpiresAt")
+                    .GetDateTimeOffset());
+
+            Assert.Equal(
+                65m,
+                rescheduled.GetProperty("totalPrice").GetDecimal());
+
+            Assert.Equal(
+                45,
+                rescheduled.GetProperty("totalDurationMinutes").GetInt32());
+
+            Assert.Equal(
+                created.GetProperty("createdAt").GetDateTimeOffset(),
+                rescheduled.GetProperty("createdAt").GetDateTimeOffset());
+
+            var items = rescheduled.GetProperty("items");
+            Assert.Equal(1, items.GetArrayLength());
+
+            Assert.Equal(
+                data.ServiceId,
+                items[0].GetProperty("serviceId").GetGuid());
+
+            Assert.Equal(
+                created.GetProperty("items")[0]
+                    .GetProperty("name").GetString(),
+                items[0].GetProperty("name").GetString());
+
+            Assert.Equal(
+                65m,
+                items[0].GetProperty("price").GetDecimal());
+
+            Assert.Equal(
+                45,
+                items[0].GetProperty("durationMinutes").GetInt32());
+
+            using var replayRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                url);
+
+            replayRequest.Headers.Add("Idempotency-Key", key);
+
+            replayRequest.Content = JsonContent.Create(new
+            {
+                locationId = data.LocationId,
+                professionalId = data.ProfessionalId,
+                startsAt = newStart.ToOffset(TimeSpan.FromHours(-3))
+            });
+
+            using var replayResponse = await client.SendAsync(replayRequest);
+            var replayBody = await replayResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, replayResponse.StatusCode);
+            Assert.Equal(rescheduleBody, replayBody);
+
+            using var conflictRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                url);
+
+            conflictRequest.Headers.Add("Idempotency-Key", key);
+
+            conflictRequest.Content = JsonContent.Create(new
+            {
+                locationId = data.LocationId,
+                professionalId = data.ProfessionalId,
+                startsAt = newStart.AddMinutes(15)
+            });
+
+            using var conflictResponse = await client.SendAsync(
+                conflictRequest);
+
+            var conflictBody = await conflictResponse.Content
+                .ReadAsStringAsync();
+
+            Assert.True(
+                conflictResponse.StatusCode == HttpStatusCode.Conflict,
+                $"Conflito: {conflictResponse.StatusCode}. " +
+                $"Corpo: {conflictBody}");
+
+            using var conflictDocument = JsonDocument.Parse(conflictBody);
+
+            Assert.Equal(
+                "IDEMPOTENCY_CONFLICT",
+                conflictDocument.RootElement
+                    .GetProperty("code").GetString());
+
+            using var getResponse = await client.GetAsync(
+                $"/api/v1/appointments/{appointmentId}");
+
+            Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+
+            using var currentDocument = JsonDocument.Parse(
+                await getResponse.Content.ReadAsStringAsync());
+
+            var current = currentDocument.RootElement;
+
+            Assert.Equal(
+                newStart,
+                current.GetProperty("startsAt").GetDateTimeOffset());
+
+            Assert.Equal(
+                newStart.AddMinutes(45),
+                current.GetProperty("endsAt").GetDateTimeOffset());
+
+            Assert.Equal(
+                "PENDING",
+                current.GetProperty("status").GetString());
+
+            Assert.Equal(
+                rescheduled.GetProperty("updatedAt").GetDateTimeOffset(),
+                current.GetProperty("updatedAt").GetDateTimeOffset());
+
+            await using var context = CreateContext(data.TenantId);
+
+            var persisted = await context.Appointments
+                .AsNoTracking()
+                .Include(appointment => appointment.Items)
+                .SingleAsync(appointment => appointment.Id == appointmentId);
+
+            Assert.Equal(newStart, persisted.StartsAt);
+            Assert.Equal(newStart.AddMinutes(45), persisted.EndsAt);
+            Assert.Equal(originalExpiration, persisted.ReservationExpiresAt);
+            Assert.Equal(65m, persisted.TotalPriceSnapshot);
+            Assert.Equal(45, persisted.TotalDurationMinutesSnapshot);
+            Assert.Single(persisted.Items);
+
+            Assert.Equal(
+                1,
+                await context.IdempotencyRecords.CountAsync(
+                    record => record.Operation == "RescheduleAppointment"));
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Fact]
     public async Task Appointments_Cancel_ShouldPersistAndReplay()
@@ -1047,6 +1492,287 @@ public sealed class AppointmentsEndpointsTests
     #endregion
 
     #region Theories
+
+    [Theory]
+    [InlineData("client", "INVALID_APPOINTMENT_STATE")]
+    [InlineData("business", "INVALID_APPOINTMENT_STATE")]
+    [InlineData("expired", "RESERVATION_EXPIRED")]
+    public async Task Appointments_Reschedule_WithTerminalState_ShouldReturnConflict(
+        string scenario,
+        string expectedCode)
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            var appointmentId = Guid.NewGuid();
+            var originalStart = new DateTimeOffset(
+                2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+            if (scenario == "expired")
+            {
+                await using var seedContext = CreateContext(data.TenantId);
+
+                seedContext.Appointments.Add(
+                    new Appointment(
+                        appointmentId,
+                        data.TenantId,
+                        data.BusinessId,
+                        data.LocationId,
+                        data.CustomerId,
+                        data.ProfessionalId,
+                        originalStart,
+                        CreatedAt.AddMinutes(-10),
+                        TimeSpan.FromMinutes(10),
+                        [
+                            new AppointmentItem(
+                                Guid.NewGuid(),
+                                data.TenantId,
+                                appointmentId,
+                                data.ServiceId,
+                                "Corte histórico",
+                                65m,
+                                45)
+                        ]));
+
+                await seedContext.SaveChangesAsync();
+            }
+            else
+            {
+                await SeedListedAppointmentAsync(
+                    data,
+                    appointmentId,
+                    originalStart);
+            }
+
+            await using (var setupContext = CreateContext(data.TenantId))
+            {
+                var appointment = await setupContext.Appointments
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                if (scenario == "expired")
+                {
+                    Assert.True(
+                        appointment.Expire(
+                            appointment.ReservationExpiresAt!.Value));
+                }
+                else
+                {
+                    appointment.Cancel(
+                        scenario == "client"
+                            ? AppointmentStatus.CancelledByClient
+                            : AppointmentStatus.CancelledByBusiness,
+                        "Cancelamento para validar reagendamento",
+                        appointment.CreatedAt);
+                }
+
+                await setupContext.SaveChangesAsync();
+            }
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/appointments/{appointmentId}/reschedule");
+
+            request.Headers.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            request.Content = JsonContent.Create(new
+            {
+                locationId = data.LocationId,
+                professionalId = data.ProfessionalId,
+                startsAt = originalStart.AddHours(1)
+            });
+
+            using var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.True(
+                response.StatusCode == HttpStatusCode.Conflict,
+                $"Cenário: {scenario}. HTTP: {response.StatusCode}. " +
+                $"Corpo: {body}");
+
+            using var document = JsonDocument.Parse(body);
+
+            Assert.Equal(
+                expectedCode,
+                document.RootElement.GetProperty("code").GetString());
+
+            await using var context = CreateContext(data.TenantId);
+
+            var persisted = await context.Appointments
+                .AsNoTracking()
+                .Include(appointment => appointment.Items)
+                .SingleAsync(appointment => appointment.Id == appointmentId);
+
+            var expectedStatus = scenario switch
+            {
+                "client" => AppointmentStatus.CancelledByClient,
+                "business" => AppointmentStatus.CancelledByBusiness,
+                _ => AppointmentStatus.Expired
+            };
+
+            Assert.Equal(expectedStatus, persisted.Status);
+            Assert.Equal(originalStart, persisted.StartsAt);
+            Assert.Equal(originalStart.AddMinutes(45), persisted.EndsAt);
+            Assert.Equal(data.LocationId, persisted.LocationId);
+            Assert.Equal(data.ProfessionalId, persisted.ProfessionalId);
+            Assert.Equal(65m, persisted.TotalPriceSnapshot);
+            Assert.Equal(45, persisted.TotalDurationMinutesSnapshot);
+            Assert.Single(persisted.Items);
+
+            if (scenario == "expired")
+            {
+                Assert.Equal(
+                    persisted.ReservationExpiresAt,
+                    persisted.UpdatedAt);
+
+                Assert.Null(persisted.CancellationReason);
+                Assert.Null(persisted.CancelledAt);
+            }
+            else
+            {
+                Assert.Equal(
+                    "Cancelamento para validar reagendamento",
+                    persisted.CancellationReason);
+
+                Assert.Equal(persisted.CreatedAt, persisted.CancelledAt);
+                Assert.Equal(persisted.CreatedAt, persisted.UpdatedAt);
+            }
+
+            Assert.False(
+                await context.IdempotencyRecords.AnyAsync(
+                    record => record.Operation == "RescheduleAppointment"));
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("empty-appointment")]
+    [InlineData("empty-location")]
+    [InlineData("empty-professional")]
+    [InlineData("missing-start")]
+    [InlineData("submicrosecond-start")]
+    [InlineData("missing-key")]
+    [InlineData("long-key")]
+    [InlineData("key-with-space")]
+    public async Task Appointments_Reschedule_WithInvalidRequest_ShouldReturnBadRequest(
+        string scenario)
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            var appointmentId = Guid.NewGuid();
+            var originalStart = new DateTimeOffset(
+                2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                originalStart);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            var requestedId = scenario == "empty-appointment"
+                ? Guid.Empty
+                : appointmentId;
+
+            var locationId = scenario == "empty-location"
+                ? Guid.Empty
+                : data.LocationId;
+
+            var professionalId = scenario == "empty-professional"
+                ? Guid.Empty
+                : data.ProfessionalId;
+
+            var startsAt = scenario switch
+            {
+                "missing-start" => default(DateTimeOffset),
+                "submicrosecond-start" =>
+                    originalStart.AddHours(1).AddTicks(1),
+                _ => originalStart.AddHours(1)
+            };
+
+            var key = scenario switch
+            {
+                "long-key" => new string('k', 201),
+                "key-with-space" => "invalid key",
+                _ => Guid.NewGuid().ToString()
+            };
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/appointments/{requestedId}/reschedule");
+
+            if (scenario != "missing-key")
+            {
+                request.Headers.Add("Idempotency-Key", key);
+            }
+
+            request.Content = JsonContent.Create(new
+            {
+                locationId,
+                professionalId,
+                startsAt
+            });
+
+            using var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.True(
+                response.StatusCode == HttpStatusCode.BadRequest,
+                $"Cenário: {scenario}. HTTP: {response.StatusCode}. " +
+                $"Corpo: {body}");
+
+            await using var context = CreateContext(data.TenantId);
+
+            var persisted = await context.Appointments
+                .AsNoTracking()
+                .Include(appointment => appointment.Items)
+                .SingleAsync(appointment => appointment.Id == appointmentId);
+
+            Assert.Equal(data.LocationId, persisted.LocationId);
+            Assert.Equal(data.ProfessionalId, persisted.ProfessionalId);
+            Assert.Equal(originalStart, persisted.StartsAt);
+            Assert.Equal(originalStart.AddMinutes(45), persisted.EndsAt);
+            Assert.Equal(65m, persisted.TotalPriceSnapshot);
+            Assert.Equal(45, persisted.TotalDurationMinutesSnapshot);
+            Assert.Equal(persisted.CreatedAt, persisted.UpdatedAt);
+            Assert.Equal(
+                persisted.CreatedAt.AddMinutes(10),
+                persisted.ReservationExpiresAt);
+
+            Assert.Single(persisted.Items);
+
+            Assert.False(
+                await context.IdempotencyRecords.AnyAsync(
+                    record => record.Operation == "RescheduleAppointment"));
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Theory]
     [InlineData(500)]

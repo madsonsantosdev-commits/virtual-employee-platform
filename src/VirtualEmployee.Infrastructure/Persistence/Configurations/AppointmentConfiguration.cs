@@ -63,7 +63,11 @@ public sealed class AppointmentConfiguration
 
         builder.HasKey(x => x.Id);
 
-        builder.HasAlternateKey(x => new { x.TenantId, x.Id });
+        builder.HasAlternateKey(x => new
+        {
+            x.TenantId,
+            x.Id
+        });
 
         builder.Property(x => x.Id)
             .HasColumnName("id")
@@ -84,7 +88,8 @@ public sealed class AppointmentConfiguration
         builder.Property(x => x.LocationId)
             .HasColumnName("location_id")
             .HasColumnType("uuid")
-            .IsRequired();
+            .IsRequired()
+            .IsConcurrencyToken();
 
         builder.Property(x => x.CustomerId)
             .HasColumnName("customer_id")
@@ -94,17 +99,20 @@ public sealed class AppointmentConfiguration
         builder.Property(x => x.ProfessionalId)
             .HasColumnName("professional_id")
             .HasColumnType("uuid")
-            .IsRequired();
+            .IsRequired()
+            .IsConcurrencyToken();
 
         builder.Property(x => x.StartsAt)
             .HasColumnName("starts_at")
             .HasColumnType("timestamp with time zone")
-            .IsRequired();
+            .IsRequired()
+            .IsConcurrencyToken();
 
         builder.Property(x => x.EndsAt)
             .HasColumnName("ends_at")
             .HasColumnType("timestamp with time zone")
-            .IsRequired();
+            .IsRequired()
+            .IsConcurrencyToken();
 
         builder.Property(x => x.TotalPriceSnapshot)
             .HasColumnName("total_price_snapshot")
@@ -126,7 +134,8 @@ public sealed class AppointmentConfiguration
 
         builder.Property(x => x.ReservationExpiresAt)
             .HasColumnName("reservation_expires_at")
-            .HasColumnType("timestamp with time zone");
+            .HasColumnType("timestamp with time zone")
+            .IsConcurrencyToken();
 
         builder.Property(x => x.CancellationReason)
             .HasColumnName("cancellation_reason")
@@ -150,14 +159,30 @@ public sealed class AppointmentConfiguration
 
         builder.HasOne<Business>()
             .WithMany()
-            .HasForeignKey(x => new { x.TenantId, x.BusinessId })
-            .HasPrincipalKey(x => new { x.TenantId, x.Id })
+            .HasForeignKey(x => new
+            {
+                x.TenantId,
+                x.BusinessId
+            })
+            .HasPrincipalKey(x => new
+            {
+                x.TenantId,
+                x.Id
+            })
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne<Customer>()
             .WithMany()
-            .HasForeignKey(x => new { x.TenantId, x.CustomerId })
-            .HasPrincipalKey(x => new { x.TenantId, x.Id })
+            .HasForeignKey(x => new
+            {
+                x.TenantId,
+                x.CustomerId
+            })
+            .HasPrincipalKey(x => new
+            {
+                x.TenantId,
+                x.Id
+            })
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne<ProfessionalLocation>()
@@ -178,8 +203,16 @@ public sealed class AppointmentConfiguration
 
         builder.HasMany(x => x.Items)
             .WithOne()
-            .HasForeignKey(x => new { x.TenantId, x.AppointmentId })
-            .HasPrincipalKey(x => new { x.TenantId, x.Id })
+            .HasForeignKey(x => new
+            {
+                x.TenantId,
+                x.AppointmentId
+            })
+            .HasPrincipalKey(x => new
+            {
+                x.TenantId,
+                x.Id
+            })
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.Navigation(x => x.Items)

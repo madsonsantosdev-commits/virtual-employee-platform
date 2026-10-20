@@ -788,7 +788,7 @@ AvailabilityRule -> ScheduleBlock -> Appointments.
 
 ## 10. Appointments
 
-### Implementação incremental — atualizada em 19/10/2026
+### Implementação incremental — atualizada em 20/10/2026
 
 Criação e consulta por ID foram validadas em 16/10/2026.
 Listagem paginada foi validada em 19/10/2026.
@@ -797,10 +797,13 @@ Rotas implementadas:
 - `POST /api/v1/appointments`
 - `GET /api/v1/appointments`
 - `GET /api/v1/appointments/{appointmentId}`
+- `POST /api/v1/appointments/{appointmentId}/cancel`
+- `POST /api/v1/appointments/{appointmentId}/reschedule`
 
 O header `X-Tenant-Id` é temporário para desenvolvimento.
 Cancelamento idempotente foi validado em 19/10/2026.
-Reagendamento e confirmação por pagamento permanecem pendentes.
+Reagendamento idempotente foi validado em 20/10/2026.
+Confirmação por pagamento permanece pendente.
 
 #### Listagem paginada
 
@@ -1001,8 +1004,97 @@ Fluxo: `PENDING -> Payment -> PaymentAttempt -> webhook confirmado -> Payment CO
 ### Double-booking
 `409 SLOT_UNAVAILABLE`. Tentativa perdedora não persiste Appointment. A proteção considera o Professional globalmente dentro do Tenant, evitando reserva simultânea em duas Locations. Idempotência não substitui a exclusion constraint do PostgreSQL.
 
-### Reschedule
-`POST /appointments/{id}/reschedule` requer `Idempotency-Key`. Pode mudar Location quando elegibilidade/disponibilidade forem satisfeitas. Se futura diferença comercial exigir ajuste financeiro, MVP usa cancelamento/novo booking; sem pagamento complementar/refund parcial.
+### Reagendamento — implementação em 20/10/2026
+
+`POST /api/v1/appointments/{appointmentId}/reschedule`
+
+Exige `Idempotency-Key` não vazia, com até 200 caracteres,
+sem espaços ou caracteres de controle.
+
+Entrada:
+
+```json
+{
+  "locationId": "<location-id>",
+  "professionalId": "<professional-id>",
+  "startsAt": "2026-10-26T10:00:00-03:00"
+}
+```
+
+Os três campos são obrigatórios, inclusive quando unidade ou profissional
+permanecem os mesmos. Os IDs devem ser GUIDs não vazios.
+StartsAt é normalizado para UTC e deve ter precisão de microssegundos.
+
+O backend revalida recursos ativos, Business, serviços oferecidos na
+unidade, vínculo e elegibilidade do profissional, agenda semanal,
+grade de início, timezone, bloqueios e conflitos com outros agendamentos.
+O intervalo do próprio Appointment é excluído da consulta de conflitos.
+A ocupação do profissional considera todas as unidades do tenant.
+
+Podem ser reagendados PENDING, CONFIRMED, CONFIRMED_BY_CLIENT
+e RESCHEDULE_REQUESTED, desde que o atendimento original ainda não
+tenha começado. O novo início deve estar no futuro.
+PENDING também exige prazo de reserva vigente.
+
+Preserva AppointmentId, TenantId, BusinessId, CustomerId, itens,
+snapshots comerciais, CreatedAt e estado operacional.
+Não altera a composição dos serviços nem recalcula preço e duração
+pelo catálogo atual. EndsAt é derivado da duração persistida.
+
+A unidade de destino deve pertencer ao Business original.
+Se uma evolução futura exigir ajuste financeiro, o MVP usará
+cancelamento e novo booking, sem cobrança complementar ou refund parcial.
+
+Para PENDING, ReservationExpiresAt nunca é estendido.
+Quando o novo início antecede o prazo vigente, a expiração é reduzida
+para esse início.
+
+Retorna 200 com AppointmentResponse, no mesmo formato da consulta por ID,
+incluindo novo intervalo, unidade, profissional e snapshots preservados.
+Não cria estado permanente RESCHEDULED.
+
+A alteração e a resposta idempotente são persistidas atomicamente.
+Após o commit, o intervalo anterior deixa de ocupar agenda e o novo
+passa a ocupá-la, conforme o estado do Appointment.
+Falhas de reagendamento preservam o intervalo original, exceto quando
+a tentativa materializa a expiração de uma reserva vencida.
+
+Idempotência:
+
+- Escopo: TenantId + Operation RescheduleAppointment + IdempotencyKey.
+- Hash considera AppointmentId, LocationId, ProfessionalId e início em UTC.
+- Mesma chave e conteúdo retornam a resposta original.
+- Offsets que representam o mesmo instante são equivalentes.
+- Mesma chave com conteúdo diferente retorna IDEMPOTENCY_CONFLICT.
+- Replay não reaplica a alteração nem reativa reservas expiradas ou canceladas.
+- Uma solicitação sem mudança efetiva preserva UpdatedAt e registra
+  a resposta idempotente após revalidar as condições da operação.
+
+PENDING vencido é materializado como EXPIRED e retorna
+RESERVATION_EXPIRED, sem registrar sucesso idempotente de reagendamento.
+Um registro já EXPIRED também retorna esse código quando o relógio
+da operação é compatível com sua última atualização.
+
+Atualizações concorrentes usam os valores originais dos tokens
+configurados no EF Core. A exclusion constraint do PostgreSQL
+continua sendo a proteção contra sobreposição de horários.
+
+| Resultado | HTTP | Código |
+| --- | --- | --- |
+| Reagendamento ou replay concluído | 200 | — |
+| Entrada ou chave inválida | 400 | — |
+| Agendamento ou recurso de referência não encontrado no tenant | 404 | — |
+| Estado incompatível ou atendimento original já iniciado | 409 | INVALID_APPOINTMENT_STATE |
+| Reserva expirada | 409 | RESERVATION_EXPIRED |
+| Destino indisponível | 409 | SLOT_UNAVAILABLE |
+| Recursos inativos ou incompatíveis | 409 | APPOINTMENT_CONFLICT |
+| Chave reutilizada com outro conteúdo | 409 | IDEMPOTENCY_CONFLICT |
+| Disputa de atualização ou relógio anterior à última atualização | 409 | CONCURRENCY_CONFLICT |
+| Timezone configurada inválida | 500 | — |
+
+As consultas retornam o estado atual; o replay retorna a resposta
+original daquela operação. Histórico de transições, publicação de eventos
+e reagendamento assistido permanecem para próximas entregas.
 
 ### Cancelamento — implementação em 19/10/2026
 

@@ -300,7 +300,8 @@ Chaves e restrições:
 - Itens exigem nome de snapshot não vazio, preço não negativo e duração positiva.
 - Appointments e itens possuem filtros de consulta e proteção de escrita
   por tenant; TenantId é token de concorrência.
-- Status de Appointment também é token de concorrência.
+- Appointment também usa Status, LocationId, ProfessionalId, StartsAt,
+  EndsAt e ReservationExpiresAt como tokens de concorrência no EF Core.
 
 A constraint ex_appointments_no_overlap usa btree_gist e protege
 TenantId + ProfessionalId + intervalo [StartsAt, EndsAt), sem LocationId.
@@ -326,8 +327,18 @@ Migrations:
 - 20261016170029_AddAppointments;
 - 20261016190726_AddAppointmentOverlapProtection.
 
-Histórico de transições e operações de reagendamento permanecem
-para próximas etapas. Cancelamento está implementado desde 19/10/2026.
+Reagendamento está implementado desde 20/10/2026.
+Reutiliza appointments, appointment_items e idempotency_records,
+com Operation = RescheduleAppointment, sem novas tabelas.
+Alteração do agendamento e resposta idempotente são persistidas
+na mesma transação.
+
+A migration 20261020140355_AddAppointmentReschedulingConcurrency
+registra os novos tokens de concorrência no modelo do EF Core.
+Up e Down não contêm operações de alteração do schema.
+
+Cancelamento está implementado desde 19/10/2026.
+Histórico de transições e publicação de eventos permanecem pendentes.
 
 ## Payment / PaymentAttempt / Refund
 Payment é obrigação financeira lógica; PaymentAttempt é cada tentativa concreta no provider; Refund integral no MVP referencia Payment e PaymentAttempt confirmado. `Payment.Amount == Appointment.TotalPriceSnapshot` para SERVICE.
