@@ -3,6 +3,7 @@ using VirtualEmployee.Application.Appointments.CreateAppointment;
 using VirtualEmployee.Application.Appointments.GetAppointmentById;
 using VirtualEmployee.Application.Appointments.GetAppointments;
 using VirtualEmployee.Application.Appointments.CancelAppointment;
+using VirtualEmployee.Application.Appointments.RescheduleAppointment;
 using VirtualEmployee.Domain.Scheduling;
 namespace VirtualEmployee.Api.Endpoints;
 
@@ -240,6 +241,93 @@ public static class AppointmentsEndpoints
                             StatusCodes.Status500InternalServerError)
                 };
             });
+
+        group.MapPost(
+            "/{appointmentId:guid}/reschedule",
+            async (
+                Guid appointmentId,
+                RescheduleAppointmentRequest request,
+                [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
+                RescheduleAppointmentHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                var result = await handler.HandleAsync(
+                    new RescheduleAppointmentCommand(
+                        appointmentId,
+                        request.LocationId,
+                        request.ProfessionalId,
+                        request.StartsAt,
+                        idempotencyKey ?? string.Empty),
+                    cancellationToken);
+
+                if (result.IsSuccess && result.Response is { } response)
+                {
+                    return Results.Ok(response);
+                }
+
+                return result.Error switch
+                {
+                    RescheduleAppointmentError.InvalidRequest =>
+                        Results.BadRequest(),
+
+                    RescheduleAppointmentError.AppointmentNotFound or
+                    RescheduleAppointmentError.LocationNotFound or
+                    RescheduleAppointmentError.BusinessNotFound or
+                    RescheduleAppointmentError.ProfessionalNotFound or
+                    RescheduleAppointmentError.ServiceNotFound or
+                    RescheduleAppointmentError.ProfessionalLocationNotFound =>
+                        Results.NotFound(),
+
+                    RescheduleAppointmentError.InvalidState =>
+                        Conflict(
+                            "INVALID_APPOINTMENT_STATE",
+                            "The current appointment state does not allow rescheduling."),
+
+                    RescheduleAppointmentError.ReservationExpired =>
+                        Conflict(
+                            "RESERVATION_EXPIRED",
+                            "The reservation has expired."),
+
+                    RescheduleAppointmentError.SlotUnavailable =>
+                        Conflict(
+                            "SLOT_UNAVAILABLE",
+                            "The requested slot is unavailable."),
+
+                    RescheduleAppointmentError.IdempotencyConflict =>
+                        Conflict(
+                            "IDEMPOTENCY_CONFLICT",
+                            "The key was already used with different content."),
+
+                    RescheduleAppointmentError.ConcurrencyConflict =>
+                        Conflict(
+                            "CONCURRENCY_CONFLICT",
+                            "The appointment was modified by another operation."),
+
+                    RescheduleAppointmentError.InactiveLocation or
+                    RescheduleAppointmentError.InactiveBusiness or
+                    RescheduleAppointmentError.InactiveProfessional or
+                    RescheduleAppointmentError.LocationFromAnotherBusiness or
+                    RescheduleAppointmentError.ProfessionalFromAnotherBusiness or
+                    RescheduleAppointmentError.InactiveProfessionalLocation or
+                    RescheduleAppointmentError.InvalidServices or
+                    RescheduleAppointmentError.ServicesNotOffered or
+                    RescheduleAppointmentError.ProfessionalNotEligible =>
+                        Conflict(
+                            "APPOINTMENT_CONFLICT",
+                            "Resources are incompatible with the appointment."),
+
+                    RescheduleAppointmentError.InvalidTimezone =>
+                        Results.Problem(
+                            title: "Appointment configuration error",
+                            statusCode:
+                                StatusCodes.Status500InternalServerError),
+
+                    _ => Results.Problem(
+                        title: "Appointment rescheduling failed",
+                        statusCode:
+                            StatusCodes.Status500InternalServerError)
+                };
+            });
         return app;
     }
 
@@ -265,4 +353,9 @@ public static class AppointmentsEndpoints
     public sealed record CancelAppointmentRequest(
         string? CancelledBy,
         string? Reason);
+
+    public sealed record RescheduleAppointmentRequest(
+        Guid LocationId,
+        Guid ProfessionalId,
+        DateTimeOffset StartsAt);
 }

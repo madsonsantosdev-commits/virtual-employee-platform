@@ -89,8 +89,10 @@ public static class AvailabilitySlotsEndpoints
                 "todos os serviços solicitados, usando a agenda semanal " +
                 "e a timezone da unidade. COMBO exige habilitação explícita " +
                 "e utiliza sua própria duração. Retorna instantes UTC e " +
-                "exclui inícios que já passaram. Esta entrega ainda não " +
-                "considera ScheduleBlocks ou Appointments. " +
+                "exclui inícios que já passaram, ScheduleBlocks ativos " +
+                "e sobreposições com Appointments que ocupam agenda. " +
+                "A ocupação do profissional considera também outras " +
+                "unidades do mesmo tenant. Consultar slots não reserva horário. " +
                 "O header X-Tenant-Id é temporário para desenvolvimento.")
             .Produces<SearchAvailableSlotsResponse>(
                 StatusCodes.Status200OK)

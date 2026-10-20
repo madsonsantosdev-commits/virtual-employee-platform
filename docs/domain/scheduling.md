@@ -204,7 +204,8 @@ e revalidação completa.
 
 Replay devolve a resposta original e não altera o estado atual.
 Cancelamento foi implementado em 19/10/2026.
-Reagendamento e confirmação por pagamento permanecem pendentes.
+Reagendamento foi implementado em 20/10/2026.
+Confirmação por pagamento permanece pendente.
 
 ### Listagem de Appointments — 19/10/2026
 
@@ -254,15 +255,54 @@ EXPIRED não reativa Appointment; deve iniciar compensação/refund integral.
 Essa integração ainda não está implementada.
 
 ## 12. Reagendamento
-Mantém AppointmentId e AppointmentItems quando composição comercial não muda.
 
-Reagendamento pode alterar horário, Professional e/ou Location, desde que:
-- Services estejam disponíveis na nova Location;
-- Professional trabalhe na nova Location;
-- Professional execute todos os Services;
-- agenda e concorrência sejam revalidadas.
+Implementado em 20/10/2026.
 
-Se mudança de Location implicar diferença de preço no futuro, o MVP não faz cobrança complementar/refund parcial; deve usar fluxo controlado de cancelamento/novo booking.
+Permite alterar horário, Professional e Location dentro do mesmo Business.
+Preserva AppointmentId, CustomerId, AppointmentItems, snapshots comerciais,
+CreatedAt e estado operacional. Não cria estado permanente RESCHEDULED.
+
+O backend revalida:
+- Location e Business ativos;
+- Services ativos e disponíveis na unidade de destino;
+- Professional ativo e pertencente ao Business original;
+- ProfessionalLocation ativo e habilitação para todos os Services;
+- AvailabilityRules, grade de início e timezone da unidade;
+- ScheduleBlocks e conflitos de Appointment em todas as unidades
+  do profissional dentro do tenant.
+
+O próprio Appointment é excluído da consulta de sobreposição.
+A duração persistida determina o novo EndsAt; preço e duração não
+são recalculados pelo catálogo atual.
+
+Somente estados que ocupam agenda permitem reagendamento.
+O atendimento original não pode ter começado e o novo início deve
+estar no futuro. PENDING também exige reserva vigente.
+
+ReservationExpiresAt nunca é estendido. Se o novo início anteceder
+a expiração vigente, o prazo é reduzido para esse início.
+Uma tentativa sobre PENDING vencido materializa EXPIRED e retorna
+RESERVATION_EXPIRED, sem registrar sucesso idempotente de reagendamento.
+
+Alteração e resposta idempotente são persistidas na mesma transação.
+O commit libera o intervalo anterior e ocupa o novo.
+Conflito de destino preserva o agendamento original.
+
+Idempotência usa TenantId + Operation RescheduleAppointment + IdempotencyKey.
+O conteúdo considera AppointmentId, LocationId, ProfessionalId e início UTC.
+Replay retorna a resposta original sem reaplicar a mudança.
+Reutilizar a chave com outro conteúdo retorna IDEMPOTENCY_CONFLICT.
+
+Atualizações concorrentes são protegidas pelos tokens do EF Core;
+a exclusion constraint do PostgreSQL protege contra sobreposição.
+Uma solicitação sem mudança efetiva preserva UpdatedAt, revalida
+as condições e registra sua resposta idempotente.
+
+Histórico de transições e publicação de eventos permanecem pendentes.
+O fluxo assistido da seção seguinte também permanece previsto.
+
+Se uma evolução futura exigir diferença comercial, o MVP usará
+cancelamento e novo booking, sem cobrança complementar ou refund parcial.
 
 ## 13. Imprevistos e reagendamento assistido
 ```text

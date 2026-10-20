@@ -476,22 +476,27 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .HasColumnName("customer_id");
 
                     b.Property<DateTimeOffset>("EndsAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("ends_at");
 
                     b.Property<Guid>("LocationId")
+                        .IsConcurrencyToken()
                         .HasColumnType("uuid")
                         .HasColumnName("location_id");
 
                     b.Property<Guid>("ProfessionalId")
+                        .IsConcurrencyToken()
                         .HasColumnType("uuid")
                         .HasColumnName("professional_id");
 
                     b.Property<DateTimeOffset?>("ReservationExpiresAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("reservation_expires_at");
 
                     b.Property<DateTimeOffset>("StartsAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("starts_at");
 

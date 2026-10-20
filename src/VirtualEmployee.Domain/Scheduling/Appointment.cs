@@ -170,7 +170,10 @@ public sealed class Appointment : ITenantScoped
         return true;
     }
 
-    public bool Cancel(AppointmentStatus cancellationStatus,string reason, DateTimeOffset now)
+    public bool Cancel(
+        AppointmentStatus cancellationStatus,
+        string reason,
+        DateTimeOffset now)
     {
         if (cancellationStatus is not
             (AppointmentStatus.CancelledByClient or
@@ -232,7 +235,82 @@ public sealed class Appointment : ITenantScoped
 
         return true;
     }
+    public bool Reschedule(
+        Guid locationId,
+        Guid professionalId,
+        DateTimeOffset startsAt,
+        DateTimeOffset now)
+    {
+        ValidateIdentity(locationId, nameof(locationId));
+        ValidateIdentity(professionalId, nameof(professionalId));
 
+        var utcNow = now.ToUniversalTime();
+        var utcStartsAt = startsAt.ToUniversalTime();
+
+        if (utcNow < UpdatedAt)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(now),
+                "Rescheduling cannot precede the last update.");
+        }
+
+        if (!OccupiesSchedule)
+        {
+            throw new InvalidOperationException(
+                "The current appointment status does not allow rescheduling.");
+        }
+
+        if (StartsAt <= utcNow)
+        {
+            throw new InvalidOperationException(
+                "An appointment that has started cannot be rescheduled.");
+        }
+
+        if (utcStartsAt <= utcNow)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(startsAt),
+                "The new appointment start must be in the future.");
+        }
+
+        var newExpiresAt = ReservationExpiresAt;
+
+        if (Status == AppointmentStatus.Pending)
+        {
+            if (ReservationExpiresAt is not { } expiresAt ||
+                utcNow >= expiresAt)
+            {
+                throw new InvalidOperationException(
+                    "An overdue pending reservation must expire.");
+            }
+
+            if (utcStartsAt < expiresAt)
+            {
+                newExpiresAt = utcStartsAt;
+            }
+        }
+
+        // Calcula antes de alterar o agregado: overflow não deixa
+        // unidade, profissional ou início parcialmente modificados.
+        var newEndsAt = utcStartsAt.AddMinutes(
+            TotalDurationMinutesSnapshot);
+
+        if (LocationId == locationId &&
+            ProfessionalId == professionalId &&
+            StartsAt == utcStartsAt)
+        {
+            return false;
+        }
+
+        LocationId = locationId;
+        ProfessionalId = professionalId;
+        StartsAt = utcStartsAt;
+        EndsAt = newEndsAt;
+        ReservationExpiresAt = newExpiresAt;
+        UpdatedAt = utcNow;
+
+        return true;
+    }
     private static void ValidateIdentity(Guid value, string parameterName)
     {
         if (value == Guid.Empty)
@@ -241,5 +319,6 @@ public sealed class Appointment : ITenantScoped
                 "Appointment identity cannot be empty.",
                 parameterName);
         }
+
     }
 }

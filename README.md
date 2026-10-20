@@ -100,7 +100,7 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] Listagem paginada de Appointments com filtros e isolamento por tenant
 - [x] Cancelamento idempotente de Appointments com motivo e auditoria
 - [x] Liberação da agenda após cancelamento persistido
-- [ ] Reagendamento de Appointments
+- [x] Reagendamento idempotente de Appointments com preservação dos snapshots
 - [ ] Confirmação de Appointments por pagamento integral
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -109,27 +109,28 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 19/10/2026
+### Última validação local — 20/10/2026
 
-- Suíte completa: 893 testes passaram, sem falhas ou ignorados.
-- Cancelamento: 25 testes de domínio, 24 do handler, 20 de persistência/serviço e 23 HTTP.
-- Validadas origens CLIENT e BUSINESS, motivo obrigatório e limite de 500 caracteres após Trim.
-- Validados auditoria em UTC, preservação dos snapshots e liberação do intervalo para nova reserva.
-- Idempotência validada com replay, normalização do motivo e conflito de conteúdo.
-- Concorrência validada com mesma chave, chaves diferentes e disputa com expiração.
-- Validados isolamento entre tenants, integridade no PostgreSQL e expiração no limite do prazo.
-- Validação manual: cancelamento 200, replay 200 com mesmo corpo e consulta com CANCELLED_BY_CLIENT.
-- Motivo com acentos preservado; preço de 65,00 e duração de 45 minutos mantidos.
+- Suíte completa: 974 testes passaram, sem falhas ou ignorados.
+- Reagendamento validado no domínio, Application, PostgreSQL e endpoints HTTP.
+- Validados preservação dos itens, snapshots comerciais e estado operacional.
+- Validados elegibilidade, agenda, grade de horários, bloqueios e conflitos com outros agendamentos.
+- Idempotência validada com replay, offsets equivalentes e conflito de conteúdo.
+- Validados isolamento entre tenants e proteção contra atualizações concorrentes.
+- Reservas PENDING não recebem extensão do prazo ao reagendar.
+- Validação manual: criação 201, reagendamento 200, replay 200 com corpo idêntico e consulta 200.
+- Atendimento movido de 09h para 10h de São Paulo, mantendo preço de 65,00, duração de 45 minutos e prazo da reserva.
+- Busca de slots confirmou liberação do horário original e ocupação do novo intervalo.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
 de elegibilidade, AvailabilityRules, busca de slots, ScheduleBlocks,
-Customers, Booking Quote, criação e listagem de Appointments estão
-integrados à `main`.
+Customers, Booking Quote, criação, listagem e cancelamento de Appointments
+estão integrados à `main`.
 A organização dos testes em regiões Facts, Theories e Helpers também
 está integrada.
 
-O cancelamento de Appointments está implementado na branch
-`feature/appointments-cancel`, com validação automatizada e manual
+O reagendamento está implementado na branch
+`feature/appointments-reschedule`, com validação automatizada e manual
 concluída e integração à `main` pendente.
 
 A criação revalida recursos e disponibilidade, calcula os valores no
@@ -146,9 +147,20 @@ na mesma transação. O intervalo é liberado quando a transação confirma.
 Itens e snapshots comerciais são preservados.
 O replay de cancelamento devolve a resposta original.
 
-A tentativa de cancelar uma reserva PENDING vencida materializa EXPIRED
-e retorna conflito, sem registrar cancelamento.
-A disputa entre cancelamento e expiração respeita o token de concorrência.
+O reagendamento permite alterar horário, unidade e profissional dentro
+do mesmo Business, após revalidar recursos e disponibilidade.
+Preserva AppointmentId, Customer, itens, snapshots e estado operacional.
+A duração persistida determina o novo término, sem recalcular os valores
+comerciais pelo catálogo atual.
+
+A alteração e a resposta idempotente são persistidas na mesma transação.
+O commit libera o intervalo anterior e ocupa o novo.
+O replay devolve a resposta original, sem reaplicar a mudança.
+
+Reservas PENDING exigem prazo vigente. O reagendamento não estende
+a reserva e reduz seu prazo quando o novo início antecede a expiração.
+Tentativas de cancelar ou reagendar PENDING vencido materializam EXPIRED
+e retornam conflito, sem registrar sucesso idempotente da operação.
 
 A busca de slots considera agenda semanal, elegibilidade, bloqueios
 e agendamentos nos estados que ocupam agenda, inclusive em outras
@@ -160,8 +172,8 @@ Quando habilitado, o intervalo padrão entre ciclos é de 30 segundos.
 Reservas PENDING continuam ocupando agenda até a expiração ou
 o cancelamento serem persistidos.
 
-Permanecem pendentes reagendamento, histórico de transições e integração
-com pagamentos, incluindo confirmação por pagamento integral e refunds.
+Permanecem pendentes histórico de transições e integração com pagamentos,
+incluindo confirmação por pagamento integral e refunds.
 O cancelamento atual não solicita nem confirma estorno.
-A avaliação de impacto dos bloqueios sobre Appointments também permanece
-pendente.
+A avaliação de impacto dos bloqueios sobre Appointments e o fluxo
+de reagendamento assistido também permanecem pendentes.

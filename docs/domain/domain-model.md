@@ -222,8 +222,28 @@ O replay preserva a resposta e a auditoria originais.
 PENDING vencido segue o fluxo de expiração, sem registrar cancelamento.
 Concorrência com outras atualizações é protegida pelo token de Status.
 
-Histórico de transições, reagendamento e integração com pagamentos
-e refunds permanecem previstos para próximas etapas.
+### Reagendamento — implementação em 20/10/2026
+
+Permite alterar Location, Professional e início dentro do mesmo Business,
+após revalidar recursos, elegibilidade e disponibilidade.
+Preserva identidade, Customer, itens, snapshots e estado operacional.
+EndsAt é calculado com a duração persistida, sem recotação pelo catálogo.
+
+PENDING exige prazo vigente. O reagendamento nunca estende a expiração
+e a reduz quando o novo início antecede o prazo atual.
+O atendimento original ainda não pode ter começado.
+
+Alteração e resposta idempotente são persistidas atomicamente.
+Replay preserva a resposta original sem reaplicar a mudança.
+O intervalo anterior é liberado após o commit.
+
+Além de TenantId e Status, LocationId, ProfessionalId, StartsAt,
+EndsAt e ReservationExpiresAt são tokens de concorrência no EF Core.
+A exclusion constraint continua protegendo a ocupação do profissional
+em todas as unidades do tenant.
+
+Histórico de transições, publicação de eventos, reagendamento assistido
+e integração com pagamentos e refunds permanecem para próximas etapas.
 
 ### Regra de unidade
 Todo Appointment ocorre em exatamente uma Location.

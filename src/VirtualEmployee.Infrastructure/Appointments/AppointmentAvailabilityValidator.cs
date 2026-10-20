@@ -16,27 +16,51 @@ internal sealed class AppointmentAvailabilityValidator
         _dbContext = dbContext;
     }
 
-    public async Task<CreateAppointmentError> ValidateAsync(
+    public Task<CreateAppointmentError> ValidateAsync(
         CreateAppointmentCommand command,
         AppointmentResourceValidation resources,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        if (command.StartsAt <= now)
-        {
-            return CreateAppointmentError.SlotUnavailable;
-        }
-
         var quote = resources.Quote
             ?? throw new InvalidOperationException(
                 "Validated resources must contain a quote.");
+
+        return ValidateAsync(
+            command.LocationId,
+            command.ProfessionalId,
+            command.ServiceIds,
+            resources.BusinessId,
+            resources.Timezone!,
+            command.StartsAt,
+            quote.TotalDurationMinutes,
+            now,
+            null,
+            cancellationToken);
+    }
+
+    public async Task<CreateAppointmentError> ValidateAsync(
+        Guid locationId,
+        Guid professionalId,
+        IReadOnlyList<Guid> serviceIds,
+        Guid businessId,
+        string timezoneId,
+        DateTimeOffset requestedStartsAt,
+        int durationMinutes,
+        DateTimeOffset now,
+        Guid? excludedAppointmentId,
+        CancellationToken cancellationToken)
+    {
+        if (requestedStartsAt <= now || durationMinutes <= 0)
+        {
+            return CreateAppointmentError.SlotUnavailable;
+        }
 
         TimeZoneInfo timezone;
 
         try
         {
-            timezone = TimeZoneInfo.FindSystemTimeZoneById(
-                resources.Timezone!);
+            timezone = TimeZoneInfo.FindSystemTimeZoneById(timezoneId);
         }
         catch (TimeZoneNotFoundException)
         {
@@ -48,7 +72,7 @@ internal sealed class AppointmentAvailabilityValidator
         }
 
         var localStart = TimeZoneInfo.ConvertTime(
-            command.StartsAt,
+            requestedStartsAt,
             timezone);
 
         var date = DateOnly.FromDateTime(localStart.DateTime);
@@ -56,17 +80,17 @@ internal sealed class AppointmentAvailabilityValidator
         var business = await _dbContext.Businesses
             .AsNoTracking()
             .SingleAsync(
-                entity => entity.Id == resources.BusinessId,
+                entity => entity.Id == businessId,
                 cancellationToken);
 
         var readService = new AvailabilitySlotReadService(_dbContext);
 
         var windows = await readService.GetEligibleWindowsAsync(
-            command.LocationId,
-            resources.BusinessId,
-            command.ServiceIds,
+            locationId,
+            businessId,
+            serviceIds,
             date.DayOfWeek,
-            command.ProfessionalId,
+            professionalId,
             cancellationToken);
 
         LocalSlot[] localSlots;
@@ -77,7 +101,7 @@ internal sealed class AppointmentAvailabilityValidator
                     date,
                     windows.Select(window =>
                         (window.StartTime, window.EndTime)),
-                    quote.TotalDurationMinutes,
+                    durationMinutes,
                     business.SlotIntervalMinutes)
                 .ToArray();
         }
@@ -91,12 +115,12 @@ internal sealed class AppointmentAvailabilityValidator
         foreach (var localSlot in localSlots)
         {
             var candidate = SlotTimeConverter.TryConvert(
-                command.ProfessionalId,
+                professionalId,
                 localSlot,
                 timezone);
 
             if (candidate is not null &&
-                candidate.StartsAt == command.StartsAt)
+                candidate.StartsAt == requestedStartsAt)
             {
                 selectedSlot = candidate;
                 break;
@@ -112,37 +136,42 @@ internal sealed class AppointmentAvailabilityValidator
         var endsAt = selectedSlot.EndsAt;
 
         var blocks = await readService.GetBlocksAsync(
-            command.LocationId,
+            locationId,
             startsAt,
             endsAt,
-            command.ProfessionalId,
+            professionalId,
             cancellationToken);
 
         if (blocks.Any(block =>
                 block.IsActive &&
-                block.LocationId == command.LocationId &&
+                block.LocationId == locationId &&
                 (block.ProfessionalId is null ||
-                 block.ProfessionalId == command.ProfessionalId) &&
+                 block.ProfessionalId == professionalId) &&
                 block.StartsAt < endsAt &&
                 startsAt < block.EndsAt))
         {
             return CreateAppointmentError.SlotUnavailable;
         }
 
-        // O profissional ocupa agenda globalmente dentro do tenant,
-        // inclusive quando o outro atendimento ocorre em outra unidade.
-        var occupied = await _dbContext.Appointments
+        var appointments = _dbContext.Appointments
             .AsNoTracking()
-            .AnyAsync(
-                entity =>
-                    entity.ProfessionalId == command.ProfessionalId &&
-                    (entity.Status == AppointmentStatus.Pending ||
-                     entity.Status == AppointmentStatus.Confirmed ||
-                     entity.Status == AppointmentStatus.ConfirmedByClient ||
-                     entity.Status == AppointmentStatus.RescheduleRequested) &&
-                    entity.StartsAt < endsAt &&
-                    startsAt < entity.EndsAt,
-                cancellationToken);
+            .Where(entity =>
+                entity.ProfessionalId == professionalId &&
+                (entity.Status == AppointmentStatus.Pending ||
+                 entity.Status == AppointmentStatus.Confirmed ||
+                 entity.Status == AppointmentStatus.ConfirmedByClient ||
+                 entity.Status == AppointmentStatus.RescheduleRequested) &&
+                entity.StartsAt < endsAt &&
+                startsAt < entity.EndsAt);
+
+        if (excludedAppointmentId is Guid appointmentId)
+        {
+            appointments = appointments.Where(
+                entity => entity.Id != appointmentId);
+        }
+
+        // Considera o profissional em todas as unidades do tenant.
+        var occupied = await appointments.AnyAsync(cancellationToken);
 
         return occupied
             ? CreateAppointmentError.SlotUnavailable
