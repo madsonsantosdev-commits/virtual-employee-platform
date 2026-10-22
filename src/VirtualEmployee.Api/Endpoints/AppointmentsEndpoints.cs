@@ -4,6 +4,7 @@ using VirtualEmployee.Application.Appointments.GetAppointmentById;
 using VirtualEmployee.Application.Appointments.GetAppointments;
 using VirtualEmployee.Application.Appointments.CancelAppointment;
 using VirtualEmployee.Application.Appointments.RescheduleAppointment;
+using VirtualEmployee.Application.Appointments.GetAppointmentHistory;
 using VirtualEmployee.Domain.Scheduling;
 namespace VirtualEmployee.Api.Endpoints;
 
@@ -328,6 +329,55 @@ public static class AppointmentsEndpoints
                             StatusCodes.Status500InternalServerError)
                 };
             });
+
+        group.MapGet(
+            "/{appointmentId:guid}/history",
+            async (
+                Guid appointmentId,
+                int? page,
+                int? pageSize,
+                GetAppointmentHistoryHandler handler,
+                CancellationToken cancellationToken) =>
+            {
+                var result = await handler.HandleAsync(
+                    new GetAppointmentHistoryQuery(
+                        appointmentId,
+                        page ?? 1,
+                        pageSize ?? 50),
+                    cancellationToken);
+
+                if (result.IsSuccess && result.Response is { } response)
+                {
+                    return Results.Ok(response);
+                }
+
+                return result.Error switch
+                {
+                    GetAppointmentHistoryError.InvalidRequest =>
+                        Results.BadRequest(),
+
+                    GetAppointmentHistoryError.AppointmentNotFound =>
+                        Results.NotFound(),
+
+                    _ => Results.Problem(
+                        title: "Appointment history query failed",
+                        statusCode:
+                            StatusCodes.Status500InternalServerError)
+                };
+            })
+            .WithName("GetAppointmentHistory")
+            .WithSummary("Consulta o histórico de um agendamento")
+            .WithDescription(
+                "Retorna uma página do histórico do agendamento no tenant " +
+                "atual, ordenada por data da alteração e ID. Inclui estados " +
+                "anterior e novo. A consulta não altera o agendamento " +
+                "nem materializa expiração. O header X-Tenant-Id é " +
+                "temporário para desenvolvimento.")
+            .Produces<GetAppointmentHistoryResponse>(
+                StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status400BadRequest)
+            .Produces(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status500InternalServerError);
         return app;
     }
 

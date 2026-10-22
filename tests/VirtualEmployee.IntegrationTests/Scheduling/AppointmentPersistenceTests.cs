@@ -36,6 +36,1230 @@ public sealed class AppointmentPersistenceTests
     #region Facts
 
     [Fact]
+    public async Task AppointmentHistory_ShouldIsolateWorkerExpirationBetweenTenants()
+    {
+        var current = new TestData();
+        var other = new TestData();
+
+        var currentAppointmentId = Guid.NewGuid();
+        var otherAppointmentId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var expiresAt = CreatedAt.AddMinutes(10);
+
+        try
+        {
+            await SeedBookableAsync(current);
+            await SeedBookableAsync(other);
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        current,
+                        currentAppointmentId,
+                        startsAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        other,
+                        otherAppointmentId,
+                        startsAt));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                var service = new AppointmentExpirationService(context);
+
+                Assert.Equal(
+                    1,
+                    await service.ExpireDueAsync(expiresAt));
+            }
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(
+                        entity => entity.Id == currentAppointmentId);
+
+                Assert.Equal(AppointmentStatus.Expired, appointment.Status);
+                Assert.Equal(expiresAt, appointment.UpdatedAt);
+
+                var history = Assert.Single(
+                    await context.AppointmentHistoryEntries
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(current.TenantId, history.TenantId);
+                Assert.Equal(currentAppointmentId, history.AppointmentId);
+                Assert.Equal(AppointmentHistoryType.Expired, history.Type);
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(
+                        entity => entity.Id == otherAppointmentId);
+
+                Assert.Equal(AppointmentStatus.Pending, appointment.Status);
+                Assert.Equal(CreatedAt, appointment.UpdatedAt);
+                Assert.Equal(expiresAt, appointment.ReservationExpiresAt);
+
+                Assert.False(
+                    await context.AppointmentHistoryEntries.AnyAsync());
+            }
+
+            // O segundo tenant só é alterado pelo seu próprio ciclo.
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var service = new AppointmentExpirationService(context);
+
+                Assert.Equal(
+                    1,
+                    await service.ExpireDueAsync(expiresAt));
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(
+                        entity => entity.Id == otherAppointmentId);
+
+                Assert.Equal(AppointmentStatus.Expired, appointment.Status);
+
+                var history = Assert.Single(
+                    await context.AppointmentHistoryEntries
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(other.TenantId, history.TenantId);
+                Assert.Equal(otherAppointmentId, history.AppointmentId);
+                Assert.Equal(AppointmentHistoryType.Expired, history.Type);
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldRecordConcurrentWorkerExpirationOnlyOnce()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var expiresAt = CreatedAt.AddMinutes(10);
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            AppointmentHistoryState initialState;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    startsAt);
+
+                initialState = AppointmentHistoryState.Capture(appointment);
+
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+            }
+
+            await using var firstContext = CreateContext(data.TenantId);
+            await using var secondContext = CreateContext(data.TenantId);
+
+            var firstService = new AppointmentExpirationService(firstContext);
+            var secondService = new AppointmentExpirationService(secondContext);
+
+            var start = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            using var timeout = new CancellationTokenSource(
+                TimeSpan.FromSeconds(30));
+
+            async Task<int> ExecuteAsync(
+                AppointmentExpirationService service)
+            {
+                await start.Task.WaitAsync(timeout.Token);
+
+                return await service.ExpireDueAsync(
+                    expiresAt,
+                    timeout.Token);
+            }
+
+            var firstTask = ExecuteAsync(firstService);
+            var secondTask = ExecuteAsync(secondService);
+
+            start.SetResult(true);
+
+            var results = await Task.WhenAll(firstTask, secondTask);
+
+            Assert.Equal(new[] { 0, 1 }, results.OrderBy(value => value).ToArray());
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.AppointmentId == appointmentId)
+                    .ToListAsync();
+
+                var expiration = Assert.Single(entries);
+
+                Assert.Equal(
+                    AppointmentHistoryType.Expired,
+                    expiration.Type);
+                Assert.Equal(initialState, expiration.Before);
+                Assert.Equal(
+                    initialState with { Status = AppointmentStatus.Expired },
+                    expiration.After);
+                Assert.Equal(expiresAt, expiration.OccurredAt);
+                Assert.Null(expiration.Reason);
+
+                Assert.Equal(AppointmentStatus.Expired, appointment.Status);
+                Assert.Equal(expiresAt, appointment.UpdatedAt);
+                Assert.Equal(startsAt, appointment.StartsAt);
+                Assert.Equal(startsAt.AddMinutes(45), appointment.EndsAt);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldRecordWorkerExpirationOnlyOnce()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var expiresAt = CreatedAt.AddMinutes(10);
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            AppointmentHistoryState initialState;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    startsAt);
+
+                initialState = AppointmentHistoryState.Capture(appointment);
+
+                context.Appointments.Add(appointment);
+
+                context.AppointmentHistoryEntries.Add(
+                    new AppointmentHistoryEntry(
+                        Guid.NewGuid(),
+                        data.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Created,
+                        CreatedAt,
+                        null,
+                        initialState));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new AppointmentExpirationService(context);
+
+                var count = await service.ExpireDueAsync(
+                    expiresAt.AddTicks(-10));
+
+                Assert.Equal(0, count);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new AppointmentExpirationService(context);
+
+                var count = await service.ExpireDueAsync(expiresAt);
+
+                Assert.Equal(1, count);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new AppointmentExpirationService(context);
+
+                var count = await service.ExpireDueAsync(
+                    expiresAt.AddMinutes(1));
+
+                Assert.Equal(0, count);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .Include(entity => entity.Items)
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.AppointmentId == appointmentId)
+                    .ToListAsync();
+
+                Assert.Equal(2, entries.Count);
+
+                var creation = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Created);
+
+                var expiration = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Expired);
+
+                Assert.Equal(initialState, creation.After);
+                Assert.NotNull(expiration.Before);
+                Assert.Equal(initialState, expiration.Before);
+
+                Assert.Equal(
+                    initialState with { Status = AppointmentStatus.Expired },
+                    expiration.After);
+
+                Assert.Equal(
+                    AppointmentHistoryState.Capture(appointment),
+                    expiration.After);
+
+                Assert.Equal(data.TenantId, expiration.TenantId);
+                Assert.Equal(appointmentId, expiration.AppointmentId);
+                Assert.Equal(expiresAt, expiration.OccurredAt);
+                Assert.Equal(TimeSpan.Zero, expiration.OccurredAt.Offset);
+                Assert.Equal(TimeSpan.Zero, expiration.After.StartsAt.Offset);
+                Assert.Equal(TimeSpan.Zero, expiration.After.EndsAt.Offset);
+                Assert.Null(expiration.Reason);
+
+                Assert.Equal(AppointmentStatus.Expired, appointment.Status);
+                Assert.Equal(expiresAt, appointment.UpdatedAt);
+                Assert.Equal(expiresAt, appointment.ReservationExpiresAt);
+                Assert.Equal(startsAt, appointment.StartsAt);
+                Assert.Equal(startsAt.AddMinutes(45), appointment.EndsAt);
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+                Assert.Equal(45, appointment.TotalDurationMinutesSnapshot);
+                Assert.Single(appointment.Items);
+
+                Assert.False(
+                    await context.IdempotencyRecords.AnyAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldRecordExpirationWhenReschedulingIsOverdue()
+    {
+        var data = new TestData();
+
+        var originalStart = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var expiresAt = CreatedAt.AddMinutes(10);
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            Guid appointmentId;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var creation = await CreateHandler(context).HandleAsync(
+                    new CreateAppointmentCommand(
+                        data.CustomerId,
+                        data.LocationId,
+                        data.ProfessionalId,
+                        new[] { data.ServiceId },
+                        originalStart,
+                        Guid.NewGuid().ToString()));
+
+                Assert.True(
+                    creation.IsSuccess,
+                    $"Criação falhou: {creation.Error}");
+
+                Assert.NotNull(creation.Response);
+                appointmentId = creation.Response.Id;
+            }
+
+            var command = new RescheduleAppointmentCommand(
+                appointmentId,
+                data.LocationId,
+                data.ProfessionalId,
+                originalStart.AddHours(1),
+                Guid.NewGuid().ToString());
+
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                await using var context = CreateContext(data.TenantId);
+
+                var handler = new RescheduleAppointmentHandler(
+                    new AppointmentReschedulingService(
+                        context,
+                        new FixedTimeProvider(
+                            expiresAt.AddSeconds(attempt))));
+
+                var result = await handler.HandleAsync(command);
+
+                Assert.Equal(
+                    RescheduleAppointmentError.ReservationExpired,
+                    result.Error);
+
+                Assert.Null(result.Response);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.AppointmentId == appointmentId)
+                    .ToListAsync();
+
+                Assert.Equal(2, entries.Count);
+
+                var creation = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Created);
+
+                var expiration = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Expired);
+
+                Assert.NotNull(expiration.Before);
+                Assert.Equal(creation.After, expiration.Before);
+                Assert.Equal(
+                    AppointmentStatus.Pending,
+                    expiration.Before.Status);
+                Assert.Equal(
+                    AppointmentStatus.Expired,
+                    expiration.After.Status);
+
+                Assert.Equal(
+                    AppointmentHistoryState.Capture(appointment),
+                    expiration.After);
+
+                Assert.Equal(expiresAt, expiration.OccurredAt);
+                Assert.Null(expiration.Reason);
+
+                Assert.Equal(originalStart, appointment.StartsAt);
+                Assert.Equal(
+                    originalStart.AddMinutes(45),
+                    appointment.EndsAt);
+                Assert.Equal(data.LocationId, appointment.LocationId);
+                Assert.Equal(
+                    data.ProfessionalId,
+                    appointment.ProfessionalId);
+                Assert.Equal(expiresAt, appointment.UpdatedAt);
+                Assert.Equal(expiresAt, appointment.ReservationExpiresAt);
+
+                Assert.DoesNotContain(
+                    entries,
+                    entry => entry.Type ==
+                        AppointmentHistoryType.Rescheduled);
+
+                Assert.False(
+                    await context.IdempotencyRecords.AnyAsync(
+                        record => record.Operation ==
+                            "RescheduleAppointment"));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldRecordReschedulingOnlyOnce()
+    {
+        var data = new TestData();
+
+        var originalStart = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var newStart = originalStart.AddHours(1);
+        var now = CreatedAt.AddMinutes(5);
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            Guid appointmentId;
+            AppointmentHistoryState initialState;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var creation = await CreateHandler(context).HandleAsync(
+                    new CreateAppointmentCommand(
+                        data.CustomerId,
+                        data.LocationId,
+                        data.ProfessionalId,
+                        new[] { data.ServiceId },
+                        originalStart,
+                        Guid.NewGuid().ToString()));
+
+                Assert.True(
+                    creation.IsSuccess,
+                    $"Criação falhou: {creation.Error}");
+
+                Assert.NotNull(creation.Response);
+                appointmentId = creation.Response.Id;
+
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                initialState = AppointmentHistoryState.Capture(appointment);
+            }
+
+            var command = new RescheduleAppointmentCommand(
+                appointmentId,
+                data.LocationId,
+                data.ProfessionalId,
+                newStart,
+                Guid.NewGuid().ToString());
+
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                await using var context = CreateContext(data.TenantId);
+
+                var handler = new RescheduleAppointmentHandler(
+                    new AppointmentReschedulingService(
+                        context,
+                        new FixedTimeProvider(now.AddSeconds(attempt))));
+
+                var request = attempt == 2
+                    ? command with
+                    {
+                        IdempotencyKey = Guid.NewGuid().ToString()
+                    }
+                    : command;
+
+                var result = await handler.HandleAsync(request);
+
+                Assert.True(
+                    result.IsSuccess,
+                    $"Tentativa {attempt}: {result.Error}");
+
+                Assert.NotNull(result.Response);
+                Assert.Equal(appointmentId, result.Response.Id);
+                Assert.Equal(newStart, result.Response.StartsAt);
+                Assert.Equal(newStart.AddMinutes(45), result.Response.EndsAt);
+                Assert.Equal(now, result.Response.UpdatedAt);
+                Assert.Equal(
+                    initialState.ReservationExpiresAt,
+                    result.Response.ReservationExpiresAt);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .Include(entity => entity.Items)
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.AppointmentId == appointmentId)
+                    .ToListAsync();
+
+                Assert.Equal(2, entries.Count);
+
+                var creation = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Created);
+
+                var rescheduling = Assert.Single(
+                    entries,
+                    entry => entry.Type ==
+                        AppointmentHistoryType.Rescheduled);
+
+                Assert.Equal(initialState, creation.After);
+                Assert.NotNull(rescheduling.Before);
+                Assert.Equal(initialState, rescheduling.Before);
+
+                Assert.Equal(
+                    AppointmentHistoryState.Capture(appointment),
+                    rescheduling.After);
+
+                Assert.Equal(data.TenantId, rescheduling.TenantId);
+                Assert.Equal(now, rescheduling.OccurredAt);
+                Assert.Null(rescheduling.Reason);
+
+                Assert.Equal(
+                    originalStart,
+                    rescheduling.Before.StartsAt);
+                Assert.Equal(
+                    originalStart.AddMinutes(45),
+                    rescheduling.Before.EndsAt);
+                Assert.Equal(newStart, rescheduling.After.StartsAt);
+                Assert.Equal(
+                    newStart.AddMinutes(45),
+                    rescheduling.After.EndsAt);
+
+                Assert.Equal(
+                    rescheduling.Before.Status,
+                    rescheduling.After.Status);
+                Assert.Equal(
+                    rescheduling.Before.ReservationExpiresAt,
+                    rescheduling.After.ReservationExpiresAt);
+
+                Assert.Equal(now, appointment.UpdatedAt);
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+                Assert.Equal(45, appointment.TotalDurationMinutesSnapshot);
+                Assert.Single(appointment.Items);
+
+                Assert.Equal(
+                    2,
+                    await context.IdempotencyRecords.CountAsync(
+                        record => record.Operation ==
+                            "RescheduleAppointment"));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldRecordExpirationWhenCancellationIsOverdue()
+    {
+        var data = new TestData();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var expiresAt = CreatedAt.AddMinutes(10);
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            Guid appointmentId;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var creation = await CreateHandler(context).HandleAsync(
+                    new CreateAppointmentCommand(
+                        data.CustomerId,
+                        data.LocationId,
+                        data.ProfessionalId,
+                        new[] { data.ServiceId },
+                        startsAt,
+                        Guid.NewGuid().ToString()));
+
+                Assert.True(
+                    creation.IsSuccess,
+                    $"Criação falhou: {creation.Error}");
+
+                Assert.NotNull(creation.Response);
+                appointmentId = creation.Response.Id;
+            }
+
+            var command = new CancelAppointmentCommand(
+                appointmentId,
+                AppointmentStatus.CancelledByClient,
+                "Tentativa após o prazo",
+                Guid.NewGuid().ToString());
+
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                await using var context = CreateContext(data.TenantId);
+
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(
+                            expiresAt.AddSeconds(attempt))));
+
+                var result = await handler.HandleAsync(command);
+
+                Assert.Equal(
+                    CancelAppointmentError.ReservationExpired,
+                    result.Error);
+
+                Assert.Null(result.Response);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.AppointmentId == appointmentId)
+                    .ToListAsync();
+
+                Assert.Equal(2, entries.Count);
+
+                var creation = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Created);
+
+                var expiration = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Expired);
+
+                Assert.NotNull(expiration.Before);
+                Assert.Equal(creation.After, expiration.Before);
+
+                Assert.Equal(
+                    AppointmentStatus.Pending,
+                    expiration.Before.Status);
+
+                Assert.Equal(
+                    AppointmentStatus.Expired,
+                    expiration.After.Status);
+
+                Assert.Equal(
+                    AppointmentHistoryState.Capture(appointment),
+                    expiration.After);
+
+                Assert.Equal(expiresAt, expiration.OccurredAt);
+                Assert.Null(expiration.Reason);
+
+                Assert.Equal(
+                    expiration.Before.StartsAt,
+                    expiration.After.StartsAt);
+                Assert.Equal(
+                    expiration.Before.EndsAt,
+                    expiration.After.EndsAt);
+                Assert.Equal(
+                    expiresAt,
+                    expiration.After.ReservationExpiresAt);
+
+                Assert.Equal(AppointmentStatus.Expired, appointment.Status);
+                Assert.Equal(expiresAt, appointment.UpdatedAt);
+                Assert.Null(appointment.CancellationReason);
+                Assert.Null(appointment.CancelledAt);
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+                Assert.Equal(45, appointment.TotalDurationMinutesSnapshot);
+
+                Assert.DoesNotContain(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Cancelled);
+
+                Assert.False(
+                    await context.IdempotencyRecords.AnyAsync(
+                        record => record.Operation == "CancelAppointment"));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldRecordCreationOnlyOnceOnReplay()
+    {
+        var data = new TestData();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var command = new CreateAppointmentCommand(
+            data.CustomerId,
+            data.LocationId,
+            data.ProfessionalId,
+            new[] { data.ServiceId },
+            startsAt,
+            Guid.NewGuid().ToString());
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            Guid appointmentId;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var handler = CreateHandler(context);
+
+                var result = await handler.HandleAsync(command);
+
+                Assert.True(
+                    result.IsSuccess,
+                    $"Criação falhou: {result.Error}");
+
+                Assert.NotNull(result.Response);
+                appointmentId = result.Response.Id;
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var handler = CreateHandler(context);
+
+                var replay = await handler.HandleAsync(command);
+
+                Assert.True(
+                    replay.IsSuccess,
+                    $"Replay falhou: {replay.Error}");
+
+                Assert.NotNull(replay.Response);
+                Assert.Equal(appointmentId, replay.Response.Id);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.AppointmentId == appointmentId)
+                    .ToListAsync();
+
+                var history = Assert.Single(entries);
+
+                Assert.Equal(data.TenantId, history.TenantId);
+                Assert.Equal(appointmentId, history.AppointmentId);
+                Assert.Equal(AppointmentHistoryType.Created, history.Type);
+                Assert.Equal(appointment.CreatedAt, history.OccurredAt);
+                Assert.Null(history.Before);
+                Assert.Null(history.Reason);
+
+                Assert.Equal(
+                    AppointmentHistoryState.Capture(appointment),
+                    history.After);
+
+                Assert.Equal(1, await context.Appointments.CountAsync());
+                Assert.Equal(1, await context.AppointmentItems.CountAsync());
+
+                Assert.Equal(
+                    1,
+                    await context.IdempotencyRecords.CountAsync(
+                        record => record.Operation == "CreateAppointment"));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldRejectWritingAnotherTenantEntry()
+    {
+        var current = new TestData();
+        var other = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        try
+        {
+            await SeedBookableAsync(current);
+            await SeedBookableAsync(other);
+
+            AppointmentHistoryState state;
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    other,
+                    appointmentId,
+                    startsAt);
+
+                state = AppointmentHistoryState.Capture(appointment);
+
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                context.AppointmentHistoryEntries.Add(
+                    new AppointmentHistoryEntry(
+                        Guid.NewGuid(),
+                        other.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Created,
+                        CreatedAt,
+                        null,
+                        state));
+
+                var exception =
+                    await Assert.ThrowsAsync<InvalidOperationException>(
+                        () => context.SaveChangesAsync());
+
+                Assert.Equal(
+                    "Cross-tenant data modification is not allowed.",
+                    exception.Message);
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                Assert.False(
+                    await context.AppointmentHistoryEntries.AnyAsync());
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldRejectReferenceToAnotherTenantAppointment()
+    {
+        var current = new TestData();
+        var other = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        try
+        {
+            await SeedBookableAsync(current);
+            await SeedBookableAsync(other);
+
+            AppointmentHistoryState state;
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    other,
+                    appointmentId,
+                    startsAt);
+
+                state = AppointmentHistoryState.Capture(appointment);
+
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                // O histórico pertence ao tenant atual, mas tenta
+                // referenciar um agendamento existente em outro tenant.
+                context.AppointmentHistoryEntries.Add(
+                    new AppointmentHistoryEntry(
+                        Guid.NewGuid(),
+                        current.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Created,
+                        CreatedAt,
+                        null,
+                        state));
+
+                var exception =
+                    await Assert.ThrowsAsync<DbUpdateException>(
+                        () => context.SaveChangesAsync());
+
+                var postgresException =
+                    Assert.IsType<Npgsql.PostgresException>(
+                        exception.InnerException);
+
+                Assert.Equal(
+                    Npgsql.PostgresErrorCodes.ForeignKeyViolation,
+                    postgresException.SqlState);
+
+                Assert.Equal(
+                    "appointment_history_entries",
+                    postgresException.TableName);
+            }
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                Assert.False(
+                    await context.AppointmentHistoryEntries.AnyAsync());
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                Assert.True(
+                    await context.Appointments.AnyAsync(
+                        appointment => appointment.Id == appointmentId));
+
+                Assert.False(
+                    await context.AppointmentHistoryEntries.AnyAsync());
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldIsolateReadsBetweenTenants()
+    {
+        var current = new TestData();
+        var other = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+        var historyId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        try
+        {
+            await SeedBookableAsync(current);
+            await SeedBookableAsync(other);
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    other,
+                    appointmentId,
+                    startsAt);
+
+                context.Appointments.Add(appointment);
+
+                context.AppointmentHistoryEntries.Add(
+                    new AppointmentHistoryEntry(
+                        historyId,
+                        other.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Created,
+                        CreatedAt,
+                        null,
+                        AppointmentHistoryState.Capture(appointment)));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                Assert.False(
+                    await context.AppointmentHistoryEntries.AnyAsync());
+
+                Assert.Null(
+                    await context.AppointmentHistoryEntries
+                        .AsNoTracking()
+                        .SingleOrDefaultAsync(entry => entry.Id == historyId));
+
+                Assert.Equal(
+                    0,
+                    await context.AppointmentHistoryEntries.CountAsync(
+                        entry => entry.AppointmentId == appointmentId));
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var entry = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == historyId);
+
+                Assert.Equal(other.TenantId, entry.TenantId);
+                Assert.Equal(appointmentId, entry.AppointmentId);
+                Assert.Equal(AppointmentHistoryType.Created, entry.Type);
+                Assert.Null(entry.Before);
+                Assert.Equal(startsAt, entry.After.StartsAt);
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AppointmentHistory_ShouldPersistCreationAndReschedulingStates()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var creationHistoryId = Guid.NewGuid();
+        var reschedulingHistoryId = Guid.NewGuid();
+
+        var originalStart = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var rescheduledAt = CreatedAt.AddMinutes(5);
+        var newStart = originalStart.AddHours(1);
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            AppointmentHistoryState initialState;
+            AppointmentHistoryState rescheduledState;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    originalStart);
+
+                initialState = AppointmentHistoryState.Capture(appointment);
+
+                context.Appointments.Add(appointment);
+
+                context.AppointmentHistoryEntries.Add(
+                    new AppointmentHistoryEntry(
+                        creationHistoryId,
+                        data.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Created,
+                        CreatedAt,
+                        null,
+                        initialState));
+
+                await context.SaveChangesAsync();
+
+                Assert.True(
+                    appointment.Reschedule(
+                        data.LocationId,
+                        data.ProfessionalId,
+                        newStart,
+                        rescheduledAt));
+
+                rescheduledState =
+                    AppointmentHistoryState.Capture(appointment);
+
+                context.AppointmentHistoryEntries.Add(
+                    new AppointmentHistoryEntry(
+                        reschedulingHistoryId,
+                        data.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Rescheduled,
+                        rescheduledAt,
+                        initialState,
+                        rescheduledState));
+
+                await context.SaveChangesAsync();
+            }
+
+            // Um novo contexto garante leitura real do PostgreSQL,
+            // incluindo a desserialização dos estados em jsonb.
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.AppointmentId == appointmentId)
+                    .OrderBy(entry => entry.OccurredAt)
+                    .ThenBy(entry => entry.Id)
+                    .ToListAsync();
+
+                Assert.Equal(2, entries.Count);
+
+                var creation = entries[0];
+
+                Assert.Equal(creationHistoryId, creation.Id);
+                Assert.Equal(data.TenantId, creation.TenantId);
+                Assert.Equal(appointmentId, creation.AppointmentId);
+                Assert.Equal(AppointmentHistoryType.Created, creation.Type);
+                Assert.Equal(CreatedAt, creation.OccurredAt);
+                Assert.Null(creation.Before);
+                Assert.Equal(initialState, creation.After);
+                Assert.Null(creation.Reason);
+
+                var rescheduling = entries[1];
+
+                Assert.Equal(reschedulingHistoryId, rescheduling.Id);
+                Assert.Equal(
+                    AppointmentHistoryType.Rescheduled,
+                    rescheduling.Type);
+                Assert.Equal(rescheduledAt, rescheduling.OccurredAt);
+                Assert.Equal(initialState, rescheduling.Before);
+                Assert.Equal(rescheduledState, rescheduling.After);
+                Assert.Null(rescheduling.Reason);
+
+                Assert.Equal(originalStart, creation.After.StartsAt);
+                Assert.NotNull(rescheduling.Before);
+                Assert.Equal(originalStart, rescheduling.Before.StartsAt);
+                Assert.Equal(newStart, rescheduling.After.StartsAt);
+                Assert.Equal(
+                    newStart.AddMinutes(45),
+                    rescheduling.After.EndsAt);
+
+                var persisted = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(newStart, persisted.StartsAt);
+                Assert.Equal(
+                    initialState.ReservationExpiresAt,
+                    persisted.ReservationExpiresAt);
+                Assert.Equal(65m, persisted.TotalPriceSnapshot);
+                Assert.Equal(45, persisted.TotalDurationMinutesSnapshot);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
     public async Task AppointmentReschedulingService_WithForeignAppointment_ShouldReturnNotFound()
     {
         var current = new TestData();
@@ -2658,7 +3882,230 @@ public sealed class AppointmentPersistenceTests
 
     #region Theories
 
-        [Theory]
+    [Theory]
+    [InlineData(AppointmentStatus.CancelledByClient)]
+    [InlineData(AppointmentStatus.CancelledByBusiness)]
+    public async Task AppointmentHistory_ShouldRecordCancellationOnlyOnce(
+        AppointmentStatus cancellationStatus)
+    {
+        var data = new TestData();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var now = CreatedAt.AddMinutes(5);
+        const string reason = "Cancelamento para validar histórico";
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            Guid appointmentId;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var creation = await CreateHandler(context).HandleAsync(
+                    new CreateAppointmentCommand(
+                        data.CustomerId,
+                        data.LocationId,
+                        data.ProfessionalId,
+                        new[] { data.ServiceId },
+                        startsAt,
+                        Guid.NewGuid().ToString()));
+
+                Assert.True(
+                    creation.IsSuccess,
+                    $"Criação falhou: {creation.Error}");
+
+                Assert.NotNull(creation.Response);
+                appointmentId = creation.Response.Id;
+            }
+
+            var command = new CancelAppointmentCommand(
+                appointmentId,
+                cancellationStatus,
+                reason,
+                Guid.NewGuid().ToString());
+
+            // Cancelamento, replay e repetição com uma nova chave.
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                await using var context = CreateContext(data.TenantId);
+
+                var handler = new CancelAppointmentHandler(
+                    new AppointmentCancellationService(
+                        context,
+                        new FixedTimeProvider(now.AddSeconds(attempt))));
+
+                var request = attempt == 2
+                    ? command with
+                    {
+                        IdempotencyKey = Guid.NewGuid().ToString()
+                    }
+                    : command;
+
+                var result = await handler.HandleAsync(request);
+
+                Assert.True(
+                    result.IsSuccess,
+                    $"Tentativa {attempt}: {result.Error}");
+
+                Assert.NotNull(result.Response);
+                Assert.Equal(appointmentId, result.Response.Id);
+                Assert.Equal(reason, result.Response.CancellationReason);
+                Assert.Equal(now, result.Response.CancelledAt);
+                Assert.Equal(now, result.Response.UpdatedAt);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.AppointmentId == appointmentId)
+                    .OrderBy(entry => entry.OccurredAt)
+                    .ToListAsync();
+
+                Assert.Equal(2, entries.Count);
+
+                var creation = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Created);
+
+                var cancellation = Assert.Single(
+                    entries,
+                    entry => entry.Type == AppointmentHistoryType.Cancelled);
+
+                Assert.Null(creation.Before);
+                Assert.Equal(
+                    AppointmentStatus.Pending,
+                    creation.After.Status);
+
+                Assert.NotNull(cancellation.Before);
+                Assert.Equal(creation.After, cancellation.Before);
+                Assert.Equal(cancellationStatus, cancellation.After.Status);
+                Assert.Equal(
+                    AppointmentHistoryState.Capture(appointment),
+                    cancellation.After);
+
+                Assert.Equal(data.TenantId, cancellation.TenantId);
+                Assert.Equal(now, cancellation.OccurredAt);
+                Assert.Equal(reason, cancellation.Reason);
+
+                Assert.Equal(
+                    cancellation.Before.StartsAt,
+                    cancellation.After.StartsAt);
+                Assert.Equal(
+                    cancellation.Before.EndsAt,
+                    cancellation.After.EndsAt);
+                Assert.Equal(
+                    cancellation.Before.ReservationExpiresAt,
+                    cancellation.After.ReservationExpiresAt);
+
+                Assert.Equal(cancellationStatus, appointment.Status);
+                Assert.Equal(now, appointment.CancelledAt);
+                Assert.Equal(now, appointment.UpdatedAt);
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+                Assert.Equal(45, appointment.TotalDurationMinutesSnapshot);
+
+                // A mesma chave é replay; a nova chave ganha sua resposta,
+                // mas não gera outra alteração nem outro histórico.
+                Assert.Equal(
+                    2,
+                    await context.IdempotencyRecords.CountAsync(
+                        record => record.Operation == "CancelAppointment"));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AppointmentHistory_ShouldRejectModificationOrDeletion(
+        bool delete)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var historyId = Guid.NewGuid();
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        try
+        {
+            await SeedBookableAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    startsAt);
+
+                context.Appointments.Add(appointment);
+
+                context.AppointmentHistoryEntries.Add(
+                    new AppointmentHistoryEntry(
+                        historyId,
+                        data.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Created,
+                        CreatedAt,
+                        null,
+                        AppointmentHistoryState.Capture(appointment)));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var history = await context.AppointmentHistoryEntries
+                    .SingleAsync(entry => entry.Id == historyId);
+
+                if (delete)
+                {
+                    context.AppointmentHistoryEntries.Remove(history);
+                }
+                else
+                {
+                    context.Entry(history)
+                        .Property(entry => entry.OccurredAt)
+                        .CurrentValue = CreatedAt.AddMinutes(1);
+                }
+
+                var exception =
+                    await Assert.ThrowsAsync<InvalidOperationException>(
+                        () => context.SaveChangesAsync());
+
+                Assert.Equal(
+                    "Appointment history entries cannot be modified or deleted.",
+                    exception.Message);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var persisted = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .SingleAsync(entry => entry.Id == historyId);
+
+                Assert.Equal(CreatedAt, persisted.OccurredAt);
+                Assert.Equal(AppointmentHistoryType.Created, persisted.Type);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
     [InlineData("location-block")]
     [InlineData("professional-block")]
     [InlineData("outside-working-hours")]
@@ -4750,6 +6197,8 @@ public sealed class AppointmentPersistenceTests
     private async Task CleanupAsync(Guid tenantId)
     {
         await using var context = CreateContext(tenantId);
+
+        await context.AppointmentHistoryEntries.ExecuteDeleteAsync();
 
         context.AppointmentItems.RemoveRange(
             await context.AppointmentItems.ToListAsync());

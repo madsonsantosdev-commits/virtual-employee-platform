@@ -298,7 +298,8 @@ a exclusion constraint do PostgreSQL protege contra sobreposição.
 Uma solicitação sem mudança efetiva preserva UpdatedAt, revalida
 as condições e registra sua resposta idempotente.
 
-Histórico de transições e publicação de eventos permanecem pendentes.
+Histórico persistido está implementado desde 21/10/2026.
+Publicação de eventos permanece pendente.
 O fluxo assistido da seção seguinte também permanece previsto.
 
 Se uma evolução futura exigir diferença comercial, o MVP usará
@@ -366,6 +367,42 @@ Nenhum agendamento é movido ou cancelado automaticamente.
 ## 15. Idempotência
 Prioridade: CreateAppointment, RescheduleAppointment, CancelAppointment, CreateScheduleBlock.
 Chave lógica: `TenantId + OperationType + IdempotencyKey`.
+
+### Histórico persistido — implementação em 21/10/2026
+
+AppointmentHistoryEntry registra CREATED, CANCELLED, RESCHEDULED e EXPIRED.
+Cada registro possui TenantId, AppointmentId, tipo, data UTC,
+estado anterior, estado novo e motivo quando houver cancelamento.
+
+Os estados preservam Status, LocationId, ProfessionalId, StartsAt,
+EndsAt e ReservationExpiresAt. Não duplicam itens comerciais nem
+dados pessoais de Customer ou Professional.
+
+CREATED não possui estado anterior. As demais operações exigem
+os dois estados. Reagendamento preserva o status operacional,
+mas registra as alterações de horário, unidade e profissional.
+
+Criação, cancelamento e reagendamento gravam histórico na mesma
+transação da operação. A expiração em lote atualiza reservas e
+insere histórico em uma única instrução SQL, com filtro explícito
+de tenant e bloqueio dos registros selecionados.
+
+Replay, operações sem mudança efetiva e transações revertidas
+não acrescentam histórico. Tentativas sobre PENDING vencido podem
+registrar EXPIRED, mesmo retornando conflito na operação solicitada.
+
+Agendamentos existentes não recebem registros retroativos.
+Alterações e exclusões rastreadas de histórico são rejeitadas
+pelo SaveChanges. Essa proteção não abrange SQL direto nem operações
+ExecuteUpdate/ExecuteDelete.
+
+A consulta paginada ordena por OccurredAt e Id, respeita o tenant
+e não altera o agendamento. O desempate por ID não representa
+sequência causal entre registros com o mesmo timestamp.
+
+O histórico persistido não publica eventos para consumidores.
+A publicação dos eventos previstos abaixo permanece pendente.
+
 
 ## 16. Eventos
 ```text

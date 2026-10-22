@@ -101,6 +101,9 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] Cancelamento idempotente de Appointments com motivo e auditoria
 - [x] Liberação da agenda após cancelamento persistido
 - [x] Reagendamento idempotente de Appointments com preservação dos snapshots
+- [x] Histórico de criação, cancelamento, reagendamento e expiração de Appointments
+- [x] Consulta paginada do histórico com isolamento por tenant
+- [ ] Publicação de eventos de domínio/integração
 - [ ] Confirmação de Appointments por pagamento integral
 - [ ] Payments e Refunds
 - [ ] Integração WhatsApp
@@ -109,32 +112,36 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 20/10/2026
+### Última validação local — 21/10/2026
 
-- Suíte completa: 974 testes passaram, sem falhas ou ignorados.
-- Reagendamento validado no domínio, Application, PostgreSQL e endpoints HTTP.
-- Validados preservação dos itens, snapshots comerciais e estado operacional.
-- Validados elegibilidade, agenda, grade de horários, bloqueios e conflitos com outros agendamentos.
-- Idempotência validada com replay, offsets equivalentes e conflito de conteúdo.
-- Validados isolamento entre tenants e proteção contra atualizações concorrentes.
-- Reservas PENDING não recebem extensão do prazo ao reagendar.
-- Validação manual: criação 201, reagendamento 200, replay 200 com corpo idêntico e consulta 200.
-- Atendimento movido de 09h para 10h de São Paulo, mantendo preço de 65,00, duração de 45 minutos e prazo da reserva.
-- Busca de slots confirmou liberação do horário original e ocupação do novo intervalo.
+- Suíte completa: 1040 testes passaram, sem falhas ou ignorados.
+- Histórico: 24 testes de domínio, 13 do handler, 15 de persistência/serviços e 14 HTTP.
+- Validados estados anterior e novo, motivo de cancelamento e datas em UTC.
+- Criação, cancelamento e reagendamento gravam histórico na mesma transação da operação.
+- Expiração em lote atualiza reservas e insere histórico em uma única instrução SQL.
+- Validados replay e operações sem mudança, sem duplicação do histórico.
+- Validadas expiração no limite do prazo, execução concorrente e isolamento entre tenants.
+- Validados paginação, ordenação por data e ID, parâmetros inválidos e histórico vazio.
+- Alterações e exclusões rastreadas de histórico são rejeitadas pelo SaveChanges.
+- Validação manual: agendamento anterior à entrega retornou histórico vazio com HTTP 200.
+- Nova reserva retornou CREATED, RESCHEDULED e CANCELLED, com os estados preservados.
+- Reagendamento manual de 09h para 11h de São Paulo; motivo de cancelamento com acentos preservado.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
 de elegibilidade, AvailabilityRules, busca de slots, ScheduleBlocks,
-Customers, Booking Quote, criação, listagem e cancelamento de Appointments
-estão integrados à `main`.
+Customers, Booking Quote, criação, listagem, cancelamento e reagendamento
+de Appointments estão integrados à `main`.
 A organização dos testes em regiões Facts, Theories e Helpers também
 está integrada.
 
-O reagendamento está implementado na branch
-`feature/appointments-reschedule`, com validação automatizada e manual
+O histórico de Appointments está implementado na branch
+`feature/appointment-history`, com validação automatizada e manual
 concluída e integração à `main` pendente.
 
+
 A criação revalida recursos e disponibilidade, calcula os valores no
-backend e persiste Appointment, itens e resposta idempotente atomicamente.
+backend e persiste Appointment, itens, histórico e resposta idempotente
+na mesma transação.
 As consultas retornam o estado atual; o replay de criação preserva
 a resposta original e não reativa reservas expiradas ou canceladas.
 
@@ -142,7 +149,7 @@ A listagem possui filtros opcionais, paginação e ordenação por início
 e ID. Itens e contagem respeitam o tenant atual.
 Consultar agendamentos não altera seu estado nem materializa expiração.
 
-O cancelamento grava estado, motivo, data e resposta idempotente
+O cancelamento grava estado, motivo, data, histórico e resposta idempotente
 na mesma transação. O intervalo é liberado quando a transação confirma.
 Itens e snapshots comerciais são preservados.
 O replay de cancelamento devolve a resposta original.
@@ -153,14 +160,15 @@ Preserva AppointmentId, Customer, itens, snapshots e estado operacional.
 A duração persistida determina o novo término, sem recalcular os valores
 comerciais pelo catálogo atual.
 
-A alteração e a resposta idempotente são persistidas na mesma transação.
-O commit libera o intervalo anterior e ocupa o novo.
+A alteração, o histórico e a resposta idempotente são persistidos
+na mesma transação. O commit libera o intervalo anterior e ocupa o novo.
 O replay devolve a resposta original, sem reaplicar a mudança.
 
 Reservas PENDING exigem prazo vigente. O reagendamento não estende
 a reserva e reduz seu prazo quando o novo início antecede a expiração.
 Tentativas de cancelar ou reagendar PENDING vencido materializam EXPIRED
-e retornam conflito, sem registrar sucesso idempotente da operação.
+e seu histórico e retornam conflito, sem registrar sucesso idempotente
+da operação solicitada.
 
 A busca de slots considera agenda semanal, elegibilidade, bloqueios
 e agendamentos nos estados que ocupam agenda, inclusive em outras
@@ -171,8 +179,19 @@ O worker de expiração fica desabilitado por padrão e exige ativação explíc
 Quando habilitado, o intervalo padrão entre ciclos é de 30 segundos.
 Reservas PENDING continuam ocupando agenda até a expiração ou
 o cancelamento serem persistidos.
+A expiração em lote atualiza reservas e insere seus históricos atomicamente.
 
-Permanecem pendentes histórico de transições e integração com pagamentos,
+O histórico registra criação, cancelamento, reagendamento e expiração,
+com estados anterior e novo e motivo quando houver cancelamento.
+Replay e operações sem mudança efetiva não acrescentam registros.
+Agendamentos existentes não recebem registros retroativos.
+
+A consulta do histórico é paginada, ordenada por data e ID e isolada
+por tenant. Não altera o agendamento nem materializa expiração.
+SaveChanges rejeita alterações e exclusões rastreadas do histórico;
+essa proteção não abrange SQL direto nem operações em lote.
+
+Permanecem pendentes publicação de eventos e integração com pagamentos,
 incluindo confirmação por pagamento integral e refunds.
 O cancelamento atual não solicita nem confirma estorno.
 A avaliação de impacto dos bloqueios sobre Appointments e o fluxo

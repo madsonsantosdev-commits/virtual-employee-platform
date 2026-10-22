@@ -38,6 +38,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<ScheduleBlock> ScheduleBlocks => Set<ScheduleBlock>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Appointment> Appointments => Set<Appointment>();
+    public DbSet<AppointmentHistoryEntry> AppointmentHistoryEntries =>
+        Set<AppointmentHistoryEntry>();
     public DbSet<AppointmentItem> AppointmentItems =>
         Set<AppointmentItem>();
     public DbSet<IdempotencyRecord> IdempotencyRecords =>
@@ -109,12 +111,17 @@ public sealed class AppDbContext : DbContext
             .HasQueryFilter(
                 item => item.TenantId == CurrentTenantId);
                 base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<AppointmentHistoryEntry>()
+            .HasQueryFilter(
+                entry => entry.TenantId == CurrentTenantId);
     }
 
     public override int SaveChanges(
         bool acceptAllChangesOnSuccess)
     {
         ValidateTenantOwnership();
+        ValidateHistoryImmutability();
 
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
@@ -124,12 +131,27 @@ public sealed class AppDbContext : DbContext
         CancellationToken cancellationToken = default)
     {
         ValidateTenantOwnership();
+        ValidateHistoryImmutability();
 
         return base.SaveChangesAsync(
             acceptAllChangesOnSuccess,
             cancellationToken);
     }
 
+    private void ValidateHistoryImmutability()
+    {
+        var hasChanges = ChangeTracker
+            .Entries<AppointmentHistoryEntry>()
+            .Any(entry =>
+                entry.State is EntityState.Modified
+                    or EntityState.Deleted);
+
+        if (hasChanges)
+        {
+            throw new InvalidOperationException(
+                "Appointment history entries cannot be modified or deleted.");
+        }
+    }
     private void ValidateTenantOwnership()
     {
         var entries = ChangeTracker

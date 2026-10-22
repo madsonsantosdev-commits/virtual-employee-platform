@@ -41,6 +41,7 @@ public sealed class AppointmentCancellationService
 
         Appointment? appointment = null;
         IdempotencyRecord? record = null;
+        AppointmentHistoryEntry? historyEntry = null;
 
         try
         {
@@ -88,8 +89,21 @@ public sealed class AppointmentCancellationService
                 appointment.ReservationExpiresAt is { } expiresAt &&
                 now >= expiresAt)
             {
-                // Materializa a expiração, sem registrar cancelamento.
+                var beforeExpiration =
+                    AppointmentHistoryState.Capture(appointment);
+
                 appointment.Expire(now);
+
+                historyEntry = new AppointmentHistoryEntry(
+                    Guid.NewGuid(),
+                    appointment.TenantId,
+                    appointment.Id,
+                    AppointmentHistoryType.Expired,
+                    now,
+                    beforeExpiration,
+                    AppointmentHistoryState.Capture(appointment));
+
+                _dbContext.AppointmentHistoryEntries.Add(historyEntry);
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
@@ -122,10 +136,28 @@ public sealed class AppointmentCancellationService
                     CancelAppointmentError.InvalidState);
             }
 
-            appointment.Cancel(
+            var beforeCancellation =
+                AppointmentHistoryState.Capture(appointment);
+
+            var changed = appointment.Cancel(
                 command.CancellationStatus,
                 command.Reason,
                 now);
+
+            if (changed)
+            {
+                historyEntry = new AppointmentHistoryEntry(
+                    Guid.NewGuid(),
+                    appointment.TenantId,
+                    appointment.Id,
+                    AppointmentHistoryType.Cancelled,
+                    now,
+                    beforeCancellation,
+                    AppointmentHistoryState.Capture(appointment),
+                    appointment.CancellationReason);
+
+                _dbContext.AppointmentHistoryEntries.Add(historyEntry);
+            }
 
             var response = CreateResponse(appointment);
 
@@ -146,14 +178,14 @@ public sealed class AppointmentCancellationService
         }
         catch (DbUpdateConcurrencyException)
         {
-            DetachAttempt(appointment, record);
+            DetachAttempt(appointment, record, historyEntry);
 
             return Failure(
                 CancelAppointmentError.ConcurrencyConflict);
         }
         catch (Exception exception)
         {
-            DetachAttempt(appointment, record);
+            DetachAttempt(appointment, record, historyEntry);
 
             if (FindPostgresException(exception)?.SqlState ==
                 PostgresErrorCodes.DeadlockDetected)
@@ -231,8 +263,14 @@ public sealed class AppointmentCancellationService
 
     private void DetachAttempt(
         Appointment? appointment,
-        IdempotencyRecord? record)
+        IdempotencyRecord? record,
+        AppointmentHistoryEntry? historyEntry)
     {
+        if (historyEntry is not null)
+        {
+            _dbContext.Entry(historyEntry).State = EntityState.Detached;
+        }
+
         if (record is not null)
         {
             _dbContext.Entry(record).State = EntityState.Detached;
