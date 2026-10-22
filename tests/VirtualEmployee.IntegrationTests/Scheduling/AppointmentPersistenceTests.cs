@@ -3410,6 +3410,41 @@ public sealed class AppointmentPersistenceTests
         var secondId = Guid.NewGuid();
         var startsAt = CreatedAt.AddHours(2);
 
+        static Npgsql.PostgresException? FindPostgresException(
+            Exception exception)
+        {
+            for (Exception? current = exception;
+                 current is not null;
+                 current = current.InnerException)
+            {
+                if (current is Npgsql.PostgresException postgresException)
+                {
+                    return postgresException;
+                }
+            }
+
+            return null;
+        }
+
+        async Task<Exception?> TrySaveAsync(AppDbContext context)
+        {
+            try
+            {
+                await context.SaveChangesAsync();
+                return null;
+            }
+            catch (Exception exception) when (
+                FindPostgresException(exception) is
+                {
+                    SqlState:
+                        Npgsql.PostgresErrorCodes.ExclusionViolation or
+                        Npgsql.PostgresErrorCodes.DeadlockDetected
+                })
+            {
+                return exception;
+            }
+        }
+
         try
         {
             await SeedAsync(data);
@@ -3428,19 +3463,6 @@ public sealed class AppointmentPersistenceTests
             secondContext.Appointments.Add(
                 CreateAppointment(data, secondId, startsAt));
 
-            async Task<Exception?> TrySaveAsync(AppDbContext context)
-            {
-                try
-                {
-                    await context.SaveChangesAsync();
-                    return null;
-                }
-                catch (DbUpdateException exception)
-                {
-                    return exception;
-                }
-            }
-
             var results = await Task.WhenAll(
                 TrySaveAsync(firstContext),
                 TrySaveAsync(secondContext));
@@ -3452,11 +3474,35 @@ public sealed class AppointmentPersistenceTests
                 results,
                 result => result is not null);
 
-            var updateException = Assert.IsType<DbUpdateException>(failure);
+            Assert.NotNull(failure);
 
-            var postgresException =
-                Assert.IsType<Npgsql.PostgresException>(
-                    updateException.InnerException);
+            var winnerId = results[0] is null ? firstId : secondId;
+            var loserId = results[0] is null ? secondId : firstId;
+
+            var postgresException = FindPostgresException(failure);
+
+            Assert.NotNull(postgresException);
+
+            if (postgresException.SqlState ==
+                Npgsql.PostgresErrorCodes.DeadlockDetected)
+            {
+                // As duas operações concorrentes já terminaram.
+                // Repete a perdedora usando um contexto novo, sem o gate.
+                await using var retryContext =
+                    CreateContext(data.TenantId);
+
+                retryContext.Appointments.Add(
+                    CreateAppointment(data, loserId, startsAt));
+
+                var retryFailure = await TrySaveAsync(retryContext);
+
+                Assert.NotNull(retryFailure);
+
+                postgresException =
+                    FindPostgresException(retryFailure);
+
+                Assert.NotNull(postgresException);
+            }
 
             Assert.Equal(
                 Npgsql.PostgresErrorCodes.ExclusionViolation,
@@ -3466,10 +3512,8 @@ public sealed class AppointmentPersistenceTests
                 "ex_appointments_no_overlap",
                 postgresException.ConstraintName);
 
-            var winnerId = results[0] is null ? firstId : secondId;
-            var loserId = results[0] is null ? secondId : firstId;
-
-            await using var readContext = CreateContext(data.TenantId);
+            await using var readContext =
+                CreateContext(data.TenantId);
 
             var appointment = Assert.Single(
                 await readContext.Appointments
@@ -3491,7 +3535,8 @@ public sealed class AppointmentPersistenceTests
 
             Assert.False(
                 await readContext.AppointmentItems
-                    .AnyAsync(entity => entity.AppointmentId == loserId));
+                    .AnyAsync(entity =>
+                        entity.AppointmentId == loserId));
         }
         finally
         {
