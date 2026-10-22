@@ -42,6 +42,7 @@ public sealed class AppointmentReschedulingService
 
         Appointment? appointment = null;
         IdempotencyRecord? record = null;
+        AppointmentHistoryEntry? historyEntry = null;
 
         try
         {
@@ -90,7 +91,7 @@ public sealed class AppointmentReschedulingService
                 appointment.ReservationExpiresAt is { } expiresAt &&
                 now >= expiresAt)
             {
-                appointment.Expire(now);
+                historyEntry = RecordExpiration(appointment, now);
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
@@ -154,8 +155,7 @@ public sealed class AppointmentReschedulingService
                 });
             }
 
-            // As consultas podem consumir parte do prazo da reserva.
-            // Reavalia o relógio antes de modificar o agendamento.
+            // Reavalia o prazo após as consultas de disponibilidade.
             now = GetUtcNow();
 
             if (now < appointment.UpdatedAt)
@@ -168,7 +168,7 @@ public sealed class AppointmentReschedulingService
                 appointment.ReservationExpiresAt is { } deadline &&
                 now >= deadline)
             {
-                appointment.Expire(now);
+                historyEntry = RecordExpiration(appointment, now);
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
@@ -189,9 +189,14 @@ public sealed class AppointmentReschedulingService
                     RescheduleAppointmentError.SlotUnavailable);
             }
 
+            var beforeRescheduling =
+                AppointmentHistoryState.Capture(appointment);
+
+            bool changed;
+
             try
             {
-                appointment.Reschedule(
+                changed = appointment.Reschedule(
                     command.LocationId,
                     command.ProfessionalId,
                     command.StartsAt,
@@ -203,8 +208,22 @@ public sealed class AppointmentReschedulingService
                     RescheduleAppointmentError.SlotUnavailable);
             }
 
-            // Mesmo destino exige uma escrita para verificar os tokens
-            // de concorrência antes de registrar uma nova chave.
+            if (changed)
+            {
+                historyEntry = new AppointmentHistoryEntry(
+                    Guid.NewGuid(),
+                    appointment.TenantId,
+                    appointment.Id,
+                    AppointmentHistoryType.Rescheduled,
+                    now,
+                    beforeRescheduling,
+                    AppointmentHistoryState.Capture(appointment));
+
+                _dbContext.AppointmentHistoryEntries.Add(historyEntry);
+            }
+
+            // Verifica os tokens mesmo quando o destino não muda.
+            // Uma operação sem mudança não cria histórico adicional.
             _dbContext.Entry(appointment)
                 .Property(entity => entity.StartsAt)
                 .IsModified = true;
@@ -228,14 +247,14 @@ public sealed class AppointmentReschedulingService
         }
         catch (DbUpdateConcurrencyException)
         {
-            DetachAttempt(appointment, record);
+            DetachAttempt(appointment, record, historyEntry);
 
             return Failure(
                 RescheduleAppointmentError.ConcurrencyConflict);
         }
         catch (Exception exception)
         {
-            DetachAttempt(appointment, record);
+            DetachAttempt(appointment, record, historyEntry);
 
             var postgresException = FindPostgresException(exception);
 
@@ -260,6 +279,32 @@ public sealed class AppointmentReschedulingService
         }
     }
 
+    private AppointmentHistoryEntry RecordExpiration(
+        Appointment appointment,
+        DateTimeOffset now)
+    {
+        var before = AppointmentHistoryState.Capture(appointment);
+
+        if (!appointment.Expire(now))
+        {
+            throw new InvalidOperationException(
+                "The pending reservation must be due for expiration.");
+        }
+
+        var historyEntry = new AppointmentHistoryEntry(
+            Guid.NewGuid(),
+            appointment.TenantId,
+            appointment.Id,
+            AppointmentHistoryType.Expired,
+            now,
+            before,
+            AppointmentHistoryState.Capture(appointment));
+
+        _dbContext.AppointmentHistoryEntries.Add(historyEntry);
+
+        return historyEntry;
+    }
+
     private static AppointmentResponse CreateResponse(
         Appointment appointment)
     {
@@ -271,6 +316,7 @@ public sealed class AppointmentReschedulingService
                 "CONFIRMED_BY_CLIENT",
             AppointmentStatus.RescheduleRequested =>
                 "RESCHEDULE_REQUESTED",
+
             _ => throw new InvalidOperationException(
                 "Appointment must be in a reschedulable state.")
         };
@@ -337,8 +383,14 @@ public sealed class AppointmentReschedulingService
 
     private void DetachAttempt(
         Appointment? appointment,
-        IdempotencyRecord? record)
+        IdempotencyRecord? record,
+        AppointmentHistoryEntry? historyEntry)
     {
+        if (historyEntry is not null)
+        {
+            _dbContext.Entry(historyEntry).State = EntityState.Detached;
+        }
+
         if (record is not null)
         {
             _dbContext.Entry(record).State = EntityState.Detached;

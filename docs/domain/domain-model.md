@@ -242,8 +242,26 @@ EndsAt e ReservationExpiresAt são tokens de concorrência no EF Core.
 A exclusion constraint continua protegendo a ocupação do profissional
 em todas as unidades do tenant.
 
-Histórico de transições, publicação de eventos, reagendamento assistido
-e integração com pagamentos e refunds permanecem para próximas etapas.
+### Histórico de Appointment — implementação em 21/10/2026
+
+AppointmentHistoryEntry pertence ao tenant e referencia um Appointment.
+Registra criação, cancelamento, reagendamento e expiração, com data UTC,
+estados anterior e novo e motivo quando houver cancelamento.
+
+AppointmentHistoryState preserva Status, LocationId, ProfessionalId,
+StartsAt, EndsAt e ReservationExpiresAt.
+Os snapshots são imutáveis e não duplicam itens comerciais nem PII.
+
+O histórico é persistido atomicamente com a alteração.
+Replay e operações sem mudança não acrescentam registros.
+Não há reconstrução retroativa do histórico de agendamentos existentes.
+
+SaveChanges rejeita alteração ou exclusão rastreada de registros históricos.
+SQL direto e operações em lote não são abrangidos por essa validação.
+A consulta é paginada, isolada por tenant e não modifica o agregado.
+
+Publicação de eventos, reagendamento assistido e integração com
+pagamentos e refunds permanecem para próximas etapas.
 
 ### Regra de unidade
 Todo Appointment ocorre em exatamente uma Location.

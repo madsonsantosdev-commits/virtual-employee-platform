@@ -788,7 +788,7 @@ AvailabilityRule -> ScheduleBlock -> Appointments.
 
 ## 10. Appointments
 
-### Implementação incremental — atualizada em 20/10/2026
+### Implementação incremental — atualizada em 21/10/2026
 
 Criação e consulta por ID foram validadas em 16/10/2026.
 Listagem paginada foi validada em 19/10/2026.
@@ -799,11 +799,95 @@ Rotas implementadas:
 - `GET /api/v1/appointments/{appointmentId}`
 - `POST /api/v1/appointments/{appointmentId}/cancel`
 - `POST /api/v1/appointments/{appointmentId}/reschedule`
+- `GET /api/v1/appointments/{appointmentId}/history`
 
 O header `X-Tenant-Id` é temporário para desenvolvimento.
 Cancelamento idempotente foi validado em 19/10/2026.
 Reagendamento idempotente foi validado em 20/10/2026.
 Confirmação por pagamento permanece pendente.
+
+#### Histórico de Appointments — implementação em 21/10/2026
+
+`GET /api/v1/appointments/{appointmentId}/history`
+
+Retorna o histórico do agendamento no tenant atual.
+Não exige Idempotency-Key e não altera o agendamento nem materializa expiração.
+
+| Parâmetro | Regra |
+| --- | --- |
+| appointmentId | GUID não vazio, informado na rota |
+| page | Inteiro a partir de 1; padrão 1 |
+| pageSize | Inteiro entre 1 e 100; padrão 50 |
+
+Deslocamento calculado acima de int.MaxValue retorna 400.
+
+Resposta:
+
+```json
+{
+  "items": [
+    {
+      "id": "<history-id>",
+      "appointmentId": "<appointment-id>",
+      "type": "CREATED",
+      "occurredAt": "2026-10-21T12:00:00+00:00",
+      "before": null,
+      "after": {
+        "status": "PENDING",
+        "locationId": "<location-id>",
+        "professionalId": "<professional-id>",
+        "startsAt": "2026-10-26T12:00:00+00:00",
+        "endsAt": "2026-10-26T12:45:00+00:00",
+        "reservationExpiresAt": "2026-10-21T12:10:00+00:00"
+      },
+      "reason": null
+    }
+  ],
+  "page": 1,
+  "pageSize": 50,
+  "totalCount": 1
+}
+```
+
+Tipos públicos: CREATED, CANCELLED, RESCHEDULED e EXPIRED.
+Os status dos snapshots usam os nomes públicos dos estados de Appointment.
+Datas são retornadas em UTC.
+
+CREATED possui before nulo. As demais operações possuem estados
+anterior e novo. CANCELLED inclui o motivo normalizado.
+Campos opcionais nulos podem ser omitidos conforme a configuração JSON.
+
+A ordenação é crescente por OccurredAt e depois Id.
+O ID fornece desempate estável; não representa sequência causal
+entre operações com o mesmo timestamp.
+
+Itens e contagem respeitam o tenant e o AppointmentId.
+Agendamento inexistente ou de outro tenant retorna 404.
+Agendamento existente sem histórico retorna 200 com items vazio
+e totalCount zero. Não há geração retroativa de eventos.
+
+Criação, cancelamento e reagendamento persistem histórico junto
+à alteração na mesma transação. Expiração em lote atualiza os
+agendamentos e insere seus históricos atomicamente.
+
+Replay, operações sem mudança efetiva e tentativas revertidas
+não acrescentam histórico. Uma tentativa de cancelar ou reagendar
+PENDING vencido pode persistir EXPIRED e seu histórico, retornando
+o conflito RESERVATION_EXPIRED da operação solicitada.
+
+A consulta não exige que os recursos referenciados continuem ativos.
+Contagem e página são lidas em consultas separadas; novos registros
+concorrentes podem ser observados entre essas leituras.
+
+| Resultado | HTTP |
+| --- | --- |
+| Consulta válida, com ou sem histórico | 200 |
+| Identidade ou paginação inválida | 400 |
+| Agendamento inexistente ou de outro tenant | 404 |
+
+O histórico persistido não implica publicação de eventos para consumidores.
+Essa integração permanece pendente.
+
 
 #### Listagem paginada
 
@@ -1092,9 +1176,10 @@ continua sendo a proteção contra sobreposição de horários.
 | Disputa de atualização ou relógio anterior à última atualização | 409 | CONCURRENCY_CONFLICT |
 | Timezone configurada inválida | 500 | — |
 
-As consultas retornam o estado atual; o replay retorna a resposta
-original daquela operação. Histórico de transições, publicação de eventos
-e reagendamento assistido permanecem para próximas entregas.
+As consultas do agendamento retornam o estado atual; o replay retorna
+a resposta original daquela operação.
+O histórico persistido está implementado desde 21/10/2026.
+Publicação de eventos e reagendamento assistido permanecem pendentes.
 
 ### Cancelamento — implementação em 19/10/2026
 

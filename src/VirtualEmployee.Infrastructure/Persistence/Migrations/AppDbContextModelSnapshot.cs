@@ -557,6 +557,59 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.AppointmentHistoryEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("After")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("after_state");
+
+                    b.Property<Guid>("AppointmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("appointment_id");
+
+                    b.Property<string>("Before")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("before_state");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("integer")
+                        .HasColumnName("type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "AppointmentId", "OccurredAt", "Id");
+
+                    b.ToTable("appointment_history_entries", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_appointment_history_before", "(type = 1 AND before_state IS NULL) OR (type <> 1 AND before_state IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_appointment_history_reason", "(type = 2 AND reason IS NOT NULL AND length(btrim(reason)) > 0) OR (type <> 2 AND reason IS NULL)");
+
+                            t.HasCheckConstraint("CK_appointment_history_state_objects", "jsonb_typeof(after_state) = 'object' AND (before_state IS NULL OR jsonb_typeof(before_state) = 'object')");
+
+                            t.HasCheckConstraint("CK_appointment_history_type", "type IN (1, 2, 3, 4)");
+                        });
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.AppointmentItem", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1000,6 +1053,16 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                     b.HasOne("VirtualEmployee.Domain.Professionals.ProfessionalLocation", null)
                         .WithMany()
                         .HasForeignKey("TenantId", "ProfessionalId", "LocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Scheduling.AppointmentHistoryEntry", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Scheduling.Appointment", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AppointmentId")
+                        .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

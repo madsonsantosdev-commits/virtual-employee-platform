@@ -41,6 +41,349 @@ public sealed class AppointmentsEndpointsTests
     #region Facts
 
     [Fact]
+    public async Task Appointments_History_ShouldOrderByDateAndIdAcrossPages()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        var creationId = Guid.Parse(
+            "10000000-0000-4000-8000-000000000001");
+
+        var reschedulingId = Guid.Parse(
+            "20000000-0000-4000-8000-000000000001");
+
+        var cancellationId = Guid.Parse(
+            "30000000-0000-4000-8000-000000000001");
+
+        var startsAt = new DateTimeOffset(
+            2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+        var changedAt = CreatedAt.AddMinutes(1);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                startsAt);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var initial = AppointmentHistoryState.Capture(appointment);
+
+                appointment.Reschedule(
+                    data.LocationId,
+                    data.ProfessionalId,
+                    startsAt.AddHours(1),
+                    changedAt);
+
+                var rescheduled =
+                    AppointmentHistoryState.Capture(appointment);
+
+                appointment.Cancel(
+                    AppointmentStatus.CancelledByClient,
+                    "Cliente solicitou",
+                    changedAt);
+
+                var cancelled =
+                    AppointmentHistoryState.Capture(appointment);
+
+                // Ordem de inserção diferente da ordem esperada na consulta.
+                context.AppointmentHistoryEntries.AddRange(
+                    new AppointmentHistoryEntry(
+                        cancellationId,
+                        data.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Cancelled,
+                        changedAt,
+                        rescheduled,
+                        cancelled,
+                        "Cliente solicitou"),
+                    new AppointmentHistoryEntry(
+                        reschedulingId,
+                        data.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Rescheduled,
+                        changedAt,
+                        initial,
+                        rescheduled),
+                    new AppointmentHistoryEntry(
+                        creationId,
+                        data.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Created,
+                        CreatedAt,
+                        null,
+                        initial));
+
+                await context.SaveChangesAsync();
+            }
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            var url = $"/api/v1/appointments/{appointmentId}/history";
+
+            using var firstResponse = await client.GetAsync(
+                $"{url}?page=1&pageSize=2");
+
+            Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+            using var firstDocument = JsonDocument.Parse(
+                await firstResponse.Content.ReadAsStringAsync());
+
+            var firstPage = firstDocument.RootElement;
+            var firstItems = firstPage.GetProperty("items");
+
+            Assert.Equal(1, firstPage.GetProperty("page").GetInt32());
+            Assert.Equal(2, firstPage.GetProperty("pageSize").GetInt32());
+            Assert.Equal(3, firstPage.GetProperty("totalCount").GetInt32());
+            Assert.Equal(2, firstItems.GetArrayLength());
+
+            Assert.Equal(
+                creationId,
+                firstItems[0].GetProperty("id").GetGuid());
+            Assert.Equal(
+                "CREATED",
+                firstItems[0].GetProperty("type").GetString());
+
+            var rescheduling = firstItems[1];
+
+            Assert.Equal(
+                reschedulingId,
+                rescheduling.GetProperty("id").GetGuid());
+            Assert.Equal(
+                "RESCHEDULED",
+                rescheduling.GetProperty("type").GetString());
+            Assert.Equal(
+                changedAt,
+                rescheduling.GetProperty("occurredAt").GetDateTimeOffset());
+
+            Assert.Equal(
+                startsAt,
+                rescheduling.GetProperty("before")
+                    .GetProperty("startsAt").GetDateTimeOffset());
+            Assert.Equal(
+                startsAt.AddHours(1),
+                rescheduling.GetProperty("after")
+                    .GetProperty("startsAt").GetDateTimeOffset());
+            Assert.Equal(
+                "PENDING",
+                rescheduling.GetProperty("after")
+                    .GetProperty("status").GetString());
+
+            using var secondResponse = await client.GetAsync(
+                $"{url}?page=2&pageSize=2");
+
+            Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+            using var secondDocument = JsonDocument.Parse(
+                await secondResponse.Content.ReadAsStringAsync());
+
+            var secondPage = secondDocument.RootElement;
+            var secondItems = secondPage.GetProperty("items");
+
+            Assert.Equal(2, secondPage.GetProperty("page").GetInt32());
+            Assert.Equal(2, secondPage.GetProperty("pageSize").GetInt32());
+            Assert.Equal(3, secondPage.GetProperty("totalCount").GetInt32());
+            Assert.Equal(1, secondItems.GetArrayLength());
+
+            var cancellation = secondItems[0];
+
+            Assert.Equal(
+                cancellationId,
+                cancellation.GetProperty("id").GetGuid());
+            Assert.Equal(
+                "CANCELLED",
+                cancellation.GetProperty("type").GetString());
+            Assert.Equal(
+                changedAt,
+                cancellation.GetProperty("occurredAt").GetDateTimeOffset());
+            Assert.Equal(
+                "Cliente solicitou",
+                cancellation.GetProperty("reason").GetString());
+            Assert.Equal(
+                "PENDING",
+                cancellation.GetProperty("before")
+                    .GetProperty("status").GetString());
+            Assert.Equal(
+                "CANCELLED_BY_CLIENT",
+                cancellation.GetProperty("after")
+                    .GetProperty("status").GetString());
+
+            await using var verification = CreateContext(data.TenantId);
+
+            var persisted = await verification.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(
+                AppointmentStatus.CancelledByClient,
+                persisted.Status);
+            Assert.Equal(changedAt, persisted.UpdatedAt);
+
+            Assert.Equal(
+                3,
+                await verification.AppointmentHistoryEntries.CountAsync());
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Appointments_History_ShouldReturnCreationAndPaginate()
+    {
+        var data = new TestData();
+
+        try
+        {
+            await SeedAsync(data);
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            using var createRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                "/api/v1/appointments");
+
+            createRequest.Headers.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString());
+
+            createRequest.Content = JsonContent.Create(new
+            {
+                customerId = data.CustomerId,
+                locationId = data.LocationId,
+                professionalId = data.ProfessionalId,
+                serviceIds = new[] { data.ServiceId },
+                startsAt = new DateTimeOffset(
+                    2026, 10, 26, 12, 0, 0, TimeSpan.Zero)
+            });
+
+            using var createResponse = await client.SendAsync(createRequest);
+            var createBody = await createResponse.Content.ReadAsStringAsync();
+
+            Assert.True(
+                createResponse.StatusCode == HttpStatusCode.Created,
+                $"Criação: {createResponse.StatusCode}. Corpo: {createBody}");
+
+            using var createdDocument = JsonDocument.Parse(createBody);
+            var created = createdDocument.RootElement;
+            var appointmentId = created.GetProperty("id").GetGuid();
+
+            var historyUrl =
+                $"/api/v1/appointments/{appointmentId}/history";
+
+            using var historyResponse = await client.GetAsync(
+                $"{historyUrl}?page=1&pageSize=1");
+
+            var historyBody = await historyResponse.Content.ReadAsStringAsync();
+
+            Assert.True(
+                historyResponse.StatusCode == HttpStatusCode.OK,
+                $"Histórico: {historyResponse.StatusCode}. Corpo: {historyBody}");
+
+            using var historyDocument = JsonDocument.Parse(historyBody);
+            var page = historyDocument.RootElement;
+
+            Assert.Equal(1, page.GetProperty("page").GetInt32());
+            Assert.Equal(1, page.GetProperty("pageSize").GetInt32());
+            Assert.Equal(1, page.GetProperty("totalCount").GetInt32());
+
+            var items = page.GetProperty("items");
+            Assert.Equal(1, items.GetArrayLength());
+
+            var entry = items[0];
+
+            Assert.NotEqual(Guid.Empty, entry.GetProperty("id").GetGuid());
+            Assert.Equal(
+                appointmentId,
+                entry.GetProperty("appointmentId").GetGuid());
+            Assert.Equal("CREATED", entry.GetProperty("type").GetString());
+            Assert.Equal(
+                created.GetProperty("createdAt").GetDateTimeOffset(),
+                entry.GetProperty("occurredAt").GetDateTimeOffset());
+
+            Assert.True(
+                !entry.TryGetProperty("before", out var before) ||
+                before.ValueKind == JsonValueKind.Null);
+
+            Assert.True(
+                !entry.TryGetProperty("reason", out var reason) ||
+                reason.ValueKind == JsonValueKind.Null);
+
+            var after = entry.GetProperty("after");
+
+            Assert.Equal("PENDING", after.GetProperty("status").GetString());
+            Assert.Equal(
+                data.LocationId,
+                after.GetProperty("locationId").GetGuid());
+            Assert.Equal(
+                data.ProfessionalId,
+                after.GetProperty("professionalId").GetGuid());
+            Assert.Equal(
+                created.GetProperty("startsAt").GetDateTimeOffset(),
+                after.GetProperty("startsAt").GetDateTimeOffset());
+            Assert.Equal(
+                created.GetProperty("endsAt").GetDateTimeOffset(),
+                after.GetProperty("endsAt").GetDateTimeOffset());
+            Assert.Equal(
+                created.GetProperty("reservationExpiresAt").GetDateTimeOffset(),
+                after.GetProperty("reservationExpiresAt").GetDateTimeOffset());
+
+            using var nextResponse = await client.GetAsync(
+                $"{historyUrl}?page=2&pageSize=1");
+
+            Assert.Equal(HttpStatusCode.OK, nextResponse.StatusCode);
+
+            using var nextDocument = JsonDocument.Parse(
+                await nextResponse.Content.ReadAsStringAsync());
+
+            var nextPage = nextDocument.RootElement;
+
+            Assert.Equal(2, nextPage.GetProperty("page").GetInt32());
+            Assert.Equal(1, nextPage.GetProperty("pageSize").GetInt32());
+            Assert.Equal(1, nextPage.GetProperty("totalCount").GetInt32());
+            Assert.Equal(
+                0,
+                nextPage.GetProperty("items").GetArrayLength());
+
+            await using var context = CreateContext(data.TenantId);
+
+            var persisted = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(appointment => appointment.Id == appointmentId);
+
+            Assert.Equal(CreatedAt, persisted.UpdatedAt);
+            Assert.Equal(AppointmentStatus.Pending, persisted.Status);
+
+            Assert.Equal(
+                1,
+                await context.AppointmentHistoryEntries.CountAsync(
+                    history => history.AppointmentId == appointmentId));
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
     public async Task Appointments_Reschedule_WithForeignAppointment_ShouldReturnNotFound()
     {
         var currentData = new TestData();
@@ -1492,6 +1835,200 @@ public sealed class AppointmentsEndpointsTests
     #endregion
 
     #region Theories
+
+    [Theory]
+    [InlineData("empty-id")]
+    [InlineData("page=0")]
+    [InlineData("page=-1")]
+    [InlineData("pageSize=0")]
+    [InlineData("pageSize=-1")]
+    [InlineData("pageSize=101")]
+    [InlineData("page=2147483647&pageSize=100")]
+    [InlineData("page=abc")]
+    [InlineData("pageSize=abc")]
+    public async Task Appointments_History_WithInvalidQuery_ShouldReturnBadRequest(
+        string scenario)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                new DateTimeOffset(
+                    2026, 10, 26, 12, 0, 0, TimeSpan.Zero));
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString());
+
+            var requestedId = scenario == "empty-id"
+                ? Guid.Empty
+                : appointmentId;
+
+            var url =
+                $"/api/v1/appointments/{requestedId}/history";
+
+            if (scenario != "empty-id")
+            {
+                url += $"?{scenario}";
+            }
+
+            using var response = await client.GetAsync(url);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.True(
+                response.StatusCode == HttpStatusCode.BadRequest,
+                $"Cenário: {scenario}. HTTP: {response.StatusCode}. " +
+                $"Corpo: {body}");
+
+            await using var context = CreateContext(data.TenantId);
+
+            var appointment = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(AppointmentStatus.Pending, appointment.Status);
+            Assert.Equal(CreatedAt, appointment.UpdatedAt);
+
+            Assert.False(
+                await context.AppointmentHistoryEntries.AnyAsync());
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("empty-history", 200)]
+    [InlineData("missing-appointment", 404)]
+    [InlineData("foreign-appointment", 404)]
+    public async Task Appointments_History_ShouldRespectAppointmentVisibility(
+        string scenario,
+        int expectedStatus)
+    {
+        var current = new TestData();
+        var other = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(current);
+            await SeedAsync(other);
+
+            var startsAt = new DateTimeOffset(
+                2026, 10, 26, 12, 0, 0, TimeSpan.Zero);
+
+            if (scenario == "empty-history")
+            {
+                await SeedListedAppointmentAsync(
+                    current,
+                    appointmentId,
+                    startsAt);
+            }
+            else if (scenario == "foreign-appointment")
+            {
+                await SeedListedAppointmentAsync(
+                    other,
+                    appointmentId,
+                    startsAt);
+
+                await using var context = CreateContext(other.TenantId);
+
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                context.AppointmentHistoryEntries.Add(
+                    new AppointmentHistoryEntry(
+                        Guid.NewGuid(),
+                        other.TenantId,
+                        appointmentId,
+                        AppointmentHistoryType.Created,
+                        appointment.CreatedAt,
+                        null,
+                        AppointmentHistoryState.Capture(appointment)));
+
+                await context.SaveChangesAsync();
+            }
+
+            using var factory = CreateFactory();
+            using var client = factory.CreateClient();
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                current.TenantId.ToString());
+
+            using var response = await client.GetAsync(
+                $"/api/v1/appointments/{appointmentId}/history");
+
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.True(
+                (int)response.StatusCode == expectedStatus,
+                $"Cenário: {scenario}. HTTP: {response.StatusCode}. " +
+                $"Corpo: {body}");
+
+            if (scenario == "empty-history")
+            {
+                using var document = JsonDocument.Parse(body);
+                var page = document.RootElement;
+
+                Assert.Equal(1, page.GetProperty("page").GetInt32());
+                Assert.Equal(50, page.GetProperty("pageSize").GetInt32());
+                Assert.Equal(0, page.GetProperty("totalCount").GetInt32());
+                Assert.Equal(
+                    0,
+                    page.GetProperty("items").GetArrayLength());
+
+                await using var context = CreateContext(current.TenantId);
+
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(AppointmentStatus.Pending, appointment.Status);
+                Assert.Equal(CreatedAt, appointment.UpdatedAt);
+
+                Assert.False(
+                    await context.AppointmentHistoryEntries.AnyAsync());
+            }
+
+            if (scenario == "foreign-appointment")
+            {
+                await using var context = CreateContext(other.TenantId);
+
+                var entries = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .ToListAsync();
+
+                var entry = Assert.Single(entries);
+
+                Assert.Equal(other.TenantId, entry.TenantId);
+                Assert.Equal(appointmentId, entry.AppointmentId);
+                Assert.Equal(AppointmentHistoryType.Created, entry.Type);
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
 
     [Theory]
     [InlineData("client", "INVALID_APPOINTMENT_STATE")]
@@ -3005,6 +3542,8 @@ public sealed class AppointmentsEndpointsTests
     private async Task CleanupAsync(Guid tenantId)
     {
         await using var context = CreateContext(tenantId);
+
+        await context.AppointmentHistoryEntries.ExecuteDeleteAsync();
 
         context.AppointmentItems.RemoveRange(
             await context.AppointmentItems.ToListAsync());

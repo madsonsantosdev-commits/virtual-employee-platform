@@ -338,7 +338,56 @@ registra os novos tokens de concorrência no modelo do EF Core.
 Up e Down não contêm operações de alteração do schema.
 
 Cancelamento está implementado desde 19/10/2026.
-Histórico de transições e publicação de eventos permanecem pendentes.
+### Histórico de Appointments — implementação em 21/10/2026
+
+```text
+appointment_history_entries
+id uuid PK
+tenant_id uuid NOT NULL
+appointment_id uuid NOT NULL
+type integer NOT NULL
+occurred_at timestamptz NOT NULL
+before_state jsonb NULL
+after_state jsonb NOT NULL
+reason varchar(500) NULL
+```
+
+Tipos persistidos:
+- 1 = CREATED;
+- 2 = CANCELLED;
+- 3 = RESCHEDULED;
+- 4 = EXPIRED.
+
+A chave estrangeira (tenant_id, appointment_id) referencia
+appointments(tenant_id, id), com exclusão restrita.
+
+Restrições:
+- type limitado aos quatro valores implementados;
+- before_state nulo somente em CREATED;
+- reason obrigatório e não vazio após btrim somente em CANCELLED;
+- estados JSON devem ser objetos; after_state é obrigatório.
+
+As regras de transição e o conteúdo dos snapshots são validados
+no domínio para registros construídos pela aplicação.
+Os CHECKs de JSON não validam individualmente todos os seus campos.
+
+Índice: (tenant_id, appointment_id, occurred_at, id).
+A consulta ordena por occurred_at e id; o ID não é sequência causal.
+
+O EF Core aplica filtro de tenant e proteção de escrita.
+SaveChanges rejeita alterações e exclusões rastreadas do histórico.
+Não há trigger de imutabilidade; SQL direto e operações em lote
+não passam por essa validação do contexto.
+
+Expiração em lote usa uma instrução SQL com seleção bloqueada,
+atualização dos Appointments e inserção dos históricos.
+O tenant é filtrado explicitamente no SQL.
+
+Migration: 20261021145540_AddAppointmentHistory.
+
+Não há preenchimento retroativo de registros.
+Publicação de eventos permanece pendente.
+
 
 ## Payment / PaymentAttempt / Refund
 Payment é obrigação financeira lógica; PaymentAttempt é cada tentativa concreta no provider; Refund integral no MVP referencia Payment e PaymentAttempt confirmado. `Payment.Amount == Appointment.TotalPriceSnapshot` para SERVICE.

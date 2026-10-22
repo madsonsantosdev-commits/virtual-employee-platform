@@ -68,6 +68,7 @@ public sealed class AppointmentCreationService : IAppointmentCreationService
 
         Appointment? appointment = null;
         IdempotencyRecord? record = null;
+        AppointmentHistoryEntry? historyEntry = null;
 
         try
         {
@@ -192,7 +193,17 @@ public sealed class AppointmentCreationService : IAppointmentCreationService
                 JsonSerializer.Serialize(response),
                 now);
 
+            historyEntry = new AppointmentHistoryEntry(
+                Guid.NewGuid(),
+                appointment.TenantId,
+                appointment.Id,
+                AppointmentHistoryType.Created,
+                appointment.CreatedAt,
+                null,
+                AppointmentHistoryState.Capture(appointment));
+
             _dbContext.Appointments.Add(appointment);
+            _dbContext.AppointmentHistoryEntries.Add(historyEntry);
             _dbContext.IdempotencyRecords.Add(record);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -204,7 +215,7 @@ public sealed class AppointmentCreationService : IAppointmentCreationService
         {
             // A transação foi descartada antes deste catch.
             // Limpa somente as entidades criadas nesta tentativa.
-            DetachAttempt(appointment, record);
+            DetachAttempt(appointment, record, historyEntry);
 
             var postgresException = FindPostgresException(exception);
 
@@ -225,8 +236,14 @@ public sealed class AppointmentCreationService : IAppointmentCreationService
 
         private void DetachAttempt(
         Appointment? appointment,
-        IdempotencyRecord? record)
+        IdempotencyRecord? record,
+        AppointmentHistoryEntry? historyEntry)
     {
+        if (historyEntry is not null)
+        {
+            _dbContext.Entry(historyEntry).State = EntityState.Detached;
+        }
+
         if (appointment is not null)
         {
             var items = appointment.Items.ToArray();

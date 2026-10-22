@@ -35,6 +35,7 @@ using VirtualEmployee.Application.Appointments.GetAppointmentById;
 using VirtualEmployee.Application.Appointments.GetAppointments;
 using VirtualEmployee.Application.Appointments.CancelAppointment;
 using VirtualEmployee.Application.Appointments.RescheduleAppointment;
+using VirtualEmployee.Application.Appointments.GetAppointmentHistory;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -84,6 +85,7 @@ builder.Services.AddScoped<GetAppointmentByIdHandler>();
 builder.Services.AddScoped<GetAppointmentsHandler>();
 builder.Services.AddScoped<CancelAppointmentHandler>();
 builder.Services.AddScoped<RescheduleAppointmentHandler>();
+builder.Services.AddScoped<GetAppointmentHistoryHandler>();
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
 
