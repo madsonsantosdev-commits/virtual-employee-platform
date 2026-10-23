@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using VirtualEmployee.Domain.Businesses;
 using VirtualEmployee.Domain.BusinessTypes;
 using VirtualEmployee.Domain.Customers;
@@ -16,6 +17,8 @@ using VirtualEmployee.Application.Appointments.CreateAppointment;
 using VirtualEmployee.Infrastructure.Appointments;
 using VirtualEmployee.Application.Appointments.CancelAppointment;
 using VirtualEmployee.Application.Appointments.RescheduleAppointment;
+using VirtualEmployee.Domain.Payments;
+
 using Xunit;
 
 namespace VirtualEmployee.IntegrationTests.Scheduling;
@@ -34,6 +37,829 @@ public sealed class AppointmentPersistenceTests
     }
 
     #region Facts
+
+    [Fact]
+    public async Task PaymentAttempt_WithStaleFailure_ShouldPreserveConfirmation()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using var context = CreateContext(data.TenantId);
+            await using var transaction =
+                await context.Database.BeginTransactionAsync();
+
+            var appointment = CreateAppointment(
+                data,
+                appointmentId,
+                CreatedAt.AddHours(2));
+
+            context.Appointments.Add(appointment);
+            await context.SaveChangesAsync();
+
+            var payment = new Payment(
+                paymentId,
+                appointment,
+                CreatedAt.AddMinutes(1));
+
+            context.Payments.Add(payment);
+            await context.SaveChangesAsync();
+
+            var attempt = new PaymentAttempt(
+                attemptId,
+                payment,
+                PaymentMethod.Pix,
+                CreatedAt.AddMinutes(1),
+                CreatedAt.AddMinutes(10));
+
+            attempt.RegisterProviderPayment(
+                "gateway-test",
+                providerPaymentId,
+                CreatedAt.AddMinutes(2));
+
+            context.PaymentAttempts.Add(attempt);
+            await context.SaveChangesAsync();
+
+            context.ChangeTracker.Clear();
+
+            await using var staleContext = CreateContext(data.TenantId);
+
+            staleContext.Database.SetDbConnection(
+                context.Database.GetDbConnection());
+
+            await staleContext.Database.UseTransactionAsync(
+                transaction.GetDbTransaction());
+
+            var winningAttempt = await context.PaymentAttempts
+                .SingleAsync(entity => entity.Id == attemptId);
+
+            var staleAttempt = await staleContext.PaymentAttempts
+                .SingleAsync(entity => entity.Id == attemptId);
+
+            Assert.Equal(
+                PaymentAttemptStatus.Pending,
+                winningAttempt.Status);
+
+            Assert.Equal(
+                PaymentAttemptStatus.Pending,
+                staleAttempt.Status);
+
+            var confirmedAt = CreatedAt.AddMinutes(3);
+
+            Assert.True(winningAttempt.Confirm(
+                payment.Amount,
+                confirmedAt));
+
+            await context.SaveChangesAsync();
+
+            // Este objeto desconhece a confirmação já persistida.
+            Assert.True(staleAttempt.Fail(
+                CreatedAt.AddMinutes(4)));
+
+            var exception =
+                await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+                    () => staleContext.SaveChangesAsync());
+
+            var conflictingEntry = Assert.Single(exception.Entries);
+            Assert.Same(staleAttempt, conflictingEntry.Entity);
+
+            staleContext.ChangeTracker.Clear();
+            context.ChangeTracker.Clear();
+
+            var persistedAttempt = await context.PaymentAttempts
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == attemptId);
+
+            Assert.Equal(
+                PaymentAttemptStatus.Confirmed,
+                persistedAttempt.Status);
+
+            Assert.Equal(confirmedAt, persistedAttempt.ConfirmedAt);
+            Assert.Equal(confirmedAt, persistedAttempt.UpdatedAt);
+            Assert.Equal("gateway-test", persistedAttempt.Provider);
+            Assert.Equal(providerPaymentId, persistedAttempt.ProviderPaymentId);
+            Assert.Equal(payment.Amount, persistedAttempt.Amount);
+
+            // A liquidação do Payment será coordenada pelo serviço.
+            var persistedPayment = await context.Payments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == paymentId);
+
+            Assert.Equal(PaymentStatus.Pending, persistedPayment.Status);
+            Assert.Null(persistedPayment.ConfirmedPaymentAttemptId);
+
+            await transaction.RollbackAsync();
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Payment_WithStaleConfirmation_ShouldPreserveWinningAttempt()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var firstAttemptId = Guid.NewGuid();
+        var secondAttemptId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using var context = CreateContext(data.TenantId);
+            await using var transaction =
+                await context.Database.BeginTransactionAsync();
+
+            var appointment = CreateAppointment(
+                data,
+                appointmentId,
+                CreatedAt.AddHours(2));
+
+            context.Appointments.Add(appointment);
+            await context.SaveChangesAsync();
+
+            var payment = new Payment(
+                paymentId,
+                appointment,
+                CreatedAt.AddMinutes(1));
+
+            context.Payments.Add(payment);
+            await context.SaveChangesAsync();
+
+            var firstAttempt = new PaymentAttempt(
+                firstAttemptId,
+                payment,
+                PaymentMethod.Pix,
+                CreatedAt.AddMinutes(1),
+                CreatedAt.AddMinutes(10));
+
+            var secondAttempt = new PaymentAttempt(
+                secondAttemptId,
+                payment,
+                PaymentMethod.CreditCard,
+                CreatedAt.AddMinutes(1),
+                CreatedAt.AddMinutes(10));
+
+            firstAttempt.RegisterProviderPayment(
+                "gateway-test",
+                Guid.NewGuid().ToString("N"),
+                CreatedAt.AddMinutes(1));
+
+            secondAttempt.RegisterProviderPayment(
+                "gateway-test",
+                Guid.NewGuid().ToString("N"),
+                CreatedAt.AddMinutes(1));
+
+            firstAttempt.Confirm(
+                payment.Amount,
+                CreatedAt.AddMinutes(2));
+
+            secondAttempt.Confirm(
+                payment.Amount,
+                CreatedAt.AddMinutes(2));
+
+            context.PaymentAttempts.AddRange(
+                firstAttempt,
+                secondAttempt);
+
+            await context.SaveChangesAsync();
+            context.ChangeTracker.Clear();
+
+            await using var staleContext = CreateContext(data.TenantId);
+
+            staleContext.Database.SetDbConnection(
+                context.Database.GetDbConnection());
+
+            await staleContext.Database.UseTransactionAsync(
+                transaction.GetDbTransaction());
+
+            // Os dois contextos carregam a mesma versão PENDING.
+            var winningPayment = await context.Payments
+                .SingleAsync(entity => entity.Id == paymentId);
+
+            var stalePayment = await staleContext.Payments
+                .SingleAsync(entity => entity.Id == paymentId);
+
+            Assert.Equal(PaymentStatus.Pending, winningPayment.Status);
+            Assert.Equal(PaymentStatus.Pending, stalePayment.Status);
+
+            var winningTime = CreatedAt.AddMinutes(3);
+
+            Assert.True(winningPayment.Confirm(
+                firstAttempt,
+                winningTime));
+
+            await context.SaveChangesAsync();
+
+            // O segundo objeto ainda possui os tokens originais.
+            Assert.True(stalePayment.Confirm(
+                secondAttempt,
+                CreatedAt.AddMinutes(4)));
+
+            var exception =
+                await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+                    () => staleContext.SaveChangesAsync());
+
+            var conflictingEntry = Assert.Single(exception.Entries);
+            Assert.Same(stalePayment, conflictingEntry.Entity);
+
+            staleContext.ChangeTracker.Clear();
+            context.ChangeTracker.Clear();
+
+            var persistedPayment = await context.Payments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == paymentId);
+
+            Assert.Equal(PaymentStatus.Confirmed, persistedPayment.Status);
+            Assert.Equal(
+                firstAttemptId,
+                persistedPayment.ConfirmedPaymentAttemptId);
+            Assert.Equal(winningTime, persistedPayment.ConfirmedAt);
+            Assert.Equal(winningTime, persistedPayment.UpdatedAt);
+
+            // Ambas as cobranças recebidas continuam registradas.
+            // A compensação da excedente será tratada pela Application.
+            var persistedAttempts = await context.PaymentAttempts
+                .AsNoTracking()
+                .Where(entity => entity.PaymentId == paymentId)
+                .ToListAsync();
+
+            Assert.Equal(2, persistedAttempts.Count);
+            Assert.All(
+                persistedAttempts,
+                entity => Assert.Equal(
+                    PaymentAttemptStatus.Confirmed,
+                    entity.Status));
+
+            await transaction.RollbackAsync();
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Payment_WithConfirmationFromAnotherPayment_ShouldBeRejected()
+    {
+        var data = new TestData();
+
+        var firstAppointmentId = Guid.NewGuid();
+        var secondAppointmentId = Guid.NewGuid();
+        var firstPaymentId = Guid.NewGuid();
+        var secondPaymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using var context = CreateContext(data.TenantId);
+            await using var transaction =
+                await context.Database.BeginTransactionAsync();
+
+            // Intervalos separados para não acionar a exclusão de agenda.
+            var firstAppointment = CreateAppointment(
+                data,
+                firstAppointmentId,
+                CreatedAt.AddHours(2));
+
+            var secondAppointment = CreateAppointment(
+                data,
+                secondAppointmentId,
+                CreatedAt.AddHours(4));
+
+            context.Appointments.AddRange(
+                firstAppointment,
+                secondAppointment);
+
+            await context.SaveChangesAsync();
+
+            var firstPayment = new Payment(
+                firstPaymentId,
+                firstAppointment,
+                CreatedAt.AddMinutes(1));
+
+            var secondPayment = new Payment(
+                secondPaymentId,
+                secondAppointment,
+                CreatedAt.AddMinutes(1));
+
+            context.Payments.AddRange(firstPayment, secondPayment);
+            await context.SaveChangesAsync();
+
+            var attempt = new PaymentAttempt(
+                attemptId,
+                secondPayment,
+                PaymentMethod.Pix,
+                CreatedAt.AddMinutes(1),
+                CreatedAt.AddMinutes(10));
+
+            attempt.RegisterProviderPayment(
+                "gateway-test",
+                Guid.NewGuid().ToString("N"),
+                CreatedAt.AddMinutes(2));
+
+            attempt.Confirm(
+                secondPayment.Amount,
+                CreatedAt.AddMinutes(3));
+
+            context.PaymentAttempts.Add(attempt);
+            await context.SaveChangesAsync();
+
+            var confirmedAt = CreatedAt.AddMinutes(4);
+
+            // Ignora o domínio propositalmente para testar a FK do banco.
+            var exception = await Assert.ThrowsAsync<Npgsql.PostgresException>(
+                async () =>
+                {
+                    await context.Database.ExecuteSqlInterpolatedAsync(
+                        $"""
+                        UPDATE payments
+                        SET status = 'CONFIRMED',
+                            confirmed_payment_attempt_id = {attemptId},
+                            confirmed_at = {confirmedAt},
+                            updated_at = {confirmedAt}
+                        WHERE tenant_id = {data.TenantId}
+                          AND id = {firstPaymentId};
+                        """);
+                });
+
+            Assert.Equal(
+                Npgsql.PostgresErrorCodes.ForeignKeyViolation,
+                exception.SqlState);
+
+            Assert.Equal(
+                "FK_payments_payment_attempts_tenant_id_id_confirmed_payment_at~",
+                exception.ConstraintName);
+
+            await transaction.RollbackAsync();
+
+            Assert.False(
+                await context.Payments
+                    .AsNoTracking()
+                    .AnyAsync(entity => entity.Id == firstPaymentId));
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentAndAttempt_ShouldBeIsolatedBetweenTenants()
+    {
+        var owner = new TestData();
+        var other = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(owner);
+            await SeedAsync(other);
+
+            await using var ownerContext = CreateContext(owner.TenantId);
+            await using var transaction =
+                await ownerContext.Database.BeginTransactionAsync();
+
+            var appointment = CreateAppointment(
+                owner,
+                appointmentId,
+                CreatedAt.AddHours(2));
+
+            ownerContext.Appointments.Add(appointment);
+            await ownerContext.SaveChangesAsync();
+
+            var payment = new Payment(
+                paymentId,
+                appointment,
+                CreatedAt.AddMinutes(1));
+
+            ownerContext.Payments.Add(payment);
+            await ownerContext.SaveChangesAsync();
+
+            var attempt = new PaymentAttempt(
+                attemptId,
+                payment,
+                PaymentMethod.Pix,
+                CreatedAt.AddMinutes(1),
+                CreatedAt.AddMinutes(10));
+
+            ownerContext.PaymentAttempts.Add(attempt);
+            await ownerContext.SaveChangesAsync();
+
+            Assert.True(
+                await ownerContext.Payments
+                    .AnyAsync(entity => entity.Id == paymentId));
+
+            Assert.True(
+                await ownerContext.PaymentAttempts
+                    .AnyAsync(entity => entity.Id == attemptId));
+
+            await using var otherContext = CreateContext(other.TenantId);
+
+            // Compartilha a transação para enxergar os dados ainda
+            // não confirmados, mantendo outro contexto de tenant.
+            otherContext.Database.SetDbConnection(
+                ownerContext.Database.GetDbConnection());
+
+            await otherContext.Database.UseTransactionAsync(
+                transaction.GetDbTransaction());
+
+            Assert.False(
+                await otherContext.Payments
+                    .AnyAsync(entity => entity.Id == paymentId));
+
+            Assert.False(
+                await otherContext.PaymentAttempts
+                    .AnyAsync(entity => entity.Id == attemptId));
+
+            Assert.Equal(
+                0,
+                await otherContext.Payments
+                    .Where(entity => entity.Id == paymentId)
+                    .CountAsync());
+
+            Assert.Equal(
+                0,
+                await otherContext.PaymentAttempts
+                    .Where(entity => entity.Id == attemptId)
+                    .CountAsync());
+
+            // Prova que os registros existem na mesma transação
+            // e são ocultados pelos filtros de tenant.
+            var physicalPayment = await otherContext.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == paymentId);
+
+            var physicalAttempt = await otherContext.PaymentAttempts
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == attemptId);
+
+            Assert.Equal(owner.TenantId, physicalPayment.TenantId);
+            Assert.Equal(owner.TenantId, physicalAttempt.TenantId);
+
+            // O contexto de outro tenant também não pode inserir
+            // entidades financeiras pertencentes ao proprietário.
+            otherContext.Payments.Add(physicalPayment);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => otherContext.SaveChangesAsync());
+
+            otherContext.ChangeTracker.Clear();
+
+            otherContext.PaymentAttempts.Add(physicalAttempt);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => otherContext.SaveChangesAsync());
+
+            otherContext.ChangeTracker.Clear();
+
+            await transaction.RollbackAsync();
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(owner.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task PaymentAttempt_WithDuplicateProviderPayment_ShouldRejectSecondAttempt()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var firstAttemptId = Guid.NewGuid();
+        var secondAttemptId = Guid.NewGuid();
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using var context = CreateContext(data.TenantId);
+            await using var transaction =
+                await context.Database.BeginTransactionAsync();
+
+            var appointment = CreateAppointment(
+                data,
+                appointmentId,
+                CreatedAt.AddHours(2));
+
+            context.Appointments.Add(appointment);
+            await context.SaveChangesAsync();
+
+            var payment = new Payment(
+                paymentId,
+                appointment,
+                CreatedAt.AddMinutes(1));
+
+            context.Payments.Add(payment);
+            await context.SaveChangesAsync();
+
+            var firstAttempt = new PaymentAttempt(
+                firstAttemptId,
+                payment,
+                PaymentMethod.Pix,
+                CreatedAt.AddMinutes(1),
+                CreatedAt.AddMinutes(10));
+
+            firstAttempt.RegisterProviderPayment(
+                "gateway-test",
+                providerPaymentId,
+                CreatedAt.AddMinutes(2));
+
+            context.PaymentAttempts.Add(firstAttempt);
+            await context.SaveChangesAsync();
+
+            var secondAttempt = new PaymentAttempt(
+                secondAttemptId,
+                payment,
+                PaymentMethod.CreditCard,
+                CreatedAt.AddMinutes(3),
+                CreatedAt.AddMinutes(10));
+
+            secondAttempt.RegisterProviderPayment(
+                "gateway-test",
+                providerPaymentId,
+                CreatedAt.AddMinutes(3));
+
+            context.PaymentAttempts.Add(secondAttempt);
+
+            var exception = await Assert.ThrowsAsync<DbUpdateException>(
+                () => context.SaveChangesAsync());
+
+            var postgresException =
+                Assert.IsType<Npgsql.PostgresException>(
+                    exception.InnerException);
+
+            Assert.Equal(
+                Npgsql.PostgresErrorCodes.UniqueViolation,
+                postgresException.SqlState);
+
+            Assert.Equal(
+                "IX_payment_attempts_provider_provider_payment_id",
+                postgresException.ConstraintName);
+
+            context.ChangeTracker.Clear();
+
+            var persistedAttempt = Assert.Single(
+                await context.PaymentAttempts
+                    .AsNoTracking()
+                    .Where(attempt => attempt.PaymentId == paymentId)
+                    .ToListAsync());
+
+            Assert.Equal(firstAttemptId, persistedAttempt.Id);
+            Assert.Equal(providerPaymentId, persistedAttempt.ProviderPaymentId);
+            Assert.Equal(PaymentMethod.Pix, persistedAttempt.PaymentMethod);
+
+            Assert.False(
+                await context.PaymentAttempts
+                    .AnyAsync(attempt => attempt.Id == secondAttemptId));
+
+            await transaction.RollbackAsync();
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Payment_WithDuplicateAppointment_ShouldRejectSecondPayment()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var firstPaymentId = Guid.NewGuid();
+        var secondPaymentId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using var context = CreateContext(data.TenantId);
+            await using var transaction =
+                await context.Database.BeginTransactionAsync();
+
+            var appointment = CreateAppointment(
+                data,
+                appointmentId,
+                CreatedAt.AddHours(2));
+
+            context.Appointments.Add(appointment);
+            await context.SaveChangesAsync();
+
+            context.Payments.Add(
+                new Payment(
+                    firstPaymentId,
+                    appointment,
+                    CreatedAt.AddMinutes(1)));
+
+            await context.SaveChangesAsync();
+
+            context.Payments.Add(
+                new Payment(
+                    secondPaymentId,
+                    appointment,
+                    CreatedAt.AddMinutes(2)));
+
+            var exception = await Assert.ThrowsAsync<DbUpdateException>(
+                () => context.SaveChangesAsync());
+
+            var postgresException =
+                Assert.IsType<Npgsql.PostgresException>(
+                    exception.InnerException);
+
+            Assert.Equal(
+                Npgsql.PostgresErrorCodes.UniqueViolation,
+                postgresException.SqlState);
+
+            Assert.Equal(
+                "IX_payments_tenant_id_appointment_id",
+                postgresException.ConstraintName);
+
+            // O EF usa savepoint dentro da transação existente.
+            // Remove o objeto cuja inserção foi rejeitada antes da leitura.
+            context.ChangeTracker.Clear();
+
+            var persistedPayment = Assert.Single(
+                await context.Payments
+                    .AsNoTracking()
+                    .Where(payment =>
+                        payment.AppointmentId == appointmentId)
+                    .ToListAsync());
+
+            Assert.Equal(firstPaymentId, persistedPayment.Id);
+            Assert.Equal(PaymentStatus.Pending, persistedPayment.Status);
+
+            Assert.False(
+                await context.Payments
+                    .AnyAsync(payment => payment.Id == secondPaymentId));
+
+            await transaction.RollbackAsync();
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentAndAttempt_ShouldPersistAndConfirmWithTenantRelationships()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+
+        var paymentCreatedAt = CreatedAt.AddMinutes(1);
+        var registeredAt = CreatedAt.AddMinutes(2);
+        var confirmedAt = CreatedAt.AddMinutes(3);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using var context = CreateContext(data.TenantId);
+
+            // Todas as alterações financeiras deste teste serão revertidas.
+            await using var transaction =
+                await context.Database.BeginTransactionAsync();
+
+            var appointment = CreateAppointment(
+                data,
+                appointmentId,
+                CreatedAt.AddHours(2));
+
+            context.Appointments.Add(appointment);
+            await context.SaveChangesAsync();
+
+            var payment = new Payment(
+                paymentId,
+                appointment,
+                paymentCreatedAt);
+
+            context.Payments.Add(payment);
+            await context.SaveChangesAsync();
+
+            var attempt = new PaymentAttempt(
+                attemptId,
+                payment,
+                PaymentMethod.Pix,
+                paymentCreatedAt,
+                CreatedAt.AddMinutes(10));
+
+            context.PaymentAttempts.Add(attempt);
+            await context.SaveChangesAsync();
+
+            attempt.RegisterProviderPayment(
+                "gateway-test",
+                providerPaymentId,
+                registeredAt);
+
+            await context.SaveChangesAsync();
+
+            context.ChangeTracker.Clear();
+
+            var persistedPayment = await context.Payments
+                .SingleAsync(entity => entity.Id == paymentId);
+
+            var persistedAttempt = await context.PaymentAttempts
+                .SingleAsync(entity => entity.Id == attemptId);
+
+            Assert.Equal(data.TenantId, persistedPayment.TenantId);
+            Assert.Equal(data.BusinessId, persistedPayment.BusinessId);
+            Assert.Equal(appointmentId, persistedPayment.AppointmentId);
+            Assert.Equal(appointment.TotalPriceSnapshot, persistedPayment.Amount);
+            Assert.Equal(PaymentStatus.Pending, persistedPayment.Status);
+            Assert.Null(persistedPayment.ConfirmedPaymentAttemptId);
+            Assert.Null(persistedPayment.ConfirmedAt);
+
+            Assert.Equal(data.TenantId, persistedAttempt.TenantId);
+            Assert.Equal(paymentId, persistedAttempt.PaymentId);
+            Assert.Equal(persistedPayment.Amount, persistedAttempt.Amount);
+            Assert.Equal(PaymentMethod.Pix, persistedAttempt.PaymentMethod);
+            Assert.Equal(PaymentAttemptStatus.Pending, persistedAttempt.Status);
+            Assert.Equal("gateway-test", persistedAttempt.Provider);
+            Assert.Equal(providerPaymentId, persistedAttempt.ProviderPaymentId);
+            Assert.Equal(registeredAt, persistedAttempt.UpdatedAt);
+
+            Assert.True(persistedAttempt.Confirm(
+                persistedPayment.Amount,
+                confirmedAt));
+
+            // Persiste a tentativa confirmada antes de liquidar o Payment.
+            await context.SaveChangesAsync();
+
+            Assert.True(persistedPayment.Confirm(
+                persistedAttempt,
+                confirmedAt));
+
+            await context.SaveChangesAsync();
+
+            context.ChangeTracker.Clear();
+
+            var confirmedPayment = await context.Payments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == paymentId);
+
+            var confirmedAttempt = await context.PaymentAttempts
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == attemptId);
+
+            Assert.Equal(PaymentStatus.Confirmed, confirmedPayment.Status);
+            Assert.Equal(attemptId, confirmedPayment.ConfirmedPaymentAttemptId);
+            Assert.Equal(confirmedAt, confirmedPayment.ConfirmedAt);
+            Assert.Equal(confirmedAt, confirmedPayment.UpdatedAt);
+            Assert.Equal(paymentCreatedAt, confirmedPayment.CreatedAt);
+
+            Assert.Equal(PaymentAttemptStatus.Confirmed, confirmedAttempt.Status);
+            Assert.Equal(confirmedAt, confirmedAttempt.ConfirmedAt);
+            Assert.Equal(confirmedAt, confirmedAttempt.UpdatedAt);
+            Assert.Equal(providerPaymentId, confirmedAttempt.ProviderPaymentId);
+            Assert.Equal(confirmedPayment.Amount, confirmedAttempt.Amount);
+
+            Assert.Equal(TimeSpan.Zero, confirmedPayment.ConfirmedAt!.Value.Offset);
+            Assert.Equal(TimeSpan.Zero, confirmedAttempt.ConfirmedAt!.Value.Offset);
+
+            // O domínio financeiro ainda não altera o estado operacional.
+            var persistedAppointment = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(
+                AppointmentStatus.Pending,
+                persistedAppointment.Status);
+
+            await transaction.RollbackAsync();
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Fact]
     public async Task AppointmentHistory_ShouldIsolateWorkerExpirationBetweenTenants()
@@ -3926,6 +4752,111 @@ public sealed class AppointmentPersistenceTests
     #endregion
 
     #region Theories
+
+    [Theory]
+    [InlineData("tenant")]
+    [InlineData("payment")]
+    [InlineData("amount")]
+    public async Task PaymentAttempt_WithInvalidPaymentReference_ShouldBeRejected(
+        string scenario)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using var context = CreateContext(data.TenantId);
+            await using var transaction =
+                await context.Database.BeginTransactionAsync();
+
+            var appointment = CreateAppointment(
+                data,
+                appointmentId,
+                CreatedAt.AddHours(2));
+
+            context.Appointments.Add(appointment);
+            await context.SaveChangesAsync();
+
+            var payment = new Payment(
+                paymentId,
+                appointment,
+                CreatedAt.AddMinutes(1));
+
+            context.Payments.Add(payment);
+            await context.SaveChangesAsync();
+
+            var attemptTenantId = scenario == "tenant"
+                ? Guid.NewGuid()
+                : data.TenantId;
+
+            var attemptPaymentId = scenario == "payment"
+                ? Guid.NewGuid()
+                : paymentId;
+
+            var attemptAmount = scenario == "amount"
+                ? payment.Amount + 0.01m
+                : payment.Amount;
+
+            var now = CreatedAt.AddMinutes(2);
+            var expiresAt = CreatedAt.AddMinutes(10);
+
+            var exception = await Assert.ThrowsAsync<Npgsql.PostgresException>(
+                async () =>
+                {
+                    await context.Database.ExecuteSqlInterpolatedAsync(
+                        $"""
+                        INSERT INTO payment_attempts
+                        (
+                            id,
+                            tenant_id,
+                            payment_id,
+                            payment_method,
+                            status,
+                            amount,
+                            expires_at,
+                            created_at,
+                            updated_at
+                        )
+                        VALUES
+                        (
+                            {attemptId},
+                            {attemptTenantId},
+                            {attemptPaymentId},
+                            'PIX',
+                            'CREATED',
+                            {attemptAmount},
+                            {expiresAt},
+                            {now},
+                            {now}
+                        );
+                        """);
+                });
+
+            Assert.Equal(
+                Npgsql.PostgresErrorCodes.ForeignKeyViolation,
+                exception.SqlState);
+
+            Assert.Equal(
+                "FK_payment_attempts_payments_tenant_id_payment_id_amount",
+                exception.ConstraintName);
+
+            // Após a falha SQL, reverte a transação antes de novas consultas.
+            await transaction.RollbackAsync();
+
+            Assert.False(
+                await context.PaymentAttempts
+                    .IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.Id == attemptId));
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Theory]
     [InlineData(AppointmentStatus.CancelledByClient)]
