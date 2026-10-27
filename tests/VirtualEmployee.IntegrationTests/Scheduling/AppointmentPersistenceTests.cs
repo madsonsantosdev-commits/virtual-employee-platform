@@ -18,7 +18,11 @@ using VirtualEmployee.Infrastructure.Appointments;
 using VirtualEmployee.Application.Appointments.CancelAppointment;
 using VirtualEmployee.Application.Appointments.RescheduleAppointment;
 using VirtualEmployee.Domain.Payments;
-
+using VirtualEmployee.Application.Payments.CreatePaymentAttempt;
+using VirtualEmployee.Application.Payments.Gateway;
+using VirtualEmployee.Infrastructure.Payments;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using VirtualEmployee.IntegrationTests.Payments.Helpers;
 using Xunit;
 
 namespace VirtualEmployee.IntegrationTests.Scheduling;
@@ -37,6 +41,1283 @@ public sealed class AppointmentPersistenceTests
     }
 
     #region Facts
+
+    [Fact]
+    public async Task PaymentCreation_WithCompletionFailure_ShouldRollbackAndRecoverSameCharge()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+        var now = CreatedAt.AddMinutes(2);
+
+        var command = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        CreateGatewayPaymentRequest? originalGatewayRequest = null;
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                originalGatewayRequest ??= request;
+
+                Assert.Equal(originalGatewayRequest, request);
+
+                return Task.FromResult(
+                    CreateGatewayPaymentResult.Created(
+                        new GatewayPaymentReference(
+                            "gateway-test",
+                            providerPaymentId,
+                            "https://checkout.example.test/recovered-commit",
+                            request.ExpiresAt)));
+            });
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            var interceptor = new FailAfterPaymentCompletionSaveInterceptor();
+
+            await using (var failingContext = CreateContext(
+                data.TenantId,
+                interceptor))
+            {
+                var service = new CreatePaymentAttemptService(
+                    failingContext,
+                    gateway,
+                    new FixedTimeProvider(now));
+
+                var exception =
+                    await Assert.ThrowsAsync<InvalidOperationException>(
+                        () => service.CreateAsync(command));
+
+                Assert.Equal(
+                    "Simulated failure before payment completion commit.",
+                    exception.Message);
+
+                Assert.Equal(2, interceptor.SavedEntriesCount);
+                Assert.True(interceptor.HadActiveTransaction);
+                Assert.Null(failingContext.Database.CurrentTransaction);
+
+                Assert.Empty(
+                    failingContext.ChangeTracker.Entries<PaymentAttempt>());
+            }
+
+            Assert.Single(gateway.Requests);
+            Assert.NotNull(originalGatewayRequest);
+
+            await using (var readContext = CreateContext(data.TenantId))
+            {
+                var attempt = Assert.Single(
+                    await readContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(
+                    originalGatewayRequest.PaymentAttemptId,
+                    attempt.Id);
+
+                Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+                Assert.Null(attempt.Provider);
+                Assert.Null(attempt.ProviderPaymentId);
+                Assert.Equal(now, attempt.UpdatedAt);
+
+                var intent = Assert.Single(
+                    await readContext.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(
+                    PaymentAttemptPreparationService.IntentOperation,
+                    intent.Operation);
+
+                Assert.Equal(1, await readContext.Payments.CountAsync());
+
+                Assert.False(
+                    await readContext.IdempotencyRecords.AnyAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentAttemptCompletionService.Operation));
+            }
+
+            CreatePaymentAttemptResponse recoveredResponse;
+
+            await using (var retryContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    retryContext,
+                    gateway,
+                    new FixedTimeProvider(now.AddMinutes(1)));
+
+                var retry = await service.CreateAsync(command);
+
+                Assert.True(retry.IsSuccess);
+
+                recoveredResponse =
+                    Assert.IsType<CreatePaymentAttemptResponse>(
+                        retry.Response);
+
+                Assert.Equal(
+                    originalGatewayRequest.PaymentId,
+                    recoveredResponse.PaymentId);
+
+                Assert.Equal(
+                    originalGatewayRequest.PaymentAttemptId,
+                    recoveredResponse.PaymentAttemptId);
+
+                var attempt = Assert.Single(
+                    await retryContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(PaymentAttemptStatus.Pending, attempt.Status);
+                Assert.Equal(providerPaymentId, attempt.ProviderPaymentId);
+                Assert.Equal(now, attempt.CreatedAt);
+                Assert.Equal(now.AddMinutes(1), attempt.UpdatedAt);
+
+                Assert.Equal(1, await retryContext.Payments.CountAsync());
+                Assert.Equal(2, await retryContext.IdempotencyRecords.CountAsync());
+            }
+
+            Assert.Equal(2, gateway.Requests.Count);
+
+            Assert.Equal(
+                gateway.Requests[0].IdempotencyKey,
+                gateway.Requests[1].IdempotencyKey);
+
+            await using (var replayContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    replayContext,
+                    gateway,
+                    new FixedTimeProvider(now.AddMinutes(2)));
+
+                var replay = await service.CreateAsync(command);
+
+                Assert.True(replay.IsSuccess);
+                Assert.Equal(recoveredResponse, replay.Response);
+            }
+
+            Assert.Equal(2, gateway.Requests.Count);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentCreation_WithDefinitiveRejection_ShouldReplayFailureAndAllowNewKey()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var now = CreatedAt.AddMinutes(2);
+        var gatewayCalls = 0;
+
+        var rejectedCommand = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        var nextCommand = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.CreditCard,
+            Guid.NewGuid().ToString("N"));
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var call = Interlocked.Increment(ref gatewayCalls);
+
+                if (call == 1)
+                {
+                    return Task.FromResult(
+                        CreateGatewayPaymentResult.Rejected());
+                }
+
+                return Task.FromResult(
+                    CreateGatewayPaymentResult.Created(
+                        new GatewayPaymentReference(
+                            "gateway-test",
+                            Guid.NewGuid().ToString("N"),
+                            "https://checkout.example.test/new-attempt",
+                            request.ExpiresAt)));
+            });
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            Guid paymentId;
+            Guid rejectedAttemptId;
+
+            await using (var firstContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    firstContext,
+                    gateway,
+                    new FixedTimeProvider(now));
+
+                var result = await service.CreateAsync(rejectedCommand);
+
+                Assert.False(result.IsSuccess);
+                Assert.Equal(
+                    CreatePaymentAttemptError.ProviderError,
+                    result.Error);
+                Assert.Null(result.Response);
+
+                var payment = Assert.Single(
+                    await firstContext.Payments
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var attempt = Assert.Single(
+                    await firstContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                paymentId = payment.Id;
+                rejectedAttemptId = attempt.Id;
+
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+                Assert.Equal(PaymentAttemptStatus.Failed, attempt.Status);
+                Assert.Null(attempt.Provider);
+                Assert.Null(attempt.ProviderPaymentId);
+                Assert.Equal(2, await firstContext.IdempotencyRecords.CountAsync());
+            }
+
+            await using (var replayContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    replayContext,
+                    gateway,
+                    new FixedTimeProvider(now.AddMinutes(1)));
+
+                var replay = await service.CreateAsync(rejectedCommand);
+
+                Assert.False(replay.IsSuccess);
+                Assert.Equal(
+                    CreatePaymentAttemptError.ProviderError,
+                    replay.Error);
+                Assert.Null(replay.Response);
+            }
+
+            Assert.Equal(1, gatewayCalls);
+            Assert.Single(gateway.Requests);
+
+            await using (var nextContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    nextContext,
+                    gateway,
+                    new FixedTimeProvider(now.AddMinutes(2)));
+
+                var result = await service.CreateAsync(nextCommand);
+
+                Assert.True(result.IsSuccess);
+
+                var response =
+                    Assert.IsType<CreatePaymentAttemptResponse>(
+                        result.Response);
+
+                Assert.Equal(paymentId, response.PaymentId);
+                Assert.NotEqual(
+                    rejectedAttemptId,
+                    response.PaymentAttemptId);
+                Assert.Equal("CREDIT_CARD", response.PaymentMethod);
+                Assert.Equal("PENDING", response.Status);
+
+                var attempts = await nextContext.PaymentAttempts
+                    .AsNoTracking()
+                    .ToListAsync();
+
+                Assert.Equal(2, attempts.Count);
+
+                var rejectedAttempt = Assert.Single(
+                    attempts,
+                    attempt => attempt.Id == rejectedAttemptId);
+
+                var nextAttempt = Assert.Single(
+                    attempts,
+                    attempt => attempt.Id == response.PaymentAttemptId);
+
+                Assert.Equal(
+                    PaymentAttemptStatus.Failed,
+                    rejectedAttempt.Status);
+
+                Assert.Equal(now, rejectedAttempt.UpdatedAt);
+                Assert.Null(rejectedAttempt.ProviderPaymentId);
+
+                Assert.Equal(
+                    PaymentAttemptStatus.Pending,
+                    nextAttempt.Status);
+
+                Assert.Equal(
+                    PaymentMethod.CreditCard,
+                    nextAttempt.PaymentMethod);
+
+                Assert.Equal(paymentId, nextAttempt.PaymentId);
+                Assert.Equal(rejectedAttempt.Amount, nextAttempt.Amount);
+
+                Assert.Equal(1, await nextContext.Payments.CountAsync());
+                Assert.Equal(4, await nextContext.IdempotencyRecords.CountAsync());
+            }
+
+            Assert.Equal(2, gatewayCalls);
+
+            var requests = gateway.Requests;
+
+            Assert.Equal(
+                requests[0].PaymentId,
+                requests[1].PaymentId);
+
+            Assert.NotEqual(
+                requests[0].PaymentAttemptId,
+                requests[1].PaymentAttemptId);
+
+            Assert.NotEqual(
+                requests[0].IdempotencyKey,
+                requests[1].IdempotencyKey);
+
+            // A nova tentativa não altera o resultado da chave anterior.
+            await using (var finalContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    finalContext,
+                    gateway,
+                    new FixedTimeProvider(now.AddMinutes(3)));
+
+                var replay = await service.CreateAsync(rejectedCommand);
+
+                Assert.Equal(
+                    CreatePaymentAttemptError.ProviderError,
+                    replay.Error);
+                Assert.False(replay.IsSuccess);
+            }
+
+            Assert.Equal(2, gatewayCalls);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentCreation_ShouldCallGatewayOutsideTransactionAndReplayResult()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+        var now = CreatedAt.AddMinutes(2);
+
+        var command = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using var context = CreateContext(data.TenantId);
+
+            var gateway = new RecordingPaymentGateway(
+                async (request, cancellationToken) =>
+                {
+                    Assert.Null(context.Database.CurrentTransaction);
+                    Assert.Null(System.Transactions.Transaction.Current);
+
+                    // Outro contexto verifica que a preparação
+                    // já foi confirmada antes da chamada ao gateway.
+                    await using var observer = CreateContext(data.TenantId);
+
+                    var attempt = await observer.PaymentAttempts
+                        .AsNoTracking()
+                        .SingleAsync(
+                            entity => entity.Id == request.PaymentAttemptId,
+                            cancellationToken);
+
+                    Assert.Equal(
+                        PaymentAttemptStatus.Created,
+                        attempt.Status);
+
+                    Assert.True(
+                        await observer.IdempotencyRecords.AnyAsync(
+                            entity =>
+                                entity.Operation ==
+                                    PaymentAttemptPreparationService.IntentOperation &&
+                                entity.Key == command.IdempotencyKey,
+                            cancellationToken));
+
+                    Assert.Equal(data.TenantId, request.TenantId);
+                    Assert.Equal(data.BusinessId, request.BusinessId);
+                    Assert.Equal(appointmentId, request.AppointmentId);
+                    Assert.Equal(attempt.Amount, request.Amount);
+
+                    return CreateGatewayPaymentResult.Created(
+                        new GatewayPaymentReference(
+                            "gateway-test",
+                            providerPaymentId,
+                            "https://checkout.example.test/payment",
+                            request.ExpiresAt));
+                });
+
+            var service = new CreatePaymentAttemptService(
+                context,
+                gateway,
+                new FixedTimeProvider(now));
+
+            var result = await service.CreateAsync(command);
+
+            Assert.True(result.IsSuccess);
+
+            var response =
+                Assert.IsType<CreatePaymentAttemptResponse>(
+                    result.Response);
+
+            Assert.Equal("PIX", response.PaymentMethod);
+            Assert.Equal("PENDING", response.Status);
+            Assert.Equal(65m, response.Amount);
+            Assert.Equal(
+                "https://checkout.example.test/payment",
+                response.CheckoutUrl);
+
+            Assert.Null(context.Database.CurrentTransaction);
+
+            await using var replayContext = CreateContext(data.TenantId);
+
+            var replayService = new CreatePaymentAttemptService(
+                replayContext,
+                gateway,
+                new FixedTimeProvider(now.AddMinutes(1)));
+
+            var replay = await replayService.CreateAsync(command);
+
+            Assert.True(replay.IsSuccess);
+            Assert.Equal(response, replay.Response);
+            Assert.Single(gateway.Requests);
+
+            var persistedAttempt = await replayContext.PaymentAttempts
+                .AsNoTracking()
+                .SingleAsync();
+
+            Assert.Equal(response.PaymentAttemptId, persistedAttempt.Id);
+            Assert.Equal(
+                PaymentAttemptStatus.Pending,
+                persistedAttempt.Status);
+            Assert.Equal("gateway-test", persistedAttempt.Provider);
+            Assert.Equal(
+                providerPaymentId,
+                persistedAttempt.ProviderPaymentId);
+            Assert.Null(persistedAttempt.ConfirmedAt);
+
+            var persistedPayment = await replayContext.Payments
+                .AsNoTracking()
+                .SingleAsync();
+
+            Assert.Equal(response.PaymentId, persistedPayment.Id);
+            Assert.Equal(PaymentStatus.Pending, persistedPayment.Status);
+            Assert.Null(persistedPayment.ConfirmedAt);
+
+            Assert.Equal(
+                2,
+                await replayContext.IdempotencyRecords.CountAsync());
+
+            Assert.True(
+                await replayContext.IdempotencyRecords.AnyAsync(
+                    entity =>
+                        entity.Operation ==
+                            PaymentAttemptCompletionService.Operation &&
+                        entity.Key == command.IdempotencyKey));
+
+            var appointment = await replayContext.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(AppointmentStatus.Pending, appointment.Status);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+
+    public async Task PaymentPreparation_WithConcurrentDifferentKeys_ShouldPrepareOnlyOne()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var now = CreatedAt.AddMinutes(2);
+
+        var firstCommand = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        var secondCommand = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.CreditCard,
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using var firstContext = CreateContext(data.TenantId);
+            await using var secondContext = CreateContext(data.TenantId);
+
+            var firstService = new PaymentAttemptPreparationService(
+                firstContext,
+                new FixedTimeProvider(now));
+
+            var secondService = new PaymentAttemptPreparationService(
+                secondContext,
+                new FixedTimeProvider(now));
+
+            var start = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            using var timeout = new CancellationTokenSource(
+                TimeSpan.FromSeconds(60));
+
+            async Task<PaymentAttemptPreparationResult> ExecuteAsync(
+                PaymentAttemptPreparationService service,
+                CreatePaymentAttemptCommand command)
+            {
+                await start.Task.WaitAsync(timeout.Token);
+
+                return await service.PrepareAsync(
+                    command,
+                    timeout.Token);
+            }
+
+            var firstTask = ExecuteAsync(firstService, firstCommand);
+            var secondTask = ExecuteAsync(secondService, secondCommand);
+
+            start.SetResult(true);
+
+            var results = await Task.WhenAll(firstTask, secondTask);
+
+            var success = Assert.Single(
+                results,
+                result => result.IsSuccess);
+
+            var failure = Assert.Single(
+                results,
+                result => !result.IsSuccess);
+
+            Assert.Equal(
+                CreatePaymentAttemptError.ConcurrencyConflict,
+                failure.Error);
+
+            Assert.Null(failure.Request);
+
+            var winningCommand = results[0].IsSuccess
+                ? firstCommand
+                : secondCommand;
+
+            var losingCommand = results[0].IsSuccess
+                ? secondCommand
+                : firstCommand;
+
+            var winningRequest =
+                Assert.IsType<CreateGatewayPaymentRequest>(
+                    success.Request);
+
+            Assert.Null(firstContext.Database.CurrentTransaction);
+            Assert.Null(secondContext.Database.CurrentTransaction);
+
+            await using var readContext = CreateContext(data.TenantId);
+
+            var payment = Assert.Single(
+                await readContext.Payments
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            var attempt = Assert.Single(
+                await readContext.PaymentAttempts
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            var intent = Assert.Single(
+                await readContext.IdempotencyRecords
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            Assert.Equal(winningRequest.PaymentId, payment.Id);
+            Assert.Equal(winningRequest.PaymentAttemptId, attempt.Id);
+            Assert.Equal(payment.Id, attempt.PaymentId);
+            Assert.Equal(winningCommand.PaymentMethod, attempt.PaymentMethod);
+            Assert.Equal(winningCommand.PaymentMethod, winningRequest.PaymentMethod);
+
+            Assert.Equal(PaymentStatus.Pending, payment.Status);
+            Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+            Assert.Equal(now, attempt.CreatedAt);
+            Assert.Null(attempt.ProviderPaymentId);
+
+            Assert.Equal(winningCommand.IdempotencyKey, intent.Key);
+            Assert.Equal(
+                PaymentAttemptPreparationService.IntentOperation,
+                intent.Operation);
+
+            Assert.False(
+                await readContext.IdempotencyRecords.AnyAsync(
+                    entity => entity.Key == losingCommand.IdempotencyKey));
+
+            var storedRequest =
+                System.Text.Json.JsonSerializer
+                    .Deserialize<CreateGatewayPaymentRequest>(
+                        intent.ResponseJson);
+
+            Assert.Equal(winningRequest, storedRequest);
+
+            // A chave vencedora continua recuperando a mesma tentativa.
+            var replayService = new PaymentAttemptPreparationService(
+                readContext,
+                new FixedTimeProvider(now.AddSeconds(1)));
+
+            var replay = await replayService.PrepareAsync(winningCommand);
+
+            Assert.True(replay.IsSuccess);
+            Assert.Equal(winningRequest, replay.Request);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentPreparation_WithConcurrentSameKey_ShouldReuseSingleAttempt()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var firstNow = CreatedAt.AddMinutes(2);
+        var secondNow = firstNow.AddSeconds(1);
+
+        var command = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using var firstContext = CreateContext(data.TenantId);
+            await using var secondContext = CreateContext(data.TenantId);
+
+            var firstService = new PaymentAttemptPreparationService(
+                firstContext,
+                new FixedTimeProvider(firstNow));
+
+            var secondService = new PaymentAttemptPreparationService(
+                secondContext,
+                new FixedTimeProvider(secondNow));
+
+            var start = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            using var timeout = new CancellationTokenSource(
+                TimeSpan.FromSeconds(60));
+
+            async Task<PaymentAttemptPreparationResult> ExecuteAsync(
+                PaymentAttemptPreparationService service)
+            {
+                await start.Task.WaitAsync(timeout.Token);
+
+                return await service.PrepareAsync(
+                    command,
+                    timeout.Token);
+            }
+
+            var firstTask = ExecuteAsync(firstService);
+            var secondTask = ExecuteAsync(secondService);
+
+            start.SetResult(true);
+
+            var results = await Task.WhenAll(
+                firstTask,
+                secondTask);
+
+            Assert.All(
+                results,
+                result => Assert.True(result.IsSuccess));
+
+            var firstRequest =
+                Assert.IsType<CreateGatewayPaymentRequest>(
+                    results[0].Request);
+
+            var secondRequest =
+                Assert.IsType<CreateGatewayPaymentRequest>(
+                    results[1].Request);
+
+            Assert.Equal(firstRequest, secondRequest);
+            Assert.Equal(
+                firstRequest.IdempotencyKey,
+                secondRequest.IdempotencyKey);
+
+            Assert.Null(firstContext.Database.CurrentTransaction);
+            Assert.Null(secondContext.Database.CurrentTransaction);
+
+            await using var readContext = CreateContext(data.TenantId);
+
+            var payment = Assert.Single(
+                await readContext.Payments
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            var attempt = Assert.Single(
+                await readContext.PaymentAttempts
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            var intent = Assert.Single(
+                await readContext.IdempotencyRecords
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            Assert.Equal(firstRequest.PaymentId, payment.Id);
+            Assert.Equal(firstRequest.PaymentAttemptId, attempt.Id);
+            Assert.Equal(payment.Id, attempt.PaymentId);
+
+            Assert.Equal(PaymentStatus.Pending, payment.Status);
+            Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+            Assert.Null(attempt.ProviderPaymentId);
+
+            Assert.Contains(
+                attempt.CreatedAt,
+                new[] { firstNow, secondNow });
+
+            Assert.Equal(attempt.CreatedAt, payment.CreatedAt);
+            Assert.Equal(attempt.CreatedAt, intent.CreatedAt);
+            Assert.Equal(attempt.CreatedAt, attempt.UpdatedAt);
+
+            Assert.Equal(command.IdempotencyKey, intent.Key);
+            Assert.Equal(
+                PaymentAttemptPreparationService.IntentOperation,
+                intent.Operation);
+
+            var storedRequest =
+                System.Text.Json.JsonSerializer
+                    .Deserialize<CreateGatewayPaymentRequest>(
+                        intent.ResponseJson);
+
+            Assert.Equal(firstRequest, storedRequest);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentPreparation_ShouldIsolateAppointmentsAndIntentKeysBetweenTenants()
+    {
+        var owner = new TestData();
+        var other = new TestData();
+        var ownerAppointmentId = Guid.NewGuid();
+        var otherAppointmentId = Guid.NewGuid();
+        var sharedKey = Guid.NewGuid().ToString("N");
+        var now = CreatedAt.AddMinutes(2);
+
+        var ownerCommand = new CreatePaymentAttemptCommand(
+            ownerAppointmentId,
+            PaymentMethod.Pix,
+            sharedKey);
+
+        try
+        {
+            await SeedAsync(owner);
+            await SeedAsync(other);
+
+            await using (var context = CreateContext(owner.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        owner,
+                        ownerAppointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                context.Appointments.Add(
+                    CreateAppointment(
+                        other,
+                        otherAppointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await context.SaveChangesAsync();
+            }
+
+            CreateGatewayPaymentRequest ownerRequest;
+
+            await using (var context = CreateContext(owner.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    context,
+                    new FixedTimeProvider(now));
+
+                var result = await service.PrepareAsync(ownerCommand);
+
+                Assert.True(result.IsSuccess);
+
+                ownerRequest =
+                    Assert.IsType<CreateGatewayPaymentRequest>(
+                        result.Request);
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    context,
+                    new FixedTimeProvider(now));
+
+                // Mesmo AppointmentId e mesma chave do proprietário.
+                var foreignResult = await service.PrepareAsync(
+                    ownerCommand);
+
+                Assert.False(foreignResult.IsSuccess);
+                Assert.Equal(
+                    CreatePaymentAttemptError.AppointmentNotFound,
+                    foreignResult.Error);
+                Assert.Null(foreignResult.Request);
+
+                Assert.Equal(0, await context.Payments.CountAsync());
+                Assert.Equal(0, await context.PaymentAttempts.CountAsync());
+                Assert.Equal(0, await context.IdempotencyRecords.CountAsync());
+                Assert.Null(context.Database.CurrentTransaction);
+            }
+
+            var otherCommand = new CreatePaymentAttemptCommand(
+                otherAppointmentId,
+                PaymentMethod.CreditCard,
+                sharedKey);
+
+            CreateGatewayPaymentRequest otherRequest;
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    context,
+                    new FixedTimeProvider(now));
+
+                var result = await service.PrepareAsync(otherCommand);
+
+                Assert.True(result.IsSuccess);
+
+                otherRequest =
+                    Assert.IsType<CreateGatewayPaymentRequest>(
+                        result.Request);
+
+                Assert.Equal(other.TenantId, otherRequest.TenantId);
+                Assert.Equal(otherAppointmentId, otherRequest.AppointmentId);
+                Assert.Equal(
+                    PaymentMethod.CreditCard,
+                    otherRequest.PaymentMethod);
+
+                Assert.NotEqual(
+                    ownerRequest.PaymentId,
+                    otherRequest.PaymentId);
+
+                Assert.NotEqual(
+                    ownerRequest.PaymentAttemptId,
+                    otherRequest.PaymentAttemptId);
+
+                Assert.NotEqual(
+                    ownerRequest.IdempotencyKey,
+                    otherRequest.IdempotencyKey);
+
+                var intent = Assert.Single(
+                    await context.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(other.TenantId, intent.TenantId);
+                Assert.Equal(sharedKey, intent.Key);
+
+                var storedRequest =
+                    System.Text.Json.JsonSerializer
+                        .Deserialize<CreateGatewayPaymentRequest>(
+                            intent.ResponseJson);
+
+                Assert.Equal(otherRequest, storedRequest);
+                Assert.Equal(1, await context.Payments.CountAsync());
+                Assert.Equal(1, await context.PaymentAttempts.CountAsync());
+            }
+
+            // A operação do outro tenant não altera a intenção original.
+            await using (var context = CreateContext(owner.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    context,
+                    new FixedTimeProvider(now.AddMinutes(1)));
+
+                var replay = await service.PrepareAsync(ownerCommand);
+
+                Assert.True(replay.IsSuccess);
+                Assert.Equal(ownerRequest, replay.Request);
+
+                var intent = Assert.Single(
+                    await context.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(owner.TenantId, intent.TenantId);
+                Assert.Equal(sharedKey, intent.Key);
+
+                Assert.Equal(1, await context.Payments.CountAsync());
+                Assert.Equal(1, await context.PaymentAttempts.CountAsync());
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(owner.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task PaymentPreparation_WithFailureBeforeCommit_ShouldRollbackAndAllowRetry()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var now = CreatedAt.AddMinutes(2);
+
+        var command = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            var interceptor = new FailAfterPaymentPreparationSaveInterceptor();
+
+            await using (var failingContext = CreateContext(
+                data.TenantId,
+                interceptor))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    failingContext,
+                    new FixedTimeProvider(now));
+
+                var exception =
+                    await Assert.ThrowsAsync<InvalidOperationException>(
+                        () => service.PrepareAsync(command));
+
+                Assert.Equal(
+                    "Simulated failure before payment preparation commit.",
+                    exception.Message);
+
+                Assert.Equal(3, interceptor.SavedEntriesCount);
+                Assert.True(interceptor.HadActiveTransaction);
+
+                Assert.Null(failingContext.Database.CurrentTransaction);
+
+                Assert.Empty(
+                    failingContext.ChangeTracker.Entries<Payment>());
+
+                Assert.Empty(
+                    failingContext.ChangeTracker.Entries<PaymentAttempt>());
+
+                Assert.Empty(
+                    failingContext.ChangeTracker
+                        .Entries<VirtualEmployee.Infrastructure.Persistence.Idempotency.IdempotencyRecord>());
+            }
+
+            // Outro contexto comprova que nada foi confirmado no banco.
+            await using (var readContext = CreateContext(data.TenantId))
+            {
+                Assert.Equal(
+                    0,
+                    await readContext.Payments.CountAsync());
+
+                Assert.Equal(
+                    0,
+                    await readContext.PaymentAttempts.CountAsync());
+
+                Assert.Equal(
+                    0,
+                    await readContext.IdempotencyRecords.CountAsync());
+
+                Assert.True(
+                    await readContext.Appointments.AnyAsync(
+                        entity => entity.Id == appointmentId));
+            }
+
+            // A chave não fica consumida pela transação revertida.
+            await using (var retryContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    retryContext,
+                    new FixedTimeProvider(now.AddMinutes(1)));
+
+                var retry = await service.PrepareAsync(command);
+
+                Assert.True(retry.IsSuccess);
+
+                var request =
+                    Assert.IsType<CreateGatewayPaymentRequest>(
+                        retry.Request);
+
+                var payment = Assert.Single(
+                    await retryContext.Payments
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var attempt = Assert.Single(
+                    await retryContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var intent = Assert.Single(
+                    await retryContext.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(request.PaymentId, payment.Id);
+                Assert.Equal(request.PaymentAttemptId, attempt.Id);
+                Assert.Equal(payment.Id, attempt.PaymentId);
+                Assert.Equal(command.IdempotencyKey, intent.Key);
+                Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+                Assert.Null(retryContext.Database.CurrentTransaction);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentPreparation_ShouldPersistIntentAndReuseItAcrossContexts()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var now = CreatedAt.AddMinutes(2);
+
+        var command = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            CreateGatewayPaymentRequest originalRequest;
+
+            await using (var firstContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    firstContext,
+                    new FixedTimeProvider(now));
+
+                var result = await service.PrepareAsync(command);
+
+                Assert.True(result.IsSuccess);
+                Assert.Equal(CreatePaymentAttemptError.None, result.Error);
+
+                originalRequest =
+                    Assert.IsType<CreateGatewayPaymentRequest>(
+                        result.Request);
+
+                Assert.Null(firstContext.Database.CurrentTransaction);
+            }
+
+            await using (var readContext = CreateContext(data.TenantId))
+            {
+                var payment = Assert.Single(
+                    await readContext.Payments
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var attempt = Assert.Single(
+                    await readContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var intent = Assert.Single(
+                    await readContext.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(data.TenantId, payment.TenantId);
+                Assert.Equal(data.BusinessId, payment.BusinessId);
+                Assert.Equal(appointmentId, payment.AppointmentId);
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+
+                Assert.Equal(payment.Id, attempt.PaymentId);
+                Assert.Equal(payment.Amount, attempt.Amount);
+                Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+                Assert.Equal(PaymentMethod.Pix, attempt.PaymentMethod);
+                Assert.Equal(now, attempt.CreatedAt);
+                Assert.Null(attempt.Provider);
+                Assert.Null(attempt.ProviderPaymentId);
+
+                Assert.Equal(
+                    PaymentAttemptPreparationService.IntentOperation,
+                    intent.Operation);
+
+                Assert.Equal(command.IdempotencyKey, intent.Key);
+                Assert.Equal(64, intent.RequestHash.Length);
+
+                var storedRequest =
+                    System.Text.Json.JsonSerializer
+                        .Deserialize<CreateGatewayPaymentRequest>(
+                            intent.ResponseJson);
+
+                Assert.NotNull(storedRequest);
+                Assert.Equal(originalRequest, storedRequest);
+                Assert.Equal(payment.Id, originalRequest.PaymentId);
+                Assert.Equal(attempt.Id, originalRequest.PaymentAttemptId);
+                Assert.Equal(payment.Amount, originalRequest.Amount);
+                Assert.Equal(attempt.ExpiresAt, originalRequest.ExpiresAt);
+            }
+
+            // Outra instância, outro contexto e relógio posterior.
+            await using (var replayContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    replayContext,
+                    new FixedTimeProvider(now.AddMinutes(1)));
+
+                var replay = await service.PrepareAsync(command);
+
+                Assert.True(replay.IsSuccess);
+
+                var replayRequest =
+                    Assert.IsType<CreateGatewayPaymentRequest>(
+                        replay.Request);
+
+                Assert.Equal(originalRequest, replayRequest);
+                Assert.Equal(
+                    originalRequest.IdempotencyKey,
+                    replayRequest.IdempotencyKey);
+
+                Assert.Null(replayContext.Database.CurrentTransaction);
+
+                Assert.Equal(
+                    1,
+                    await replayContext.Payments.CountAsync());
+
+                Assert.Equal(
+                    1,
+                    await replayContext.PaymentAttempts.CountAsync());
+
+                Assert.Equal(
+                    1,
+                    await replayContext.IdempotencyRecords.CountAsync());
+
+                var attempt = await replayContext.PaymentAttempts
+                    .AsNoTracking()
+                    .SingleAsync();
+
+                Assert.Equal(now, attempt.CreatedAt);
+                Assert.Equal(now, attempt.UpdatedAt);
+                Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Fact]
     public async Task PaymentAttempt_WithStaleFailure_ShouldPreserveConfirmation()
@@ -4754,6 +6035,807 @@ public sealed class AppointmentPersistenceTests
     #region Theories
 
     [Theory]
+    [InlineData(0, false)]
+    [InlineData(10, false)]
+    [InlineData(10, true)]
+    public async Task PaymentCreation_WithLateGatewayResponse_ShouldPreserveReferenceWithoutConfirming(
+        int offsetTicks,
+        bool materializeAppointmentExpiration)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+        var expiresAt = CreatedAt.AddMinutes(10);
+        var lateNow = expiresAt.AddTicks(offsetTicks);
+
+        var clock = new MutablePaymentTimeProvider(
+            CreatedAt.AddMinutes(2));
+
+        var command = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using var context = CreateContext(data.TenantId);
+
+            var gateway = new RecordingPaymentGateway(
+                async (request, cancellationToken) =>
+                {
+                    Assert.Null(context.Database.CurrentTransaction);
+                    Assert.Equal(expiresAt, request.ExpiresAt);
+
+                    // Simula o tempo decorrido durante a chamada externa.
+                    clock.UtcNow = lateNow;
+
+                    if (materializeAppointmentExpiration)
+                    {
+                        await using var expirationContext =
+                            CreateContext(data.TenantId);
+
+                        var appointment =
+                            await expirationContext.Appointments
+                                .SingleAsync(
+                                    entity => entity.Id == appointmentId,
+                                    cancellationToken);
+
+                        Assert.True(appointment.Expire(lateNow));
+
+                        await expirationContext.SaveChangesAsync(
+                            cancellationToken);
+                    }
+
+                    return CreateGatewayPaymentResult.Created(
+                        new GatewayPaymentReference(
+                            "gateway-test",
+                            providerPaymentId,
+                            "https://checkout.example.test/late",
+                            request.ExpiresAt));
+                });
+
+            var service = new CreatePaymentAttemptService(
+                context,
+                gateway,
+                clock);
+
+            var result = await service.CreateAsync(command);
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal(
+                CreatePaymentAttemptError.ReservationExpired,
+                result.Error);
+            Assert.Null(result.Response);
+            Assert.Null(context.Database.CurrentTransaction);
+
+            await using (var readContext = CreateContext(data.TenantId))
+            {
+                var payment = Assert.Single(
+                    await readContext.Payments
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var attempt = Assert.Single(
+                    await readContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var appointment = await readContext.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+                Assert.Null(payment.ConfirmedPaymentAttemptId);
+                Assert.Null(payment.ConfirmedAt);
+
+                Assert.Equal(
+                    PaymentAttemptStatus.Expired,
+                    attempt.Status);
+
+                Assert.Equal("gateway-test", attempt.Provider);
+                Assert.Equal(providerPaymentId, attempt.ProviderPaymentId);
+                Assert.Equal(expiresAt, attempt.ExpiresAt);
+                Assert.Equal(lateNow, attempt.UpdatedAt);
+                Assert.Null(attempt.ConfirmedAt);
+
+                Assert.Equal(
+                    materializeAppointmentExpiration
+                        ? AppointmentStatus.Expired
+                        : AppointmentStatus.Pending,
+                    appointment.Status);
+
+                Assert.Equal(
+                    materializeAppointmentExpiration
+                        ? lateNow
+                        : CreatedAt,
+                    appointment.UpdatedAt);
+
+                Assert.Equal(
+                    expiresAt,
+                    appointment.ReservationExpiresAt);
+
+                Assert.Equal(
+                    2,
+                    await readContext.IdempotencyRecords.CountAsync());
+
+                Assert.True(
+                    await readContext.IdempotencyRecords.AnyAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentAttemptCompletionService.Operation &&
+                            entity.Key == command.IdempotencyKey));
+            }
+
+            // O replay da resposta final funciona mesmo após o prazo.
+            await using (var replayContext = CreateContext(data.TenantId))
+            {
+                var replayService = new CreatePaymentAttemptService(
+                    replayContext,
+                    gateway,
+                    new FixedTimeProvider(lateNow.AddMinutes(1)));
+
+                var replay = await replayService.CreateAsync(command);
+
+                Assert.False(replay.IsSuccess);
+                Assert.Equal(
+                    CreatePaymentAttemptError.ReservationExpired,
+                    replay.Error);
+                Assert.Null(replay.Response);
+            }
+
+            Assert.Single(gateway.Requests);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("http-error")]
+    [InlineData("gateway-cancellation")]
+    [InlineData("unknown")]
+    public async Task PaymentCreation_WithUncertainOutcome_ShouldReuseOriginalAttemptOnRetry(
+        string scenario)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+        var now = CreatedAt.AddMinutes(2);
+
+        var command = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        CreateGatewayPaymentRequest? externalRequest = null;
+        GatewayPaymentReference? externalReference = null;
+        var gatewayCalls = 0;
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var call = Interlocked.Increment(ref gatewayCalls);
+
+                if (call == 1)
+                {
+                    // Simula uma cobrança criada externamente,
+                    // cuja resposta não chegou ao backend.
+                    externalRequest = request;
+
+                    externalReference = new GatewayPaymentReference(
+                        "gateway-test",
+                        providerPaymentId,
+                        "https://checkout.example.test/recovered",
+                        request.ExpiresAt);
+
+                    return scenario switch
+                    {
+                        "timeout" =>
+                            Task.FromException<CreateGatewayPaymentResult>(
+                                new TimeoutException(
+                                    "Simulated gateway timeout.")),
+
+                        "http-error" =>
+                            Task.FromException<CreateGatewayPaymentResult>(
+                                new System.Net.Http.HttpRequestException(
+                                    "Simulated connection failure.")),
+
+                        "gateway-cancellation" =>
+                            Task.FromException<CreateGatewayPaymentResult>(
+                                new OperationCanceledException(
+                                    "Simulated gateway timeout cancellation.")),
+
+                        "unknown" =>
+                            Task.FromResult(
+                                CreateGatewayPaymentResult.Unknown()),
+
+                        _ => throw new ArgumentOutOfRangeException(
+                            nameof(scenario))
+                    };
+                }
+
+                // Simula o provedor reconhecendo a mesma chave:
+                // devolve a cobrança anterior sem criar outra.
+                Assert.NotNull(externalRequest);
+                Assert.NotNull(externalReference);
+                Assert.Equal(externalRequest, request);
+                Assert.Equal(
+                    externalRequest.IdempotencyKey,
+                    request.IdempotencyKey);
+
+                return Task.FromResult(
+                    CreateGatewayPaymentResult.Created(
+                        externalReference));
+            });
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using (var firstContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    firstContext,
+                    gateway,
+                    new FixedTimeProvider(now));
+
+                var first = await service.CreateAsync(command);
+
+                Assert.False(first.IsSuccess);
+                Assert.Equal(
+                    CreatePaymentAttemptError.ProviderError,
+                    first.Error);
+                Assert.Null(first.Response);
+                Assert.Null(firstContext.Database.CurrentTransaction);
+            }
+
+            Assert.Equal(1, gatewayCalls);
+            Assert.NotNull(externalRequest);
+
+            await using (var readContext = CreateContext(data.TenantId))
+            {
+                var payment = Assert.Single(
+                    await readContext.Payments
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var attempt = Assert.Single(
+                    await readContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var intent = Assert.Single(
+                    await readContext.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(externalRequest.PaymentId, payment.Id);
+                Assert.Equal(externalRequest.PaymentAttemptId, attempt.Id);
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+                Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+                Assert.Null(attempt.Provider);
+                Assert.Null(attempt.ProviderPaymentId);
+
+                Assert.Equal(
+                    PaymentAttemptPreparationService.IntentOperation,
+                    intent.Operation);
+
+                Assert.False(
+                    await readContext.IdempotencyRecords.AnyAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentAttemptCompletionService.Operation));
+            }
+
+            CreatePaymentAttemptResponse recoveredResponse;
+
+            await using (var retryContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    retryContext,
+                    gateway,
+                    new FixedTimeProvider(now.AddMinutes(1)));
+
+                var retry = await service.CreateAsync(command);
+
+                Assert.True(retry.IsSuccess);
+
+                recoveredResponse =
+                    Assert.IsType<CreatePaymentAttemptResponse>(
+                        retry.Response);
+
+                Assert.Equal(
+                    externalRequest.PaymentId,
+                    recoveredResponse.PaymentId);
+
+                Assert.Equal(
+                    externalRequest.PaymentAttemptId,
+                    recoveredResponse.PaymentAttemptId);
+
+                Assert.Equal(
+                    externalRequest.Amount,
+                    recoveredResponse.Amount);
+
+                Assert.Equal(
+                    "https://checkout.example.test/recovered",
+                    recoveredResponse.CheckoutUrl);
+
+                var attempt = Assert.Single(
+                    await retryContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(PaymentAttemptStatus.Pending, attempt.Status);
+                Assert.Equal(providerPaymentId, attempt.ProviderPaymentId);
+                Assert.Equal(now, attempt.CreatedAt);
+                Assert.Equal(now.AddMinutes(1), attempt.UpdatedAt);
+
+                Assert.Equal(1, await retryContext.Payments.CountAsync());
+                Assert.Equal(2, await retryContext.IdempotencyRecords.CountAsync());
+            }
+
+            Assert.Equal(2, gatewayCalls);
+            Assert.Equal(2, gateway.Requests.Count);
+
+            await using (var replayContext = CreateContext(data.TenantId))
+            {
+                var service = new CreatePaymentAttemptService(
+                    replayContext,
+                    gateway,
+                    new FixedTimeProvider(now.AddMinutes(2)));
+
+                var replay = await service.CreateAsync(command);
+
+                Assert.True(replay.IsSuccess);
+                Assert.Equal(recoveredResponse, replay.Response);
+            }
+
+            Assert.Equal(2, gatewayCalls);
+            Assert.Equal(2, gateway.Requests.Count);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(-10, true)]
+    [InlineData(0, false)]
+    [InlineData(10, false)]
+    public async Task PaymentPreparation_ShouldRespectExactReservationDeadline(
+        int offsetTicks,
+        bool expectedSuccess)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var expiresAt = CreatedAt.AddMinutes(10);
+        var now = expiresAt.AddTicks(offsetTicks);
+
+        var command = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    CreatedAt.AddHours(2));
+
+                Assert.Equal(
+                    expiresAt,
+                    appointment.ReservationExpiresAt);
+
+                seedContext.Appointments.Add(appointment);
+                await seedContext.SaveChangesAsync();
+            }
+
+            await using (var preparationContext =
+                CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    preparationContext,
+                    new FixedTimeProvider(now));
+
+                var result = await service.PrepareAsync(command);
+
+                Assert.Equal(expectedSuccess, result.IsSuccess);
+                Assert.Null(
+                    preparationContext.Database.CurrentTransaction);
+
+                if (expectedSuccess)
+                {
+                    Assert.Equal(
+                        CreatePaymentAttemptError.None,
+                        result.Error);
+
+                    var request =
+                        Assert.IsType<CreateGatewayPaymentRequest>(
+                            result.Request);
+
+                    Assert.Equal(expiresAt, request.ExpiresAt);
+                }
+                else
+                {
+                    Assert.Equal(
+                        CreatePaymentAttemptError.ReservationExpired,
+                        result.Error);
+
+                    Assert.Null(result.Request);
+                }
+            }
+
+            await using (var readContext = CreateContext(data.TenantId))
+            {
+                var expectedCount = expectedSuccess ? 1 : 0;
+
+                Assert.Equal(
+                    expectedCount,
+                    await readContext.Payments.CountAsync());
+
+                Assert.Equal(
+                    expectedCount,
+                    await readContext.PaymentAttempts.CountAsync());
+
+                Assert.Equal(
+                    expectedCount,
+                    await readContext.IdempotencyRecords.CountAsync());
+
+                var appointment = await readContext.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                // A preparação valida o prazo, mas não materializa
+                // a expiração operacional do agendamento.
+                Assert.Equal(
+                    AppointmentStatus.Pending,
+                    appointment.Status);
+
+                Assert.Equal(
+                    expiresAt,
+                    appointment.ReservationExpiresAt);
+
+                Assert.Equal(CreatedAt, appointment.UpdatedAt);
+
+                if (expectedSuccess)
+                {
+                    var attempt = await readContext.PaymentAttempts
+                        .AsNoTracking()
+                        .SingleAsync();
+
+                    Assert.Equal(now, attempt.CreatedAt);
+                    Assert.Equal(expiresAt, attempt.ExpiresAt);
+                    Assert.True(attempt.CreatedAt < attempt.ExpiresAt);
+                    Assert.Equal(
+                        PaymentAttemptStatus.Created,
+                        attempt.Status);
+                }
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(PaymentMethod.Pix)]
+    [InlineData(PaymentMethod.CreditCard)]
+    public async Task PaymentPreparation_WithNewKeyAndUnresolvedAttempt_ShouldConflict(
+        PaymentMethod nextMethod)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var now = CreatedAt.AddMinutes(2);
+
+        var originalCommand = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            Guid.NewGuid().ToString("N"));
+
+        var nextCommand = new CreatePaymentAttemptCommand(
+            appointmentId,
+            nextMethod,
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.Add(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            CreateGatewayPaymentRequest originalRequest;
+
+            await using (var firstContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    firstContext,
+                    new FixedTimeProvider(now));
+
+                var first = await service.PrepareAsync(originalCommand);
+
+                Assert.True(first.IsSuccess);
+
+                originalRequest =
+                    Assert.IsType<CreateGatewayPaymentRequest>(
+                        first.Request);
+            }
+
+            await using (var nextContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    nextContext,
+                    new FixedTimeProvider(now.AddMinutes(1)));
+
+                var next = await service.PrepareAsync(nextCommand);
+
+                Assert.False(next.IsSuccess);
+                Assert.Equal(
+                    CreatePaymentAttemptError.ConcurrencyConflict,
+                    next.Error);
+                Assert.Null(next.Request);
+                Assert.Null(nextContext.Database.CurrentTransaction);
+            }
+
+            await using (var readContext = CreateContext(data.TenantId))
+            {
+                var payment = Assert.Single(
+                    await readContext.Payments
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var attempt = Assert.Single(
+                    await readContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var intent = Assert.Single(
+                    await readContext.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(originalRequest.PaymentId, payment.Id);
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+
+                Assert.Equal(originalRequest.PaymentAttemptId, attempt.Id);
+                Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+                Assert.Equal(PaymentMethod.Pix, attempt.PaymentMethod);
+                Assert.Equal(now, attempt.CreatedAt);
+                Assert.Equal(now, attempt.UpdatedAt);
+                Assert.Null(attempt.Provider);
+                Assert.Null(attempt.ProviderPaymentId);
+
+                Assert.Equal(originalCommand.IdempotencyKey, intent.Key);
+                Assert.Equal(
+                    PaymentAttemptPreparationService.IntentOperation,
+                    intent.Operation);
+
+                Assert.False(
+                    await readContext.IdempotencyRecords.AnyAsync(
+                        entity => entity.Key == nextCommand.IdempotencyKey));
+
+                var storedRequest =
+                    System.Text.Json.JsonSerializer
+                        .Deserialize<CreateGatewayPaymentRequest>(
+                            intent.ResponseJson);
+
+                Assert.Equal(originalRequest, storedRequest);
+            }
+
+            await using (var replayContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    replayContext,
+                    new FixedTimeProvider(now.AddMinutes(2)));
+
+                var replay = await service.PrepareAsync(originalCommand);
+
+                Assert.True(replay.IsSuccess);
+                Assert.Equal(originalRequest, replay.Request);
+
+                Assert.Equal(
+                    1,
+                    await replayContext.PaymentAttempts.CountAsync());
+
+                Assert.Equal(
+                    1,
+                    await replayContext.IdempotencyRecords.CountAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("appointment")]
+    [InlineData("method")]
+    public async Task PaymentPreparation_WithSameKeyAndDifferentContent_ShouldConflict(
+        string scenario)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var otherAppointmentId = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString("N");
+        var now = CreatedAt.AddMinutes(2);
+
+        var originalCommand = new CreatePaymentAttemptCommand(
+            appointmentId,
+            PaymentMethod.Pix,
+            key);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                seedContext.Appointments.AddRange(
+                    CreateAppointment(
+                        data,
+                        appointmentId,
+                        CreatedAt.AddHours(2)),
+                    CreateAppointment(
+                        data,
+                        otherAppointmentId,
+                        CreatedAt.AddHours(4)));
+
+                await seedContext.SaveChangesAsync();
+            }
+
+            CreateGatewayPaymentRequest originalRequest;
+
+            await using (var firstContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    firstContext,
+                    new FixedTimeProvider(now));
+
+                var original = await service.PrepareAsync(originalCommand);
+
+                Assert.True(original.IsSuccess);
+
+                originalRequest =
+                    Assert.IsType<CreateGatewayPaymentRequest>(
+                        original.Request);
+            }
+
+            var conflictingCommand = scenario == "appointment"
+                ? originalCommand with
+                {
+                    AppointmentId = otherAppointmentId
+                }
+                : originalCommand with
+                {
+                    PaymentMethod = PaymentMethod.CreditCard
+                };
+
+            await using (var conflictContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    conflictContext,
+                    new FixedTimeProvider(now.AddMinutes(1)));
+
+                var conflict = await service.PrepareAsync(
+                    conflictingCommand);
+
+                Assert.False(conflict.IsSuccess);
+                Assert.Equal(
+                    CreatePaymentAttemptError.IdempotencyConflict,
+                    conflict.Error);
+                Assert.Null(conflict.Request);
+                Assert.Null(conflictContext.Database.CurrentTransaction);
+            }
+
+            await using (var readContext = CreateContext(data.TenantId))
+            {
+                var payment = Assert.Single(
+                    await readContext.Payments
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var attempt = Assert.Single(
+                    await readContext.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                var intent = Assert.Single(
+                    await readContext.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(originalRequest.PaymentId, payment.Id);
+                Assert.Equal(appointmentId, payment.AppointmentId);
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+
+                Assert.Equal(originalRequest.PaymentAttemptId, attempt.Id);
+                Assert.Equal(PaymentMethod.Pix, attempt.PaymentMethod);
+                Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+                Assert.Equal(now, attempt.CreatedAt);
+                Assert.Equal(now, attempt.UpdatedAt);
+
+                Assert.Equal(key, intent.Key);
+                Assert.Equal(
+                    PaymentAttemptPreparationService.IntentOperation,
+                    intent.Operation);
+
+                var storedRequest =
+                    System.Text.Json.JsonSerializer
+                        .Deserialize<CreateGatewayPaymentRequest>(
+                            intent.ResponseJson);
+
+                Assert.Equal(originalRequest, storedRequest);
+
+                Assert.False(
+                    await readContext.Payments.AnyAsync(
+                        entity =>
+                            entity.AppointmentId == otherAppointmentId));
+            }
+
+            // O conflito não inutiliza a chave original.
+            await using (var replayContext = CreateContext(data.TenantId))
+            {
+                var service = new PaymentAttemptPreparationService(
+                    replayContext,
+                    new FixedTimeProvider(now.AddMinutes(2)));
+
+                var replay = await service.PrepareAsync(originalCommand);
+
+                Assert.True(replay.IsSuccess);
+                Assert.Equal(originalRequest, replay.Request);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
     [InlineData("tenant")]
     [InlineData("payment")]
     [InlineData("amount")]
@@ -6939,6 +9021,79 @@ public sealed class AppointmentPersistenceTests
 
     #region Helpers
 
+    private sealed class FailAfterPaymentCompletionSaveInterceptor
+        : SaveChangesInterceptor
+    {
+        public int? SavedEntriesCount { get; private set; }
+        public bool HadActiveTransaction { get; private set; }
+
+        public override ValueTask<int> SavedChangesAsync(
+            SaveChangesCompletedEventData eventData,
+            int result,
+            CancellationToken cancellationToken = default)
+        {
+            var context = eventData.Context;
+
+            if (context is null)
+            {
+                return new ValueTask<int>(result);
+            }
+
+            var hasFinalResult = context.ChangeTracker
+                .Entries<VirtualEmployee.Infrastructure.Persistence.Idempotency.IdempotencyRecord>()
+                .Any(entry =>
+                    entry.Entity.Operation ==
+                        PaymentAttemptCompletionService.Operation);
+
+            if (!hasFinalResult)
+            {
+                return new ValueTask<int>(result);
+            }
+
+            SavedEntriesCount = result;
+            HadActiveTransaction =
+                context.Database.CurrentTransaction is not null;
+
+            throw new InvalidOperationException(
+                "Simulated failure before payment completion commit.");
+        }
+    }
+    private sealed class MutablePaymentTimeProvider : TimeProvider
+    {
+        public DateTimeOffset UtcNow { get; set; }
+
+        public MutablePaymentTimeProvider(DateTimeOffset utcNow)
+        {
+            UtcNow = utcNow.ToUniversalTime();
+        }
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            return UtcNow.ToUniversalTime();
+        }
+    }
+
+    private sealed class FailAfterPaymentPreparationSaveInterceptor
+        : SaveChangesInterceptor
+    {
+        public int? SavedEntriesCount { get; private set; }
+        public bool HadActiveTransaction { get; private set; }
+
+        public override ValueTask<int> SavedChangesAsync(
+            SaveChangesCompletedEventData eventData,
+            int result,
+            CancellationToken cancellationToken = default)
+        {
+            SavedEntriesCount = result;
+
+            HadActiveTransaction =
+                eventData.Context?.Database.CurrentTransaction is not null;
+
+            throw new InvalidOperationException(
+                "Simulated failure before payment preparation commit.");
+        }
+    }
+
     private sealed class BeforeCancellationSaveInterceptor(
         Func<Task> beforeSave)
         : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
@@ -7174,6 +9329,25 @@ public sealed class AppointmentPersistenceTests
     {
         await using var context = CreateContext(tenantId);
 
+        // Somente limpeza dos dados de teste:
+        // desfaz a referência circular antes de excluir as tabelas financeiras.
+        await context.Payments
+            .Where(payment =>
+                payment.ConfirmedPaymentAttemptId != null ||
+                payment.ConfirmedAt != null)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(
+                    payment => payment.Status,
+                    PaymentStatus.Pending)
+                .SetProperty(
+                    payment => payment.ConfirmedPaymentAttemptId,
+                    (Guid?)null)
+                .SetProperty(
+                    payment => payment.ConfirmedAt,
+                    (DateTimeOffset?)null));
+
+        await context.PaymentAttempts.ExecuteDeleteAsync();
+        await context.Payments.ExecuteDeleteAsync();
         await context.AppointmentHistoryEntries.ExecuteDeleteAsync();
 
         context.AppointmentItems.RemoveRange(
