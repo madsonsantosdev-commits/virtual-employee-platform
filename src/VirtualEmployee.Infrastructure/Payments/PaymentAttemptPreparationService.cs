@@ -110,6 +110,20 @@ public sealed class PaymentAttemptPreparationService
                     CreatePaymentAttemptError.ConcurrencyConflict);
             }
 
+            var payment = await _dbContext.Payments
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    entity => entity.AppointmentId == appointment.Id,
+                    cancellationToken);
+
+            if (payment is not null &&
+                payment.Status is
+                    (PaymentStatus.Confirmed or PaymentStatus.Refunded))
+            {
+                return Failure(
+                    CreatePaymentAttemptError.PaymentAlreadyConfirmed);
+            }
+
             if (appointment.Status == AppointmentStatus.Expired)
             {
                 return Failure(
@@ -152,12 +166,6 @@ public sealed class PaymentAttemptPreparationService
                 return PaymentAttemptPreparationResult.Success(
                     originalRequest);
             }
-
-            var payment = await _dbContext.Payments
-                .AsNoTracking()
-                .SingleOrDefaultAsync(
-                    entity => entity.AppointmentId == appointment.Id,
-                    cancellationToken);
 
             if (payment is not null)
             {

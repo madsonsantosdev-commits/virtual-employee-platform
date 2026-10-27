@@ -1273,33 +1273,199 @@ para a integração de Payments e Refunds.
 Estados operacionais previstos: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`, `COMPLETED`, `NO_SHOW`, `EXPIRED`. Reschedule não cria estado permanente `RESCHEDULED`; mantém histórico/evento e retorna ao estado operacional apropriado.
 
 ## 11. Payments e PaymentAttempts
-Payment representa a obrigação financeira lógica do Appointment; PaymentAttempt representa cada tentativa concreta no provider. Um Payment pode possuir N PaymentAttempts.
 
-Criar nova tentativa:
-```http
-POST /appointments/{appointmentId}/payment-attempts
-Idempotency-Key: <uuid>
-```
+### Implementação incremental — 27/10/2026
+
+Payment representa a obrigação financeira integral do Appointment.
+PaymentAttempt representa cada tentativa concreta de pagamento.
+Um Payment pode possuir várias tentativas.
+
+Domínio, persistência, orquestração idempotente e endpoint HTTP estão
+implementados e validados com gateway simulado exclusivamente nos testes.
+
+Adaptador real do gateway, webhooks financeiros, confirmação operacional
+do Appointment e refunds permanecem pendentes.
+
+### Habilitação
+
+A rota fica desabilitada por padrão.
+
+Sua publicação exige `Payments:Enabled=true` e uma implementação de
+`IPaymentGateway` registrada. Nenhum gateway fictício é registrado
+na execução normal da API.
+
+Com Payments desabilitado, a rota retorna 404.
+
+O header `X-Tenant-Id` continua temporário para desenvolvimento.
+Autenticação e autorização de produção permanecem pendentes.
+
+### Criar tentativa
+
+`POST /api/v1/appointments/{appointmentId}/payment-attempts`
+
+Exige `Idempotency-Key` não vazia, com até 200 caracteres, sem espaços
+ou caracteres de controle.
+
+Entrada:
+
 ```json
-{"paymentMethod":"PIX"}
+{
+  "paymentMethod": "PIX"
+}
 ```
 
-Métodos permitidos para pagamento de serviço: `PIX`, `CREDIT_CARD`, `DEBIT_CARD`. Sem sinal, parcial ou boleto. O cliente nunca envia o valor. Backend valida Appointment `PENDING` e não expirado, obtém/cria o único Payment lógico SERVICE do Appointment, garante `Payment.Amount == Appointment.TotalPriceSnapshot` e cria a PaymentAttempt.
+- AppointmentId deve ser um GUID não vazio.
+- paymentMethod aceita exatamente PIX, CREDIT_CARD ou DEBIT_CARD.
+- Valores vazios, numéricos em texto ou com outra capitalização são rejeitados.
+- O cliente não determina valor, tenant ou identificadores financeiros.
+- O backend exige Appointment PENDING e reserva vigente.
+- O valor integral vem de Appointment.TotalPriceSnapshot.
+- O backend obtém ou cria o único Payment de serviço do Appointment.
+- Payment confirmado ou estornado impede nova tentativa.
+- A verificação de Payment já liquidado precede a rejeição do estado operacional.
 
-Resposta de criação da tentativa usa `201 Created` e pode retornar `paymentId`, `paymentAttemptId`, `paymentMethod`, `status`, `amount`, `checkoutUrl`/referência segura e `expiresAt`. Dados de cartão nunca transitam por IA, WhatsApp ou nossa API; checkout é hospedado/tokenizado pelo provider.
+Sem sinal, pagamento parcial ou boleto.
+Dados brutos de cartão não transitam pela API, IA ou WhatsApp.
 
-Uma tentativa PIX pode expirar e ser seguida por cartão ou novo PIX sem criar outro Payment. Mesma intenção repetida usa idempotência; nova escolha consciente de pagamento usa nova Idempotency-Key e nova PaymentAttempt.
+### Resposta
 
-Estados Payment: `PENDING`, `PROCESSING`, `CONFIRMED`, `FAILED`, `CANCELLED`, `REFUNDED`.
+Criação concluída retorna 201:
 
-Estados PaymentAttempt: `CREATED`, `PENDING`, `PROCESSING`, `CONFIRMED`, `FAILED`, `EXPIRED`, `CANCELLED`.
+```json
+{
+  "paymentId": "<payment-id>",
+  "paymentAttemptId": "<payment-attempt-id>",
+  "paymentMethod": "PIX",
+  "status": "PENDING",
+  "amount": 65.00,
+  "checkoutUrl": "https://checkout.example.test/payment",
+  "expiresAt": "2026-10-27T12:10:00+00:00"
+}
+```
 
-Somente PaymentAttempt confirmada por evento/API confiável do provider pode liquidar o Payment. Redirect de browser é informativo e nunca confirma pagamento. Se Payment já estiver confirmado, nova tentativa é rejeitada com `422 PAYMENT_ALREADY_CONFIRMED`.
+checkoutUrl é opcional; a projeção aceita URL HTTPS absoluta sem
+credenciais embutidas. O adaptador real ainda deverá validar as
+referências fornecidas pelo provedor.
 
-### Webhook e confirmação financeira
-Webhook valida autenticidade/assinatura conforme provider e é deduplicado por `Provider + ProviderEventId`. Processamento é idempotente e atualiza PaymentAttempt -> Payment -> Appointment somente quando a transição for válida.
+expiresAt considera o menor prazo entre tentativa, reserva e referência
+retornada pelo gateway. Criar uma tentativa não estende a reserva.
 
-Se confirmação financeira chegar após Appointment estar `EXPIRED`, a verdade financeira é registrada (`PaymentAttempt CONFIRMED`, `Payment CONFIRMED`), mas Appointment permanece `EXPIRED`. O sistema nunca reativa o slot e dispara Refund compensatório integral.
+A resposta não confirma recebimento financeiro nem altera o Appointment
+para CONFIRMED. Não há endpoint público de confirmação financeira
+nesta entrega.
+
+### Persistência e idempotência
+
+O escopo da chave é TenantId + operação + IdempotencyKey.
+O hash do pedido considera AppointmentId e PaymentMethod.
+
+A execução possui três etapas:
+
+1. Preparação transacional de Payment, PaymentAttempt e intenção.
+2. Chamada ao gateway fora da transação do banco.
+3. Conclusão transacional da tentativa e da resposta final.
+
+idempotency_records armazena duas operações internas:
+- CreatePaymentAttemptIntent: parâmetros originais da chamada externa;
+- CreatePaymentAttempt: resultado final para replay.
+
+A chave externa deriva de TenantId e PaymentAttemptId.
+Retries da mesma tentativa preservam chave, valor, método e prazo
+originais. O adaptador real deve preservar essa idempotência no provedor.
+
+Mesma chave e conteúdo recuperam a intenção existente ou devolvem
+o resultado final. Mesma chave com conteúdo diferente retorna
+409 IDEMPOTENCY_CONFLICT.
+
+Replay concluído não chama o gateway novamente nem reaplica alterações.
+Um sucesso anterior continua sendo retornado como 201 com seu corpo
+original, mesmo se o estado operacional mudar posteriormente.
+
+Chamadas concorrentes com a mesma chave compartilham a tentativa.
+Chaves diferentes para o mesmo Appointment não criam outra tentativa
+enquanto houver uma tentativa CREATED sem resultado externo conhecido.
+
+### Resultado incerto e rejeição
+
+Timeout, falha de comunicação ou resultado Unknown retornam
+502 PAYMENT_PROVIDER_ERROR sem marcar a tentativa como FAILED
+e sem registrar resposta final.
+
+Enquanto a reserva estiver vigente, o cliente deve repetir a solicitação
+com a mesma chave. A recuperação reutiliza a tentativa e os parâmetros
+persistidos. Uma nova chave não substitui uma operação ainda incerta.
+
+Uma rejeição definitiva do gateway marca a tentativa como FAILED
+e grava o resultado final. A mesma chave repete essa falha sem nova
+chamada externa. Uma nova escolha consciente, com nova chave e reserva
+vigente, pode criar outra tentativa no mesmo Payment.
+
+A API usa PAYMENT_PROVIDER_ERROR nos dois casos. O cliente não deve
+gerar automaticamente novas chaves para contornar esse erro.
+
+### Expiração e resposta tardia
+
+Para uma reserva PENDING sem Payment liquidado, no instante exato da
+expiração ou após ele, uma nova preparação retorna
+409 RESERVATION_EXPIRED sem criar registros financeiros.
+
+A preparação não materializa EXPIRED no Appointment.
+Essa transição permanece sob responsabilidade dos fluxos de expiração.
+
+Uma resposta externa recebida após o prazo preserva a referência
+do provedor. A tentativa pode ser materializada como EXPIRED;
+o Appointment não é confirmado nem reativado.
+
+Uma intenção sem resultado final não autoriza iniciar nova chamada
+de criação após o prazo. Reconciliação com provedor e tratamento de
+confirmações financeiras tardias ainda dependem da integração real.
+
+### Resultados HTTP
+
+| Resultado | HTTP | Código |
+| --- | --- | --- |
+| Criação concluída ou replay de sucesso | 201 | — |
+| Entrada ou chave inválida | 400 | INVALID_REQUEST |
+| Appointment inexistente ou de outro tenant | 404 | RESOURCE_NOT_FOUND |
+| Payments desabilitado | 404 | Rota não publicada |
+| Estado incompatível | 409 | PAYMENT_NOT_ALLOWED |
+| Reserva vencida | 409 | RESERVATION_EXPIRED |
+| Chave reutilizada com outro conteúdo | 409 | IDEMPOTENCY_CONFLICT |
+| Disputa ou tentativa anterior ainda incerta | 409 | CONCURRENCY_CONFLICT |
+| Payment já confirmado ou estornado | 422 | PAYMENT_ALREADY_CONFIRMED |
+| Rejeição ou resultado externo não concluído | 502 | PAYMENT_PROVIDER_ERROR |
+
+### Estados
+
+Payment: PENDING, PROCESSING, CONFIRMED, FAILED, CANCELLED, REFUNDED.
+
+PaymentAttempt: CREATED, PENDING, PROCESSING, CONFIRMED, FAILED,
+EXPIRED, CANCELLED.
+
+Os estados previstos não significam que todos os fluxos correspondentes
+já estejam publicados pela API. Refunds e confirmação financeira externa
+continuam pendentes.
+
+### Webhook e confirmação financeira — previsto
+
+Webhook deverá validar autenticidade conforme o provedor e ser
+deduplicado por Provider + ProviderEventId.
+
+Somente evento/API confiável do gateway poderá liquidar o Payment.
+Redirect do navegador não confirma pagamento.
+
+O processamento deverá atualizar PaymentAttempt, Payment e Appointment
+atomicamente quando a transição operacional for válida.
+
+Se uma confirmação financeira chegar após Appointment EXPIRED,
+a verdade financeira deverá ser registrada sem reativar a agenda,
+com refund compensatório integral.
+
+Cobranças excedentes também exigirão compensação, preservando a
+tentativa que originou a primeira liquidação do Payment.
+
+Esses fluxos não estão implementados nesta entrega.
+
 
 ## 12. Refunds
 `POST /payments/{paymentId}/refunds` requer `Idempotency-Key`.

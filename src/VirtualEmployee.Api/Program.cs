@@ -36,6 +36,8 @@ using VirtualEmployee.Application.Appointments.GetAppointments;
 using VirtualEmployee.Application.Appointments.CancelAppointment;
 using VirtualEmployee.Application.Appointments.RescheduleAppointment;
 using VirtualEmployee.Application.Appointments.GetAppointmentHistory;
+using VirtualEmployee.Application.Payments.CreatePaymentAttempt;
+using VirtualEmployee.Infrastructure.Payments;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -86,8 +88,22 @@ builder.Services.AddScoped<GetAppointmentsHandler>();
 builder.Services.AddScoped<CancelAppointmentHandler>();
 builder.Services.AddScoped<RescheduleAppointmentHandler>();
 builder.Services.AddScoped<GetAppointmentHistoryHandler>();
+
 // Infrastructure
 builder.Services.AddInfrastructure(builder.Configuration);
+
+var paymentsEnabled = builder.Configuration.GetValue<bool>(
+    "Payments:Enabled",
+    false);
+
+if (paymentsEnabled)
+{
+    builder.Services.AddScoped<CreatePaymentAttemptHandler>();
+
+    builder.Services.AddScoped<
+        ICreatePaymentAttemptService,
+        CreatePaymentAttemptService>();
+}
 
 var app = builder.Build();
 
@@ -118,6 +134,11 @@ app.MapScheduleBlocksEndpoints();
 app.MapCustomersEndpoints();
 app.MapBookingQuotesEndpoints();
 app.MapAppointmentsEndpoints();
+
+if (paymentsEnabled)
+{
+    app.MapPaymentAttemptsEndpoints();
+}
 app.Run();
 
 public partial class Program;

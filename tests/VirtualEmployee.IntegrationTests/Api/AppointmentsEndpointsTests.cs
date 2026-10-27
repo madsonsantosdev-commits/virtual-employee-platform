@@ -21,6 +21,11 @@ using VirtualEmployee.Infrastructure.Tenancy;
 using VirtualEmployee.IntegrationTests.Infrastructure;
 using VirtualEmployee.Application.Appointments.GetAppointments;
 using VirtualEmployee.Application.Appointments.CancelAppointment;
+using VirtualEmployee.Application.Payments.CreatePaymentAttempt;
+using VirtualEmployee.Application.Payments.Gateway;
+using VirtualEmployee.Domain.Payments;
+using VirtualEmployee.Infrastructure.Payments;
+using VirtualEmployee.IntegrationTests.Payments.Helpers;
 using Xunit;
 
 namespace VirtualEmployee.IntegrationTests.Api;
@@ -39,6 +44,350 @@ public sealed class AppointmentsEndpointsTests
     }
 
     #region Facts
+
+    [Fact]
+    public async Task Payments_CreateAttempt_WhenDisabled_ShouldNotExposeRoute()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                CreatedAt.AddDays(3));
+
+            // Sem gateway registrado e com Payments desabilitado.
+            using var factory = CreateFactory();
+
+            using var client = factory.CreateClient(
+                new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("https://localhost")
+                });
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString("D"));
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString("N"));
+
+            using var response = await client.PostAsJsonAsync(
+                $"/api/v1/appointments/{appointmentId:D}/payment-attempts",
+                new { paymentMethod = "PIX" });
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+            await using var context = CreateContext(data.TenantId);
+
+            Assert.Equal(0, await context.Payments.CountAsync());
+            Assert.Equal(0, await context.PaymentAttempts.CountAsync());
+            Assert.Equal(0, await context.IdempotencyRecords.CountAsync());
+
+            var appointment = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(AppointmentStatus.Pending, appointment.Status);
+            Assert.Equal(CreatedAt, appointment.UpdatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Payments_CreateAttempt_WithSameKeyAndDifferentMethod_ShouldReturnConflict()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString("N");
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Assert.Equal(PaymentMethod.Pix, request.PaymentMethod);
+
+                return Task.FromResult(
+                    CreateGatewayPaymentResult.Created(
+                        new GatewayPaymentReference(
+                            "gateway-test",
+                            Guid.NewGuid().ToString("N"),
+                            "https://checkout.example.test/original",
+                            request.ExpiresAt)));
+            });
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                CreatedAt.AddDays(3));
+
+            using var factory = CreateFactory(
+                gateway,
+                paymentsEnabled: true);
+
+            using var client = factory.CreateClient(
+                new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("https://localhost")
+                });
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString("D"));
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                key);
+
+            var url =
+                $"/api/v1/appointments/{appointmentId:D}/payment-attempts";
+
+            using var firstResponse = await client.PostAsJsonAsync(
+                url,
+                new { paymentMethod = "PIX" });
+
+            var firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
+
+            var original =
+                JsonSerializer.Deserialize<CreatePaymentAttemptResponse>(
+                    firstBody,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+            Assert.NotNull(original);
+
+            using var conflictResponse = await client.PostAsJsonAsync(
+                url,
+                new { paymentMethod = "CREDIT_CARD" });
+
+            var conflictBody =
+                await conflictResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(
+                HttpStatusCode.Conflict,
+                conflictResponse.StatusCode);
+
+            using var problem = JsonDocument.Parse(conflictBody);
+
+            Assert.Equal(
+                "IDEMPOTENCY_CONFLICT",
+                problem.RootElement.GetProperty("code").GetString());
+
+            Assert.Single(gateway.Requests);
+
+            using var replayResponse = await client.PostAsJsonAsync(
+                url,
+                new { paymentMethod = "PIX" });
+
+            var replayBody =
+                await replayResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+            Assert.Equal(firstBody, replayBody);
+            Assert.Single(gateway.Requests);
+
+            await using var context = CreateContext(data.TenantId);
+
+            var payment = Assert.Single(
+                await context.Payments
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            var attempt = Assert.Single(
+                await context.PaymentAttempts
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            Assert.Equal(original.PaymentId, payment.Id);
+            Assert.Equal(original.PaymentAttemptId, attempt.Id);
+            Assert.Equal(payment.Id, attempt.PaymentId);
+            Assert.Equal(PaymentMethod.Pix, attempt.PaymentMethod);
+            Assert.Equal(PaymentAttemptStatus.Pending, attempt.Status);
+            Assert.Equal(original.Amount, attempt.Amount);
+
+            Assert.Equal(2, await context.IdempotencyRecords.CountAsync());
+
+            Assert.All(
+                await context.IdempotencyRecords
+                    .AsNoTracking()
+                    .ToListAsync(),
+                record => Assert.Equal(key, record.Key));
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task Payments_CreateAttempt_ShouldReturnCreatedAndReplaySameBody()
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString("N");
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                Assert.Equal(data.TenantId, request.TenantId);
+                Assert.Equal(data.BusinessId, request.BusinessId);
+                Assert.Equal(appointmentId, request.AppointmentId);
+                Assert.Equal(65m, request.Amount);
+                Assert.Equal(PaymentMethod.Pix, request.PaymentMethod);
+
+                return Task.FromResult(
+                    CreateGatewayPaymentResult.Created(
+                        new GatewayPaymentReference(
+                            "gateway-test",
+                            providerPaymentId,
+                            "https://checkout.example.test/http",
+                            request.ExpiresAt)));
+            });
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                CreatedAt.AddDays(3));
+
+            using var factory = CreateFactory(
+                gateway,
+                paymentsEnabled: true);
+
+            using var client = factory.CreateClient(
+                new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("https://localhost")
+                });
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString("D"));
+
+            var url =
+                $"/api/v1/appointments/{appointmentId:D}/payment-attempts";
+
+            using var firstRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                url)
+            {
+                Content = JsonContent.Create(new
+                {
+                    paymentMethod = "PIX"
+                })
+            };
+
+            firstRequest.Headers.Add("Idempotency-Key", key);
+
+            using var firstResponse = await client.SendAsync(firstRequest);
+            var firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
+
+            var response =
+                JsonSerializer.Deserialize<CreatePaymentAttemptResponse>(
+                    firstBody,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+            Assert.NotNull(response);
+            Assert.NotEqual(Guid.Empty, response.PaymentId);
+            Assert.NotEqual(Guid.Empty, response.PaymentAttemptId);
+            Assert.Equal("PIX", response.PaymentMethod);
+            Assert.Equal("PENDING", response.Status);
+            Assert.Equal(65m, response.Amount);
+            Assert.Equal(CreatedAt.AddMinutes(10), response.ExpiresAt);
+
+            Assert.Equal(
+                "https://checkout.example.test/http",
+                response.CheckoutUrl);
+
+            using var replayRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                url)
+            {
+                Content = JsonContent.Create(new
+                {
+                    paymentMethod = "PIX"
+                })
+            };
+
+            replayRequest.Headers.Add("Idempotency-Key", key);
+
+            using var replayResponse = await client.SendAsync(replayRequest);
+            var replayBody = await replayResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+            Assert.Equal(firstBody, replayBody);
+
+            var gatewayRequest = Assert.Single(gateway.Requests);
+
+            Assert.Equal(
+                response.PaymentAttemptId,
+                gatewayRequest.PaymentAttemptId);
+
+            await using var context = CreateContext(data.TenantId);
+
+            var payment = Assert.Single(
+                await context.Payments
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            var attempt = Assert.Single(
+                await context.PaymentAttempts
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            Assert.Equal(response.PaymentId, payment.Id);
+            Assert.Equal(appointmentId, payment.AppointmentId);
+            Assert.Equal(PaymentStatus.Pending, payment.Status);
+            Assert.Null(payment.ConfirmedAt);
+
+            Assert.Equal(response.PaymentAttemptId, attempt.Id);
+            Assert.Equal(payment.Id, attempt.PaymentId);
+            Assert.Equal(PaymentAttemptStatus.Pending, attempt.Status);
+            Assert.Equal(providerPaymentId, attempt.ProviderPaymentId);
+            Assert.Null(attempt.ConfirmedAt);
+
+            Assert.Equal(2, await context.IdempotencyRecords.CountAsync());
+
+            Assert.True(
+                await context.IdempotencyRecords.AnyAsync(
+                    entity =>
+                        entity.Operation ==
+                            PaymentAttemptCompletionService.Operation &&
+                        entity.Key == key));
+
+            var appointment = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(AppointmentStatus.Pending, appointment.Status);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Fact]
     public async Task Appointments_History_ShouldOrderByDateAndIdAcrossPages()
@@ -1837,6 +2186,659 @@ public sealed class AppointmentsEndpointsTests
     #region Theories
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Payments_CreateAttempt_WithConfirmedPayment_ShouldReturnUnprocessableEntity(
+        bool appointmentConfirmed)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+                throw new InvalidOperationException(
+                    "Confirmed payments must not reach the gateway."));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                CreatedAt.AddDays(3));
+
+            await using (var seedContext = CreateContext(data.TenantId))
+            {
+                var appointment = await seedContext.Appointments
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var payment = new Payment(
+                    paymentId,
+                    appointment,
+                    CreatedAt);
+
+                seedContext.Payments.Add(payment);
+                await seedContext.SaveChangesAsync();
+
+                var attempt = new PaymentAttempt(
+                    attemptId,
+                    payment,
+                    PaymentMethod.Pix,
+                    CreatedAt,
+                    CreatedAt.AddMinutes(10));
+
+                attempt.RegisterProviderPayment(
+                    "gateway-test",
+                    Guid.NewGuid().ToString("N"),
+                    CreatedAt);
+
+                attempt.Confirm(payment.Amount, CreatedAt);
+
+                seedContext.PaymentAttempts.Add(attempt);
+                await seedContext.SaveChangesAsync();
+
+                payment.Confirm(attempt, CreatedAt);
+                await seedContext.SaveChangesAsync();
+
+                if (appointmentConfirmed)
+                {
+                    await seedContext.Appointments
+                        .Where(entity => entity.Id == appointmentId)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(
+                                entity => entity.Status,
+                                AppointmentStatus.Confirmed));
+                }
+            }
+
+            using var factory = CreateFactory(
+                gateway,
+                paymentsEnabled: true);
+
+            using var client = factory.CreateClient(
+                new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("https://localhost")
+                });
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString("D"));
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString("N"));
+
+            using var response = await client.PostAsJsonAsync(
+                $"/api/v1/appointments/{appointmentId:D}/payment-attempts",
+                new { paymentMethod = "CREDIT_CARD" });
+
+            Assert.Equal(
+                HttpStatusCode.UnprocessableEntity,
+                response.StatusCode);
+
+            var body = await response.Content.ReadAsStringAsync();
+            using var problem = JsonDocument.Parse(body);
+
+            Assert.Equal(
+                "PAYMENT_ALREADY_CONFIRMED",
+                problem.RootElement.GetProperty("code").GetString());
+
+            Assert.Empty(gateway.Requests);
+
+            await using var context = CreateContext(data.TenantId);
+
+            var persistedPayment = Assert.Single(
+                await context.Payments
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            var persistedAttempt = Assert.Single(
+                await context.PaymentAttempts
+                    .AsNoTracking()
+                    .ToListAsync());
+
+            Assert.Equal(paymentId, persistedPayment.Id);
+            Assert.Equal(PaymentStatus.Confirmed, persistedPayment.Status);
+            Assert.Equal(
+                attemptId,
+                persistedPayment.ConfirmedPaymentAttemptId);
+            Assert.Equal(CreatedAt, persistedPayment.ConfirmedAt);
+
+            Assert.Equal(attemptId, persistedAttempt.Id);
+            Assert.Equal(
+                PaymentAttemptStatus.Confirmed,
+                persistedAttempt.Status);
+
+            Assert.Equal(0, await context.IdempotencyRecords.CountAsync());
+
+            var persistedAppointment = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(
+                appointmentConfirmed
+                    ? AppointmentStatus.Confirmed
+                    : AppointmentStatus.Pending,
+                persistedAppointment.Status);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Payments_CreateAttempt_WithUncertainOutcome_ShouldReturnBadGatewayAndRecover(
+        bool simulateTimeout)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var key = Guid.NewGuid().ToString("N");
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+        var gatewayCalls = 0;
+
+        CreateGatewayPaymentRequest? originalRequest = null;
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var call = Interlocked.Increment(ref gatewayCalls);
+
+                originalRequest ??= request;
+                Assert.Equal(originalRequest, request);
+
+                if (call == 1)
+                {
+                    // Simula uma cobrança externa cuja resposta
+                    // não foi recebida de forma conclusiva.
+                    return simulateTimeout
+                        ? Task.FromException<CreateGatewayPaymentResult>(
+                            new TimeoutException(
+                                "Simulated gateway timeout."))
+                        : Task.FromResult(
+                            CreateGatewayPaymentResult.Unknown());
+                }
+
+                // A mesma chave externa recupera a cobrança anterior.
+                return Task.FromResult(
+                    CreateGatewayPaymentResult.Created(
+                        new GatewayPaymentReference(
+                            "gateway-test",
+                            providerPaymentId,
+                            "https://checkout.example.test/http-recovery",
+                            request.ExpiresAt)));
+            });
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                CreatedAt.AddDays(3));
+
+            using var factory = CreateFactory(
+                gateway,
+                paymentsEnabled: true);
+
+            using var client = factory.CreateClient(
+                new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("https://localhost")
+                });
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString("D"));
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                key);
+
+            var url =
+                $"/api/v1/appointments/{appointmentId:D}/payment-attempts";
+
+            using var firstResponse = await client.PostAsJsonAsync(
+                url,
+                new { paymentMethod = "PIX" });
+
+            var firstBody = await firstResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(
+                HttpStatusCode.BadGateway,
+                firstResponse.StatusCode);
+
+            using (var problem = JsonDocument.Parse(firstBody))
+            {
+                Assert.Equal(
+                    "PAYMENT_PROVIDER_ERROR",
+                    problem.RootElement.GetProperty("code").GetString());
+            }
+
+            Assert.NotNull(originalRequest);
+            Assert.Equal(1, gatewayCalls);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var attempt = Assert.Single(
+                    await context.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(
+                    originalRequest.PaymentAttemptId,
+                    attempt.Id);
+
+                Assert.Equal(PaymentAttemptStatus.Created, attempt.Status);
+                Assert.Null(attempt.Provider);
+                Assert.Null(attempt.ProviderPaymentId);
+
+                Assert.Equal(1, await context.Payments.CountAsync());
+
+                var intent = Assert.Single(
+                    await context.IdempotencyRecords
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(
+                    PaymentAttemptPreparationService.IntentOperation,
+                    intent.Operation);
+            }
+
+            using var retryResponse = await client.PostAsJsonAsync(
+                url,
+                new { paymentMethod = "PIX" });
+
+            var retryBody = await retryResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Created, retryResponse.StatusCode);
+
+            var recovered =
+                JsonSerializer.Deserialize<CreatePaymentAttemptResponse>(
+                    retryBody,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+            Assert.NotNull(recovered);
+            Assert.Equal(originalRequest.PaymentId, recovered.PaymentId);
+            Assert.Equal(
+                originalRequest.PaymentAttemptId,
+                recovered.PaymentAttemptId);
+            Assert.Equal(originalRequest.Amount, recovered.Amount);
+            Assert.Equal("PENDING", recovered.Status);
+
+            Assert.Equal(2, gatewayCalls);
+
+            using var replayResponse = await client.PostAsJsonAsync(
+                url,
+                new { paymentMethod = "PIX" });
+
+            var replayBody = await replayResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+            Assert.Equal(retryBody, replayBody);
+            Assert.Equal(2, gatewayCalls);
+
+            var requests = gateway.Requests;
+
+            Assert.Equal(2, requests.Count);
+            Assert.Equal(requests[0], requests[1]);
+            Assert.Equal(
+                requests[0].IdempotencyKey,
+                requests[1].IdempotencyKey);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var attempt = Assert.Single(
+                    await context.PaymentAttempts
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(recovered.PaymentAttemptId, attempt.Id);
+                Assert.Equal(PaymentAttemptStatus.Pending, attempt.Status);
+                Assert.Equal(providerPaymentId, attempt.ProviderPaymentId);
+
+                var payment = Assert.Single(
+                    await context.Payments
+                        .AsNoTracking()
+                        .ToListAsync());
+
+                Assert.Equal(recovered.PaymentId, payment.Id);
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+
+                Assert.Equal(
+                    2,
+                    await context.IdempotencyRecords.CountAsync());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(10)]
+    public async Task Payments_CreateAttempt_WithOverdueReservation_ShouldReturnConflict(
+        int offsetTicks)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+        var expiresAt = CreatedAt.AddMinutes(10);
+        var now = expiresAt.AddTicks(offsetTicks);
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+                throw new InvalidOperationException(
+                    "Expired reservations must not reach the gateway."));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                CreatedAt.AddDays(3));
+
+            using var baseFactory = CreateFactory(
+                gateway,
+                paymentsEnabled: true);
+
+            // Altera somente o relógio desta execução HTTP.
+            using var factory = baseFactory.WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<TimeProvider>();
+
+                    services.AddSingleton<TimeProvider>(
+                        new PaymentHttpTimeProvider(now));
+                });
+            });
+
+            using var client = factory.CreateClient(
+                new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("https://localhost")
+                });
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString("D"));
+
+            client.DefaultRequestHeaders.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString("N"));
+
+            using var response = await client.PostAsJsonAsync(
+                $"/api/v1/appointments/{appointmentId:D}/payment-attempts",
+                new { paymentMethod = "PIX" });
+
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+            using var problem = JsonDocument.Parse(body);
+
+            Assert.Equal(
+                "RESERVATION_EXPIRED",
+                problem.RootElement.GetProperty("code").GetString());
+
+            Assert.Empty(gateway.Requests);
+
+            await using var context = CreateContext(data.TenantId);
+
+            Assert.Equal(0, await context.Payments.CountAsync());
+            Assert.Equal(0, await context.PaymentAttempts.CountAsync());
+            Assert.Equal(0, await context.IdempotencyRecords.CountAsync());
+
+            var appointment = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            // A criação de tentativa rejeita a reserva vencida,
+            // sem materializar sua expiração operacional.
+            Assert.Equal(AppointmentStatus.Pending, appointment.Status);
+            Assert.Equal(expiresAt, appointment.ReservationExpiresAt);
+            Assert.Equal(CreatedAt, appointment.UpdatedAt);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Payments_CreateAttempt_WithMissingOrForeignAppointment_ShouldReturnNotFound(
+        bool foreignAppointment)
+    {
+        var current = new TestData();
+        var other = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+                throw new InvalidOperationException(
+                    "Missing or foreign appointments must not reach the gateway."));
+
+        try
+        {
+            await SeedAsync(current);
+            await SeedAsync(other);
+
+            if (foreignAppointment)
+            {
+                await SeedListedAppointmentAsync(
+                    other,
+                    appointmentId,
+                    CreatedAt.AddDays(3));
+            }
+
+            using var factory = CreateFactory(
+                gateway,
+                paymentsEnabled: true);
+
+            using var client = factory.CreateClient(
+                new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("https://localhost")
+                });
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                current.TenantId.ToString("D"));
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/appointments/{appointmentId:D}/payment-attempts")
+            {
+                Content = JsonContent.Create(new
+                {
+                    paymentMethod = "PIX"
+                })
+            };
+
+            request.Headers.Add(
+                "Idempotency-Key",
+                Guid.NewGuid().ToString("N"));
+
+            using var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+            using var problem = JsonDocument.Parse(body);
+
+            Assert.Equal(
+                "RESOURCE_NOT_FOUND",
+                problem.RootElement.GetProperty("code").GetString());
+
+            Assert.Empty(gateway.Requests);
+
+            await using (var context = CreateContext(current.TenantId))
+            {
+                Assert.Equal(0, await context.Payments.CountAsync());
+                Assert.Equal(0, await context.PaymentAttempts.CountAsync());
+                Assert.Equal(0, await context.IdempotencyRecords.CountAsync());
+
+                Assert.False(
+                    await context.Appointments.AnyAsync(
+                        entity => entity.Id == appointmentId));
+            }
+
+            await using (var context = CreateContext(other.TenantId))
+            {
+                Assert.Equal(0, await context.Payments.CountAsync());
+                Assert.Equal(0, await context.PaymentAttempts.CountAsync());
+                Assert.Equal(0, await context.IdempotencyRecords.CountAsync());
+
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleOrDefaultAsync(
+                        entity => entity.Id == appointmentId);
+
+                if (foreignAppointment)
+                {
+                    Assert.NotNull(appointment);
+                    Assert.Equal(
+                        AppointmentStatus.Pending,
+                        appointment.Status);
+                    Assert.Equal(CreatedAt, appointment.UpdatedAt);
+                }
+                else
+                {
+                    Assert.Null(appointment);
+                }
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(current.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("method", null)]
+    [InlineData("method", "")]
+    [InlineData("method", "pix")]
+    [InlineData("method", "Pix")]
+    [InlineData("method", "CASH")]
+    [InlineData("method", "BOLETO")]
+    [InlineData("method", "1")]
+    [InlineData("key", null)]
+    [InlineData("key", "")]
+    [InlineData("key", "key value")]
+    [InlineData("long-key", null)]
+    public async Task Payments_CreateAttempt_WithInvalidInput_ShouldReturnBadRequest(
+        string field,
+        string? value)
+    {
+        var data = new TestData();
+        var appointmentId = Guid.NewGuid();
+
+        var gateway = new RecordingPaymentGateway(
+            (request, cancellationToken) =>
+                throw new InvalidOperationException(
+                    "Invalid input must not reach the gateway."));
+
+        try
+        {
+            await SeedAsync(data);
+
+            await SeedListedAppointmentAsync(
+                data,
+                appointmentId,
+                CreatedAt.AddDays(3));
+
+            using var factory = CreateFactory(
+                gateway,
+                paymentsEnabled: true);
+
+            using var client = factory.CreateClient(
+                new WebApplicationFactoryClientOptions
+                {
+                    BaseAddress = new Uri("https://localhost")
+                });
+
+            client.DefaultRequestHeaders.Add(
+                "X-Tenant-Id",
+                data.TenantId.ToString("D"));
+
+            var method = field == "method" ? value : "PIX";
+
+            var key = field switch
+            {
+                "key" => value,
+                "long-key" => new string('k', 201),
+                _ => Guid.NewGuid().ToString("N")
+            };
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/appointments/{appointmentId:D}/payment-attempts")
+            {
+                Content = JsonContent.Create(new
+                {
+                    paymentMethod = method
+                })
+            };
+
+            if (key is not null)
+            {
+                request.Headers.Add("Idempotency-Key", key);
+            }
+
+            using var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            using var problem = JsonDocument.Parse(body);
+
+            Assert.Equal(
+                "INVALID_REQUEST",
+                problem.RootElement.GetProperty("code").GetString());
+
+            Assert.Empty(gateway.Requests);
+
+            await using var context = CreateContext(data.TenantId);
+
+            Assert.Equal(0, await context.Payments.CountAsync());
+            Assert.Equal(0, await context.PaymentAttempts.CountAsync());
+            Assert.Equal(0, await context.IdempotencyRecords.CountAsync());
+
+            var appointment = await context.Appointments
+                .AsNoTracking()
+                .SingleAsync(entity => entity.Id == appointmentId);
+
+            Assert.Equal(AppointmentStatus.Pending, appointment.Status);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
     [InlineData("empty-id")]
     [InlineData("page=0")]
     [InlineData("page=-1")]
@@ -3359,6 +4361,67 @@ public sealed class AppointmentsEndpointsTests
 
     #region Helpers
 
+    private sealed class PaymentHttpTimeProvider : TimeProvider
+    {
+        private readonly DateTimeOffset _utcNow;
+
+        public PaymentHttpTimeProvider(DateTimeOffset utcNow)
+        {
+            _utcNow = utcNow.ToUniversalTime();
+        }
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            return _utcNow;
+        }
+    }
+
+    private WebApplicationFactory<Program> CreateFactory(
+        IPaymentGateway? gateway = null,
+        bool paymentsEnabled = false)
+    {
+        return new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Development");
+
+                builder.UseSetting(
+                    "ConnectionStrings:Database",
+                    _fixture.ConnectionString);
+
+                builder.UseSetting(
+                    "Scheduling:Reservations:LifetimeMinutes",
+                    "10");
+
+                builder.UseSetting(
+                    "Scheduling:Reservations:ExpirationWorkerEnabled",
+                    "false");
+
+                builder.UseSetting(
+                    "Payments:Enabled",
+                    paymentsEnabled ? "true" : "false");
+
+                builder.ConfigureTestServices(services =>
+                {
+                    services.RemoveAll<DbContextOptions<AppDbContext>>();
+                    services.RemoveAll<AppDbContext>();
+                    services.RemoveAll<TimeProvider>();
+
+                    services.AddDbContext<AppDbContext>(options =>
+                        options.UseNpgsql(_fixture.ConnectionString));
+
+                    services.AddSingleton<TimeProvider>(
+                        new FixedTimeProvider());
+
+                    if (gateway is not null)
+                    {
+                        services.RemoveAll<IPaymentGateway>();
+                        services.AddSingleton<IPaymentGateway>(gateway);
+                    }
+                });
+            });
+    }
+
     private async Task SeedListedAppointmentAsync(TestData data, Guid appointmentId, DateTimeOffset startsAt)
     {
         await using var context = CreateContext(data.TenantId);
@@ -3543,6 +4606,23 @@ public sealed class AppointmentsEndpointsTests
     {
         await using var context = CreateContext(tenantId);
 
+        await context.Payments
+            .Where(payment =>
+                payment.ConfirmedPaymentAttemptId != null ||
+                payment.ConfirmedAt != null)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(
+                    payment => payment.Status,
+                    PaymentStatus.Pending)
+                .SetProperty(
+                    payment => payment.ConfirmedPaymentAttemptId,
+                    (Guid?)null)
+                .SetProperty(
+                    payment => payment.ConfirmedAt,
+                    (DateTimeOffset?)null));
+
+        await context.PaymentAttempts.ExecuteDeleteAsync();
+        await context.Payments.ExecuteDeleteAsync();
         await context.AppointmentHistoryEntries.ExecuteDeleteAsync();
 
         context.AppointmentItems.RemoveRange(

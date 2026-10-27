@@ -330,15 +330,73 @@ Preserva auditoria operacional. Registrar mudança necessária sem copiar PII de
 ---
 
 ## Payment e Refund
-Payment continua integral: `Payment.Amount == Appointment.TotalPriceSnapshot`.
+
+Payment continua integral:
+`Payment.Amount == Appointment.TotalPriceSnapshot`.
+
+### Implementação incremental — 27/10/2026
+
+Payment e PaymentAttempt possuem domínio, persistência e proteção
+por tenant. Um Payment de serviço pertence a um Appointment e pode
+possuir várias tentativas.
+
+O Payment copia o valor do snapshot comercial do Appointment.
+A tentativa copia o valor integral do Payment, sem aceitar valor
+arbitrário informado pelo cliente.
+
+A criação exige Appointment PENDING e reserva vigente.
+Payment já confirmado ou estornado impede nova tentativa.
+
+A tentativa inicia CREATED. O registro da referência externa pode
+levá-la a PENDING; existem operações de processamento, falha,
+expiração, cancelamento e confirmação no domínio.
+
+Uma confirmação financeira posterior pode ser registrada mesmo após
+falha, expiração ou cancelamento da tentativa, preservando a verdade
+financeira. Isso não confirma nem reativa automaticamente o Appointment.
+
+O Payment preserva a referência da tentativa que originou sua liquidação.
+Outra tentativa confirmada não substitui essa referência.
+A compensação de cobranças excedentes permanece pendente.
+
+A orquestração persiste a intenção antes da chamada externa.
+A chamada ao gateway ocorre fora da transação do banco.
+A conclusão persiste a alteração da tentativa e o resultado final
+na mesma transação.
+
+Resultado externo incerto preserva a tentativa CREATED e sua intenção.
+A recuperação usa a mesma chave externa e os parâmetros originais.
+Uma nova chave não substitui uma preparação ainda inconclusiva.
+
+Rejeição definitiva marca FAILED e registra a resposta final.
+Replay preserva o resultado original sem repetir a chamada externa.
+
+O endpoint de criação foi validado com gateway simulado apenas nos testes.
+A rota fica desabilitada por padrão e exige configuração explícita
+e uma implementação de IPaymentGateway registrada.
+
+Adaptador real, webhooks autenticados, reconciliação automática,
+confirmação operacional do Appointment e refunds permanecem pendentes.
+
+### Canais operacionais previstos
 
 Dois canais operacionais são previstos:
-- `ONLINE`: PIX, CREDIT_CARD ou DEBIT_CARD via checkout hospedado/tokenizado; dados brutos de cartão não trafegam pela aplicação; confirmação financeira vem de webhook/API confiável do provider;
-- `IN_PERSON`: pagamento recebido no estabelecimento e registrado por usuário autenticado com permissão de caixa. Métodos previstos: PIX, CREDIT_CARD, DEBIT_CARD e CASH. A plataforma pode apenas registrar o pagamento realizado externamente (por exemplo, maquininha física), sem processar a transação.
 
-Pagamento presencial exige auditoria do ator que o registrou. IA/Conversation não pode confirmar pagamento presencial.
+- ONLINE: PIX, CREDIT_CARD ou DEBIT_CARD via checkout hospedado/tokenizado.
+  Dados brutos de cartão não trafegam pela aplicação.
+  Confirmação financeira vem de webhook/API confiável do provider.
+- IN_PERSON: pagamento recebido no estabelecimento e registrado por
+  usuário autenticado com permissão de caixa.
+  Métodos previstos: PIX, CREDIT_CARD, DEBIT_CARD e CASH.
+  A plataforma pode apenas registrar o pagamento realizado externamente,
+  por exemplo em maquininha física, sem processar a transação.
 
-Refund integral e assíncrono. Nunca comunicar REFUNDED antes da confirmação do gateway.
+Pagamento presencial exige auditoria do ator que o registrou.
+IA/Conversation não pode confirmar pagamento presencial.
+O fluxo IN_PERSON não está implementado nesta entrega.
+
+Refund permanece integral e assíncrono.
+Nunca comunicar REFUNDED antes da confirmação do gateway.
 
 ## Conversation
 Estado conversacional não substitui Appointment. IA interpreta e solicita ferramentas estruturadas, sem acesso direto ao banco.
