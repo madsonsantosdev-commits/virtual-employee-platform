@@ -330,6 +330,175 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                     b.ToTable("locations", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Domain.Payments.Payment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid>("AppointmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("appointment_id");
+
+                    b.Property<Guid>("BusinessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("business_id");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<Guid?>("ConfirmedPaymentAttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmed_payment_attempt_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Status")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("TenantId", "Id");
+
+                    b.HasIndex("TenantId", "AppointmentId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "BusinessId");
+
+                    b.HasIndex("TenantId", "BusinessId", "AppointmentId");
+
+                    b.HasIndex("TenantId", "Id", "ConfirmedPaymentAttemptId");
+
+                    b.ToTable("payments", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payments_amount", "amount > 0");
+
+                            t.HasCheckConstraint("CK_payments_confirmation", "(status IN ('CONFIRMED', 'REFUNDED') AND confirmed_payment_attempt_id IS NOT NULL AND confirmed_at IS NOT NULL AND confirmed_at >= created_at AND confirmed_at <= updated_at) OR (status NOT IN ('CONFIRMED', 'REFUNDED') AND confirmed_payment_attempt_id IS NULL AND confirmed_at IS NULL)");
+
+                            t.HasCheckConstraint("CK_payments_status", "status IN ('PENDING', 'PROCESSING', 'CONFIRMED', 'FAILED', 'CANCELLED', 'REFUNDED')");
+
+                            t.HasCheckConstraint("CK_payments_timestamps", "updated_at >= created_at");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Payments.PaymentAttempt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<Guid>("PaymentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_id");
+
+                    b.Property<string>("PaymentMethod")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("payment_method");
+
+                    b.Property<string>("Provider")
+                        .IsConcurrencyToken()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderPaymentId")
+                        .IsConcurrencyToken()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("provider_payment_id");
+
+                    b.Property<string>("Status")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Provider", "ProviderPaymentId")
+                        .IsUnique()
+                        .HasFilter("provider_payment_id IS NOT NULL");
+
+                    b.HasIndex("TenantId", "PaymentId", "Amount");
+
+                    b.HasIndex("TenantId", "PaymentId", "CreatedAt");
+
+                    b.HasIndex("TenantId", "Status", "ExpiresAt");
+
+                    b.ToTable("payment_attempts", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payment_attempts_amount", "amount > 0");
+
+                            t.HasCheckConstraint("CK_payment_attempts_confirmation", "(status = 'CONFIRMED' AND confirmed_at IS NOT NULL AND confirmed_at >= created_at AND confirmed_at <= updated_at) OR (status <> 'CONFIRMED' AND confirmed_at IS NULL)");
+
+                            t.HasCheckConstraint("CK_payment_attempts_expiration", "status <> 'EXPIRED' OR updated_at >= expires_at");
+
+                            t.HasCheckConstraint("CK_payment_attempts_method", "payment_method IN ('PIX', 'CREDIT_CARD', 'DEBIT_CARD')");
+
+                            t.HasCheckConstraint("CK_payment_attempts_provider_pair", "(provider IS NULL AND provider_payment_id IS NULL) OR (provider IS NOT NULL AND provider_payment_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_payment_attempts_provider_references", "(provider IS NULL OR (length(provider) > 0 AND provider !~ '[[:space:][:cntrl:]]')) AND (provider_payment_id IS NULL OR (length(provider_payment_id) > 0 AND provider_payment_id !~ '[[:space:][:cntrl:]]'))");
+
+                            t.HasCheckConstraint("CK_payment_attempts_provider_state", "(status <> 'CREATED' OR provider IS NULL) AND (status NOT IN ('PENDING', 'PROCESSING', 'CONFIRMED') OR provider IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_payment_attempts_status", "status IN ('CREATED', 'PENDING', 'PROCESSING', 'CONFIRMED', 'FAILED', 'EXPIRED', 'CANCELLED')");
+
+                            t.HasCheckConstraint("CK_payment_attempts_timestamps", "updated_at >= created_at AND expires_at > created_at");
+                        });
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Professionals.Professional", b =>
                 {
                     b.Property<Guid>("Id")
@@ -526,8 +695,6 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "BusinessId");
 
                     b.HasIndex("TenantId", "CustomerId", "StartsAt");
 
@@ -980,6 +1147,32 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("TenantId", "BusinessId")
                         .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Payments.Payment", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Scheduling.Appointment", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "BusinessId", "AppointmentId")
+                        .HasPrincipalKey("TenantId", "BusinessId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualEmployee.Domain.Payments.PaymentAttempt", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "Id", "ConfirmedPaymentAttemptId")
+                        .HasPrincipalKey("TenantId", "PaymentId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Payments.PaymentAttempt", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Payments.Payment", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "PaymentId", "Amount")
+                        .HasPrincipalKey("TenantId", "Id", "Amount")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

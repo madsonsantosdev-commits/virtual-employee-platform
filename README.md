@@ -105,27 +105,31 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] Consulta paginada do histórico com isolamento por tenant
 - [ ] Publicação de eventos de domínio/integração
 - [ ] Confirmação de Appointments por pagamento integral
-- [ ] Payments e Refunds
+- [x] Domínio e persistência de Payment e PaymentAttempt
+- [x] Criação idempotente de tentativas com recuperação após resultado incerto
+- [x] Endpoint de PaymentAttempts habilitado por configuração e validado com gateway simulado
+- [ ] Adaptador real do gateway de pagamentos
+- [ ] Webhooks financeiros autenticados e deduplicados
+- [ ] Refunds e compensação financeira
 - [ ] Integração WhatsApp
 - [ ] Conversation Engine e AI Gateway
 - [ ] PWA
 - [ ] Dashboard e Analytics
 - [ ] SaaS Billing
 
-### Última validação local — 21/10/2026
+### Última validação local — 27/10/2026
 
-- Suíte completa: 1040 testes passaram, sem falhas ou ignorados.
-- Histórico: 24 testes de domínio, 13 do handler, 15 de persistência/serviços e 14 HTTP.
-- Validados estados anterior e novo, motivo de cancelamento e datas em UTC.
-- Criação, cancelamento e reagendamento gravam histórico na mesma transação da operação.
-- Expiração em lote atualiza reservas e insere histórico em uma única instrução SQL.
-- Validados replay e operações sem mudança, sem duplicação do histórico.
-- Validadas expiração no limite do prazo, execução concorrente e isolamento entre tenants.
-- Validados paginação, ordenação por data e ID, parâmetros inválidos e histórico vazio.
-- Alterações e exclusões rastreadas de histórico são rejeitadas pelo SaveChanges.
-- Validação manual: agendamento anterior à entrega retornou histórico vazio com HTTP 200.
-- Nova reserva retornou CREATED, RESCHEDULED e CANCELLED, com os estados preservados.
-- Reagendamento manual de 09h para 11h de São Paulo; motivo de cancelamento com acentos preservado.
+- Suíte completa em Release: 1244 testes passaram, sem falhas ou ignorados.
+- Payments: 120 testes de domínio, 30 do handler, 32 de persistência/serviços e 22 HTTP.
+- Validados valor integral, referências entre entidades, unicidade e isolamento por tenant.
+- Validadas transições de PaymentAttempt e proteção contra atualizações desatualizadas.
+- Preparação persiste Payment, tentativa e intenção idempotente na mesma transação.
+- A chamada ao gateway ocorre fora da transação; a conclusão persiste referência e resposta final atomicamente.
+- Validados rollback, concorrência, timeout, resultado incerto, rejeição definitiva e recuperação com a mesma chave externa.
+- Validados resposta tardia, prazo exato da reserva e preservação do estado operacional do Appointment.
+- HTTP validado para criação/replay, entradas inválidas, isolamento, conflitos, reserva vencida, pagamento confirmado e erro do gateway.
+- Payments fica desabilitado por padrão; a rota retorna 404 quando desabilitada.
+- Gateway simulado registrado somente nos testes. Integração real e validação financeira externa permanecem pendentes.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
 de elegibilidade, AvailabilityRules, busca de slots, ScheduleBlocks,
@@ -134,9 +138,15 @@ de Appointments estão integrados à `main`.
 A organização dos testes em regiões Facts, Theories e Helpers também
 está integrada.
 
-O histórico de Appointments está implementado na branch
-`feature/appointment-history`, com validação automatizada e manual
+O histórico de Appointments está integrado à `main`.
+
+A base de Payments, a orquestração de tentativas e o endpoint HTTP estão
+implementados na branch `feature/payments`, com validação automatizada
 concluída e integração à `main` pendente.
+
+A rota de tentativas exige `Payments:Enabled=true` e uma implementação
+de IPaymentGateway registrada. Nenhum gateway fictício é registrado
+na execução normal da API.
 
 
 A criação revalida recursos e disponibilidade, calcula os valores no
@@ -191,8 +201,9 @@ por tenant. Não altera o agendamento nem materializa expiração.
 SaveChanges rejeita alterações e exclusões rastreadas do histórico;
 essa proteção não abrange SQL direto nem operações em lote.
 
-Permanecem pendentes publicação de eventos e integração com pagamentos,
-incluindo confirmação por pagamento integral e refunds.
+Permanecem pendentes publicação de eventos, adaptador real do gateway,
+webhooks financeiros, confirmação de Appointments por pagamento integral
+e refunds, incluindo compensações por pagamentos tardios ou excedentes.
 O cancelamento atual não solicita nem confirma estorno.
 A avaliação de impacto dos bloqueios sobre Appointments e o fluxo
 de reagendamento assistido também permanecem pendentes.

@@ -10,6 +10,7 @@ using VirtualEmployee.Domain.Professionals;
 using VirtualEmployee.Domain.Scheduling;
 using VirtualEmployee.Infrastructure.Persistence.Idempotency;
 using VirtualEmployee.Domain.Customers;
+using VirtualEmployee.Domain.Payments;
 namespace VirtualEmployee.Infrastructure.Persistence;
 
 public sealed class AppDbContext : DbContext
@@ -38,6 +39,10 @@ public sealed class AppDbContext : DbContext
     public DbSet<ScheduleBlock> ScheduleBlocks => Set<ScheduleBlock>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Appointment> Appointments => Set<Appointment>();
+    public DbSet<Payment> Payments => Set<Payment>();
+
+    public DbSet<PaymentAttempt> PaymentAttempts =>
+        Set<PaymentAttempt>();
     public DbSet<AppointmentHistoryEntry> AppointmentHistoryEntries =>
         Set<AppointmentHistoryEntry>();
     public DbSet<AppointmentItem> AppointmentItems =>
@@ -49,6 +54,14 @@ public sealed class AppDbContext : DbContext
     {
         modelBuilder.ApplyConfigurationsFromAssembly(
             typeof(AppDbContext).Assembly);
+
+        modelBuilder.Entity<Payment>()
+            .HasQueryFilter(
+                payment => payment.TenantId == CurrentTenantId);
+
+        modelBuilder.Entity<PaymentAttempt>()
+            .HasQueryFilter(
+                attempt => attempt.TenantId == CurrentTenantId);
 
         modelBuilder.Entity<Business>()
             .HasQueryFilter(

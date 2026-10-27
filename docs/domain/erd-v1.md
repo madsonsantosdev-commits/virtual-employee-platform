@@ -390,7 +390,145 @@ Publicação de eventos permanece pendente.
 
 
 ## Payment / PaymentAttempt / Refund
-Payment é obrigação financeira lógica; PaymentAttempt é cada tentativa concreta no provider; Refund integral no MVP referencia Payment e PaymentAttempt confirmado. `Payment.Amount == Appointment.TotalPriceSnapshot` para SERVICE.
+
+Payment representa a obrigação financeira integral do Appointment.
+PaymentAttempt representa cada tentativa concreta no provedor.
+Refund integral permanece previsto e deverá referenciar Payment
+e a tentativa confirmada que originou a transação externa.
+
+### Implementação incremental — 27/10/2026
+
+Migration:
+- `20261023185514_AddPaymentsAndPaymentAttempts`
+
+Nesta entrega, payments representa pagamentos de serviço.
+Não há coluna payment_purpose; SaaS Billing permanece separado.
+
+```text
+payments
+id uuid PK
+tenant_id uuid NOT NULL
+business_id uuid NOT NULL
+appointment_id uuid NOT NULL
+amount numeric(12,2) NOT NULL
+status varchar(40) NOT NULL
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+confirmed_payment_attempt_id uuid NULL
+confirmed_at timestamptz NULL
+```
+
+```text
+payment_attempts
+id uuid PK
+tenant_id uuid NOT NULL
+payment_id uuid NOT NULL
+payment_method varchar(40) NOT NULL
+status varchar(40) NOT NULL
+amount numeric(12,2) NOT NULL
+provider varchar(100) NULL
+provider_payment_id varchar(200) NULL
+expires_at timestamptz NOT NULL
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+confirmed_at timestamptz NULL
+```
+
+### Chaves e referências
+
+- payments possui chave alternativa (tenant_id, id).
+- payments possui chave alternativa (tenant_id, id, amount).
+- Índice único em payments(tenant_id, appointment_id).
+- payment_attempts possui chave alternativa (tenant_id, payment_id, id).
+- Índice único em payment_attempts(provider, provider_payment_id),
+  filtrado por provider_payment_id IS NOT NULL.
+
+Referências implementadas com exclusão restrita:
+
+- payments(tenant_id, business_id, appointment_id) ->
+  appointments(tenant_id, business_id, id).
+- payment_attempts(tenant_id, payment_id, amount) ->
+  payments(tenant_id, id, amount).
+- payments(tenant_id, id, confirmed_payment_attempt_id) ->
+  payment_attempts(tenant_id, payment_id, id).
+
+A referência ao Appointment acrescenta a chave alternativa
+appointments(tenant_id, business_id, id).
+Seu índice substitui o índice anterior (tenant_id, business_id),
+preservando esse prefixo.
+
+A FK da tentativa exige o mesmo tenant, Payment e valor integral.
+A FK confirmadora impede referenciar uma tentativa de outro Payment.
+
+O domínio copia Payment.Amount do Appointment.TotalPriceSnapshot.
+Essa igualdade entre tabelas não é verificada por um CHECK no banco.
+
+O domínio exige tentativa CONFIRMED para liquidar o Payment.
+A FK confirmadora garante o vínculo; não verifica o status da tentativa.
+
+### Restrições
+
+- Valores positivos.
+- Estados e métodos limitados aos valores conhecidos.
+- updated_at não pode preceder created_at.
+- A expiração da tentativa deve ser posterior à criação.
+- Tentativa EXPIRED exige updated_at >= expires_at.
+- Provider e ProviderPaymentId devem estar ambos nulos ou ambos preenchidos.
+- Referências preenchidas não podem ser vazias nem conter espaços
+  ou caracteres de controle.
+- CREATED não possui referência externa.
+- PENDING, PROCESSING e CONFIRMED exigem referência externa.
+- Payment CONFIRMED ou REFUNDED exige tentativa confirmadora e confirmed_at.
+- Os demais estados de Payment exigem esses campos nulos.
+- PaymentAttempt CONFIRMED exige confirmed_at; demais estados exigem nulo.
+- Datas de confirmação devem estar entre created_at e updated_at.
+
+### Índices adicionais
+
+payments:
+- (tenant_id, business_id);
+- (tenant_id, business_id, appointment_id);
+- (tenant_id, id, confirmed_payment_attempt_id).
+
+payment_attempts:
+- (tenant_id, payment_id, amount);
+- (tenant_id, payment_id, created_at);
+- (tenant_id, status, expires_at).
+
+### Tenant e concorrência
+
+As duas entidades possuem filtros de consulta por tenant e participam
+da proteção de escrita de ITenantScoped no AppDbContext.
+
+Payment usa TenantId, Status e UpdatedAt como tokens de concorrência.
+PaymentAttempt usa TenantId, Status, UpdatedAt, Provider e
+ProviderPaymentId como tokens de concorrência.
+
+A preparação serializa chave idempotente e Appointment usando
+advisory locks transacionais. A conclusão usa os mesmos escopos
+e locks de linha curtos, depois da chamada externa.
+
+### Intenção e resposta final
+
+idempotency_records é reutilizada, sem nova tabela:
+
+- Operation CreatePaymentAttemptIntent guarda o hash e os parâmetros
+  originais da chamada externa.
+- Operation CreatePaymentAttempt guarda o resultado final para replay.
+
+A preparação grava Payment, tentativa e intenção atomicamente.
+A chamada ao gateway ocorre fora da transação.
+A conclusão grava a alteração da tentativa e o resultado final atomicamente.
+
+Resultado incerto preserva a tentativa CREATED e sua intenção,
+sem resposta final. Rejeição definitiva grava FAILED e resposta final.
+
+A referência externa recebida tardiamente é preservada sem confirmar
+ou reativar o Appointment.
+
+Adaptador real, webhooks, reconciliação automática e Refunds permanecem
+pendentes. A presença dos estados financeiros no modelo não significa
+que esses fluxos já estejam publicados pela API.
 
 ## Retenção e Analytics — APROVADO
 Conteúdo conversacional/técnico efêmero tem retenção mínima necessária; fatos comerciais e financeiros preservam histórico legítimo do Tenant. Analytics inicialmente consulta PostgreSQL transacional e projeções/agregações entram somente quando volume/hot paths justificarem. Cliente inativo é derivado da última visita concluída + threshold configurável (baseline 60 dias), sem `IsInactive` persistido.
@@ -450,7 +588,7 @@ appointments(tenant_id,location_id,starts_at)
 appointments(tenant_id,professional_id,starts_at)
 appointments(tenant_id,customer_id,starts_at)
 appointments(tenant_id,status,starts_at)
-payments(tenant_id,appointment_id,payment_purpose)
+payments(tenant_id,appointment_id) UNIQUE
 payment_attempts(tenant_id,payment_id,created_at)
 payment_attempts(provider,provider_payment_id) UNIQUE WHERE provider_payment_id IS NOT NULL
 refunds(tenant_id,payment_id)
