@@ -15,7 +15,7 @@ public sealed class AppointmentHistoryEntryConfiguration
         {
             table.HasCheckConstraint(
                 "CK_appointment_history_type",
-                "type IN (1, 2, 3, 4)");
+                "type IN (1, 2, 3, 4, 5)");
 
             table.HasCheckConstraint(
                 "CK_appointment_history_before",

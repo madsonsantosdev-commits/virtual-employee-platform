@@ -12,7 +12,8 @@ public sealed record CreateGatewayPaymentRequest(
     PaymentMethod PaymentMethod,
     DateTimeOffset ExpiresAt)
 {
-    // A mesma tentativa mantém a mesma chave em todas as chamadas.
+    public DateTimeOffset? PreparedAt { get; init; }
+
     public string IdempotencyKey =>
         $"payment-attempt:{TenantId:N}:{PaymentAttemptId:N}";
 }

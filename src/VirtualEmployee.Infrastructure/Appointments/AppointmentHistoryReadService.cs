@@ -89,6 +89,7 @@ public sealed class AppointmentHistoryReadService
             AppointmentHistoryType.Cancelled => "CANCELLED",
             AppointmentHistoryType.Rescheduled => "RESCHEDULED",
             AppointmentHistoryType.Expired => "EXPIRED",
+            AppointmentHistoryType.PaymentConfirmed => "PAYMENT_CONFIRMED",
 
             _ => throw new ArgumentOutOfRangeException(
                 nameof(type),

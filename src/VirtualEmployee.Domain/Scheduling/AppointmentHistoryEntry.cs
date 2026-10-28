@@ -127,6 +127,17 @@ public sealed class AppointmentHistoryEntry : ITenantScoped
                  before.ReservationExpiresAt is { } deadline &&
                  occurredAt < deadline),
 
+            AppointmentHistoryType.PaymentConfirmed =>
+                before.Status == AppointmentStatus.Pending &&
+                after.Status == AppointmentStatus.Confirmed &&
+                after == before with
+                {
+                    Status = AppointmentStatus.Confirmed
+                } &&
+                before.ReservationExpiresAt is { } confirmationDeadline &&
+                occurredAt < confirmationDeadline &&
+                occurredAt < before.StartsAt,
+
             AppointmentHistoryType.Expired =>
                 before.Status == AppointmentStatus.Pending &&
                 after.Status == AppointmentStatus.Expired &&

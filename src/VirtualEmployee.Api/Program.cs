@@ -38,6 +38,7 @@ using VirtualEmployee.Application.Appointments.RescheduleAppointment;
 using VirtualEmployee.Application.Appointments.GetAppointmentHistory;
 using VirtualEmployee.Application.Payments.CreatePaymentAttempt;
 using VirtualEmployee.Infrastructure.Payments;
+using VirtualEmployee.Api.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -103,6 +104,16 @@ if (paymentsEnabled)
     builder.Services.AddScoped<
         ICreatePaymentAttemptService,
         CreatePaymentAttemptService>();
+
+    var mercadoPagoEnabled = builder.Configuration.GetValue<bool>(
+        "Payments:MercadoPago:Enabled",
+        false);
+
+    if (mercadoPagoEnabled)
+    {
+        builder.Services.AddMercadoPagoGateway(
+            builder.Configuration);
+    }
 }
 
 var app = builder.Build();
