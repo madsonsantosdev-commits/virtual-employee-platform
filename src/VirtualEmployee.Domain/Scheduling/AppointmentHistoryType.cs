@@ -5,5 +5,6 @@ public enum AppointmentHistoryType
     Created = 1,
     Cancelled = 2,
     Rescheduled = 3,
-    Expired = 4
+    Expired = 4,
+    PaymentConfirmed = 5
 }

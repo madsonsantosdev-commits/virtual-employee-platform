@@ -773,7 +773,7 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("CK_appointment_history_state_objects", "jsonb_typeof(after_state) = 'object' AND (before_state IS NULL OR jsonb_typeof(before_state) = 'object')");
 
-                            t.HasCheckConstraint("CK_appointment_history_type", "type IN (1, 2, 3, 4)");
+                            t.HasCheckConstraint("CK_appointment_history_type", "type IN (1, 2, 3, 4, 5)");
                         });
                 });
 

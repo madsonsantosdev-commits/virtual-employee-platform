@@ -239,7 +239,10 @@ public sealed class PaymentAttemptPreparationService
                 newAttempt.Id,
                 payment.Amount,
                 command.PaymentMethod,
-                expiresAt);
+                expiresAt)
+            {
+                PreparedAt = now
+            };
 
             newIntent = new IdempotencyRecord(
                 tenantId,

@@ -1,5 +1,5 @@
 using VirtualEmployee.Domain.Common;
-
+using VirtualEmployee.Domain.Payments;
 namespace VirtualEmployee.Domain.Scheduling;
 
 public sealed class Appointment : ITenantScoped
@@ -151,6 +151,82 @@ public sealed class Appointment : ITenantScoped
         UpdatedAt = utcCreatedAt;
 
         _items.AddRange(selectedItems);
+    }
+
+    public bool ConfirmPayment(
+        Payment payment,
+        DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(payment);
+
+        if (payment.TenantId != TenantId ||
+            payment.BusinessId != BusinessId ||
+            payment.AppointmentId != Id)
+        {
+            throw new ArgumentException(
+                "Payment must belong to this appointment, " +
+                "business and tenant.",
+                nameof(payment));
+        }
+
+        if (payment.Status != PaymentStatus.Confirmed ||
+            payment.ConfirmedPaymentAttemptId is null ||
+            payment.ConfirmedAt is null)
+        {
+            throw new InvalidOperationException(
+                "Appointment confirmation requires " +
+                "a confirmed payment.");
+        }
+
+        if (payment.Amount != TotalPriceSnapshot)
+        {
+            throw new ArgumentException(
+                "Payment must match the full appointment price.",
+                nameof(payment));
+        }
+
+        // Repetir a confirmação não altera a auditoria original.
+        if (Status == AppointmentStatus.Confirmed)
+        {
+            return false;
+        }
+
+        if (Status != AppointmentStatus.Pending)
+        {
+            throw new InvalidOperationException(
+                "Only a pending appointment can be confirmed " +
+                "by this operation.");
+        }
+
+        var utcNow = now.ToUniversalTime();
+
+        if (utcNow < UpdatedAt ||
+            utcNow < payment.UpdatedAt)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(now),
+                "Confirmation cannot precede the appointment " +
+                "or payment's last update.");
+        }
+
+        if (ReservationExpiresAt is not { } expiresAt ||
+            utcNow >= expiresAt)
+        {
+            throw new InvalidOperationException(
+                "An overdue reservation cannot be confirmed.");
+        }
+
+        if (utcNow >= StartsAt)
+        {
+            throw new InvalidOperationException(
+                "An appointment that has started " +
+                "cannot be confirmed by this operation.");
+        }
+
+        Status = AppointmentStatus.Confirmed;
+        UpdatedAt = utcNow;
+
+        return true;
     }
 
     public bool Expire(DateTimeOffset now)

@@ -38,6 +38,7 @@ using VirtualEmployee.Application.Appointments.RescheduleAppointment;
 using VirtualEmployee.Application.Appointments.GetAppointmentHistory;
 using VirtualEmployee.Application.Payments.CreatePaymentAttempt;
 using VirtualEmployee.Infrastructure.Payments;
+using VirtualEmployee.Api.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -103,9 +104,35 @@ if (paymentsEnabled)
     builder.Services.AddScoped<
         ICreatePaymentAttemptService,
         CreatePaymentAttemptService>();
+
+    var mercadoPagoEnabled = builder.Configuration.GetValue<bool>(
+        "Payments:MercadoPago:Enabled",
+        false);
+
+    if (mercadoPagoEnabled)
+    {
+        builder.Services.AddMercadoPagoGateway(
+            builder.Configuration);
+    }
 }
 
 var app = builder.Build();
+
+if (builder.Configuration.GetValue<bool>("WebhookTunnel:Enabled", false))
+{
+    app.Use(async (context, next) =>
+    {
+        if (!HttpMethods.IsPost(context.Request.Method) ||
+            !context.Request.Path.StartsWithSegments(
+                "/webhooks/mercado-pago"))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        await next(context);
+    });
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -139,6 +166,13 @@ if (paymentsEnabled)
 {
     app.MapPaymentAttemptsEndpoints();
 }
+if (paymentsEnabled &&
+    builder.Configuration.GetValue<bool>("Payments:MercadoPago:Enabled", false) &&
+    builder.Configuration.GetValue<bool>("Payments:MercadoPago:WebhooksEnabled", false))
+{
+    app.MapMercadoPagoWebhooksEndpoints();
+}
+
 app.Run();
 
 public partial class Program;
