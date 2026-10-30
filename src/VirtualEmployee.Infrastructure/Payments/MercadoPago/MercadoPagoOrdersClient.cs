@@ -24,15 +24,7 @@ public sealed class MercadoPagoOrdersClient
         string requestJson,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(accessToken) ||
-            accessToken.Any(character =>
-                char.IsWhiteSpace(character) ||
-                char.IsControl(character)))
-        {
-            throw new ArgumentException(
-                "Access token is invalid.",
-                nameof(accessToken));
-        }
+        ValidateAccessToken(accessToken);
 
         if (paymentAttemptId == Guid.Empty)
         {
@@ -57,14 +49,7 @@ public sealed class MercadoPagoOrdersClient
             HttpMethod.Post,
             CreateOrderUri);
 
-        request.Headers.Authorization =
-            new AuthenticationHeaderValue(
-                "Bearer",
-                accessToken);
-
-        request.Headers.Accept.Add(
-            new MediaTypeWithQualityHeaderValue(
-                "application/json"));
+        ConfigureHeaders(request, accessToken);
 
         request.Headers.Add(
             "X-Idempotency-Key",
@@ -79,5 +64,69 @@ public sealed class MercadoPagoOrdersClient
             request,
             HttpCompletionOption.ResponseContentRead,
             cancellationToken);
+    }
+
+    public async Task<HttpResponseMessage> GetAsync(
+        string accessToken,
+        string orderId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateAccessToken(accessToken);
+        ValidateOrderId(orderId);
+
+        var orderUri = new Uri(
+            $"{CreateOrderUri.AbsoluteUri}/{Uri.EscapeDataString(orderId)}");
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            orderUri);
+
+        ConfigureHeaders(request, accessToken);
+
+        return await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseContentRead,
+            cancellationToken);
+    }
+
+    private static void ValidateAccessToken(string accessToken)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken) ||
+            accessToken.Any(character =>
+                char.IsWhiteSpace(character) ||
+                char.IsControl(character)))
+        {
+            throw new ArgumentException(
+                "Access token is invalid.",
+                nameof(accessToken));
+        }
+    }
+
+    private static void ValidateOrderId(string orderId)
+    {
+        if (string.IsNullOrWhiteSpace(orderId) ||
+            orderId.Length > 200 ||
+            orderId.Any(character =>
+                !char.IsAsciiLetterOrDigit(character) &&
+                character != '-'))
+        {
+            throw new ArgumentException(
+                "Order ID is invalid.",
+                nameof(orderId));
+        }
+    }
+
+    private static void ConfigureHeaders(
+        HttpRequestMessage request,
+        string accessToken)
+    {
+        request.Headers.Authorization =
+            new AuthenticationHeaderValue(
+                "Bearer",
+                accessToken);
+
+        request.Headers.Accept.Add(
+            new MediaTypeWithQualityHeaderValue(
+                "application/json"));
     }
 }

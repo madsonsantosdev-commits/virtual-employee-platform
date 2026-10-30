@@ -15,6 +15,41 @@ public sealed class MercadoPagoAccountResolver
         Guid tenantId,
         Guid businessId)
     {
+        return FindAccount(tenantId, businessId).AccessToken;
+    }
+
+    public MercadoPagoAccountOptions ResolveForConfirmation(
+        Guid tenantId,
+        Guid businessId)
+    {
+        var account = FindAccount(tenantId, businessId);
+
+        if (account.CollectorId <= 0)
+        {
+            throw new InvalidOperationException(
+                "Mercado Pago collector ID is invalid.");
+        }
+
+        if (account.ApplicationId <= 0)
+        {
+            throw new InvalidOperationException(
+                "Mercado Pago application ID is invalid.");
+        }
+
+        return new MercadoPagoAccountOptions
+        {
+            TenantId = account.TenantId,
+            BusinessId = account.BusinessId,
+            AccessToken = account.AccessToken,
+            CollectorId = account.CollectorId,
+            ApplicationId = account.ApplicationId
+        };
+    }
+
+    private MercadoPagoAccountOptions FindAccount(
+        Guid tenantId,
+        Guid businessId)
+    {
         if (tenantId == Guid.Empty)
         {
             throw new ArgumentException(
@@ -55,10 +90,10 @@ public sealed class MercadoPagoAccountResolver
                 "for the requested tenant and business.");
         }
 
-        var accessToken = matches[0].AccessToken;
+        var account = matches[0];
 
-        if (string.IsNullOrWhiteSpace(accessToken) ||
-            accessToken.Any(character =>
+        if (string.IsNullOrWhiteSpace(account.AccessToken) ||
+            account.AccessToken.Any(character =>
                 char.IsWhiteSpace(character) ||
                 char.IsControl(character)))
         {
@@ -66,6 +101,6 @@ public sealed class MercadoPagoAccountResolver
                 "Mercado Pago access token is invalid.");
         }
 
-        return accessToken;
+        return account;
     }
 }

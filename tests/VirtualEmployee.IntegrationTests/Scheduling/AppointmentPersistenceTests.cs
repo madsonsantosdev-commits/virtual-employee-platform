@@ -44,6 +44,627 @@ public sealed class AppointmentPersistenceTests
     #region Facts
 
     [Fact]
+    public async Task PaymentConfirmation_WithConcurrentDifferentPayments_ShouldPreserveFirstSettlement()
+    {
+        var data = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        var firstAttemptId = Guid.NewGuid();
+        var secondAttemptId = Guid.NewGuid();
+
+        var firstOrderId = $"ORDTST{Guid.NewGuid():N}";
+        var secondOrderId = $"ORDTST{Guid.NewGuid():N}";
+
+        var firstProviderPaymentId = Guid.NewGuid().ToString("N");
+        var secondProviderPaymentId = Guid.NewGuid().ToString("N");
+
+        var preparedAt = CreatedAt.AddMinutes(1);
+        var processedAt = CreatedAt.AddMinutes(3);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    CreatedAt.AddDays(3));
+
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+
+                var payment = new Payment(
+                    paymentId,
+                    appointment,
+                    preparedAt);
+
+                context.Payments.Add(payment);
+                await context.SaveChangesAsync();
+
+                var firstAttempt = new PaymentAttempt(
+                    firstAttemptId,
+                    payment,
+                    PaymentMethod.CreditCard,
+                    preparedAt,
+                    appointment.ReservationExpiresAt!.Value);
+
+                firstAttempt.RegisterProviderPayment(
+                    "MERCADO_PAGO",
+                    firstOrderId,
+                    preparedAt);
+
+                var secondAttempt = new PaymentAttempt(
+                    secondAttemptId,
+                    payment,
+                    PaymentMethod.CreditCard,
+                    preparedAt,
+                    appointment.ReservationExpiresAt.Value);
+
+                secondAttempt.RegisterProviderPayment(
+                    "MERCADO_PAGO",
+                    secondOrderId,
+                    preparedAt);
+
+                context.PaymentAttempts.AddRange(
+                    firstAttempt,
+                    secondAttempt);
+
+                await context.SaveChangesAsync();
+            }
+
+            var firstCommand = new ConfirmPaymentCommand(
+                firstAttemptId,
+                "MERCADO_PAGO",
+                firstOrderId,
+                firstProviderPaymentId,
+                65m,
+                "BRL",
+                CreatedAt.AddMinutes(2));
+
+            var secondCommand = new ConfirmPaymentCommand(
+                secondAttemptId,
+                "MERCADO_PAGO",
+                secondOrderId,
+                secondProviderPaymentId,
+                65m,
+                "BRL",
+                CreatedAt.AddMinutes(2));
+
+            ConfirmPaymentResult[] results;
+
+            await using (var firstContext = CreateContext(data.TenantId))
+            await using (var secondContext = CreateContext(data.TenantId))
+            {
+                var firstService = new PaymentConfirmationService(
+                    firstContext,
+                    new FixedTimeProvider(processedAt));
+
+                var secondService = new PaymentConfirmationService(
+                    secondContext,
+                    new FixedTimeProvider(processedAt));
+
+                var start = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+                using var timeout = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(60));
+
+                async Task<ConfirmPaymentResult> ExecuteAsync(
+                    PaymentConfirmationService service,
+                    ConfirmPaymentCommand command)
+                {
+                    await start.Task.WaitAsync(timeout.Token);
+
+                    return await service.ConfirmAsync(
+                        command,
+                        timeout.Token);
+                }
+
+                var firstTask = ExecuteAsync(
+                    firstService,
+                    firstCommand);
+
+                var secondTask = ExecuteAsync(
+                    secondService,
+                    secondCommand);
+
+                start.SetResult(true);
+
+                results = await Task.WhenAll(
+                    firstTask,
+                    secondTask);
+            }
+
+            var successful = Assert.Single(
+                results,
+                result =>
+                    result.Outcome ==
+                        ConfirmPaymentOutcome.Confirmed);
+
+            var additional = Assert.Single(
+                results,
+                result =>
+                    result.Outcome ==
+                        ConfirmPaymentOutcome.AdditionalPayment);
+
+            Assert.False(successful.RequiresCompensation);
+            Assert.True(additional.RequiresCompensation);
+
+            Assert.All(results, result =>
+            {
+                Assert.Equal(paymentId, result.PaymentId);
+                Assert.Equal(appointmentId, result.AppointmentId);
+            });
+
+            var winnerAttemptId =
+                results[0].Outcome == ConfirmPaymentOutcome.Confirmed
+                    ? firstAttemptId
+                    : secondAttemptId;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var payment = await context.Payments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == paymentId);
+
+                var attempts = await context.PaymentAttempts
+                    .AsNoTracking()
+                    .Where(entity => entity.PaymentId == paymentId)
+                    .ToListAsync();
+
+                Assert.Equal(
+                    AppointmentStatus.Confirmed,
+                    appointment.Status);
+                Assert.Equal(processedAt, appointment.UpdatedAt);
+
+                Assert.Equal(PaymentStatus.Confirmed, payment.Status);
+                Assert.Equal(
+                    winnerAttemptId,
+                    payment.ConfirmedPaymentAttemptId);
+                Assert.Equal(processedAt, payment.ConfirmedAt);
+
+                Assert.Equal(2, attempts.Count);
+
+                Assert.All(attempts, attempt =>
+                {
+                    Assert.Equal(
+                        PaymentAttemptStatus.Confirmed,
+                        attempt.Status);
+                    Assert.Equal(processedAt, attempt.ConfirmedAt);
+                });
+
+                Assert.Equal(
+                    1,
+                    await context.AppointmentHistoryEntries.CountAsync(
+                        entity =>
+                            entity.AppointmentId == appointmentId &&
+                            entity.Type ==
+                                AppointmentHistoryType.PaymentConfirmed));
+
+                Assert.Equal(
+                    2,
+                    await context.IdempotencyRecords.CountAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentConfirmationService.Operation));
+            }
+
+            // Cada pagamento mantém seu próprio resultado no replay.
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(
+                        CreatedAt.AddMinutes(20)));
+
+                var replay = await service.ConfirmAsync(firstCommand);
+
+                Assert.Equal(results[0], replay);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(
+                        CreatedAt.AddMinutes(20)));
+
+                var replay = await service.ConfirmAsync(secondCommand);
+
+                Assert.Equal(results[1], replay);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var payment = await context.Payments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == paymentId);
+
+                Assert.Equal(
+                    winnerAttemptId,
+                    payment.ConfirmedPaymentAttemptId);
+                Assert.Equal(processedAt, payment.ConfirmedAt);
+
+                Assert.Equal(
+                    1,
+                    await context.AppointmentHistoryEntries.CountAsync(
+                        entity => entity.AppointmentId == appointmentId));
+
+                Assert.Equal(
+                    2,
+                    await context.IdempotencyRecords.CountAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentConfirmationService.Operation));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentConfirmation_WithConcurrentSamePayment_ShouldReplayWinner()
+    {
+        var data = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+
+        var providerOrderId = $"ORDTST{Guid.NewGuid():N}";
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+
+        var preparedAt = CreatedAt.AddMinutes(1);
+        var processedAt = CreatedAt.AddMinutes(3);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    CreatedAt.AddDays(3));
+
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+
+                var payment = new Payment(
+                    paymentId,
+                    appointment,
+                    preparedAt);
+
+                context.Payments.Add(payment);
+                await context.SaveChangesAsync();
+
+                var attempt = new PaymentAttempt(
+                    attemptId,
+                    payment,
+                    PaymentMethod.CreditCard,
+                    preparedAt,
+                    appointment.ReservationExpiresAt!.Value);
+
+                attempt.RegisterProviderPayment(
+                    "MERCADO_PAGO",
+                    providerOrderId,
+                    preparedAt);
+
+                context.PaymentAttempts.Add(attempt);
+                await context.SaveChangesAsync();
+            }
+
+            var command = new ConfirmPaymentCommand(
+                attemptId,
+                "MERCADO_PAGO",
+                providerOrderId,
+                providerPaymentId,
+                65m,
+                "BRL",
+                CreatedAt.AddMinutes(2));
+
+            ConfirmPaymentResult[] results;
+
+            await using (var firstContext = CreateContext(data.TenantId))
+            await using (var secondContext = CreateContext(data.TenantId))
+            {
+                var firstService = new PaymentConfirmationService(
+                    firstContext,
+                    new FixedTimeProvider(processedAt));
+
+                var secondService = new PaymentConfirmationService(
+                    secondContext,
+                    new FixedTimeProvider(processedAt));
+
+                var start = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+                using var timeout = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(60));
+
+                async Task<ConfirmPaymentResult> ExecuteAsync(
+                    PaymentConfirmationService service)
+                {
+                    await start.Task.WaitAsync(timeout.Token);
+
+                    return await service.ConfirmAsync(
+                        command,
+                        timeout.Token);
+                }
+
+                var firstTask = ExecuteAsync(firstService);
+                var secondTask = ExecuteAsync(secondService);
+
+                start.SetResult(true);
+
+                results = await Task.WhenAll(
+                    firstTask,
+                    secondTask);
+            }
+
+            Assert.Equal(2, results.Length);
+            Assert.Equal(results[0], results[1]);
+
+            Assert.All(results, result =>
+            {
+                Assert.Equal(
+                    ConfirmPaymentOutcome.Confirmed,
+                    result.Outcome);
+                Assert.Equal(paymentId, result.PaymentId);
+                Assert.Equal(appointmentId, result.AppointmentId);
+                Assert.False(result.RequiresCompensation);
+            });
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var payment = await context.Payments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == paymentId);
+
+                var attempt = await context.PaymentAttempts
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == attemptId);
+
+                var histories = await context.AppointmentHistoryEntries
+                    .AsNoTracking()
+                    .Where(
+                        entity => entity.AppointmentId == appointmentId)
+                    .ToListAsync();
+
+                var receipts = await context.IdempotencyRecords
+                    .AsNoTracking()
+                    .Where(
+                        entity =>
+                            entity.Operation ==
+                                PaymentConfirmationService.Operation)
+                    .ToListAsync();
+
+                Assert.Equal(
+                    AppointmentStatus.Confirmed,
+                    appointment.Status);
+                Assert.Equal(processedAt, appointment.UpdatedAt);
+
+                Assert.Equal(PaymentStatus.Confirmed, payment.Status);
+                Assert.Equal(
+                    attemptId,
+                    payment.ConfirmedPaymentAttemptId);
+                Assert.Equal(processedAt, payment.ConfirmedAt);
+
+                Assert.Equal(
+                    PaymentAttemptStatus.Confirmed,
+                    attempt.Status);
+                Assert.Equal(processedAt, attempt.ConfirmedAt);
+
+                var history = Assert.Single(histories);
+
+                Assert.Equal(
+                    AppointmentHistoryType.PaymentConfirmed,
+                    history.Type);
+                Assert.Equal(processedAt, history.OccurredAt);
+
+                var receipt = Assert.Single(receipts);
+
+                Assert.Equal(processedAt, receipt.CreatedAt);
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Fact]
+    public async Task PaymentConfirmation_WithForeignTenant_ShouldNotModifyOwnerData()
+    {
+        var owner = new TestData();
+        var other = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+
+        var providerOrderId = $"ORDTST{Guid.NewGuid():N}";
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+        var preparedAt = CreatedAt.AddMinutes(1);
+
+        try
+        {
+            await SeedAsync(owner);
+            await SeedAsync(other);
+
+            await using (var context = CreateContext(owner.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    owner,
+                    appointmentId,
+                    CreatedAt.AddDays(3));
+
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+
+                var payment = new Payment(
+                    paymentId,
+                    appointment,
+                    preparedAt);
+
+                context.Payments.Add(payment);
+                await context.SaveChangesAsync();
+
+                var attempt = new PaymentAttempt(
+                    attemptId,
+                    payment,
+                    PaymentMethod.CreditCard,
+                    preparedAt,
+                    appointment.ReservationExpiresAt!.Value);
+
+                attempt.RegisterProviderPayment(
+                    "MERCADO_PAGO",
+                    providerOrderId,
+                    preparedAt);
+
+                context.PaymentAttempts.Add(attempt);
+                await context.SaveChangesAsync();
+            }
+
+            var command = new ConfirmPaymentCommand(
+                attemptId,
+                "MERCADO_PAGO",
+                providerOrderId,
+                providerPaymentId,
+                65m,
+                "BRL",
+                CreatedAt.AddMinutes(2));
+
+            // A tentativa pertence ao owner, mas o serviço está
+            // sendo executado no contexto de outro tenant.
+            await using (var context = CreateContext(other.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(
+                        CreatedAt.AddMinutes(3)));
+
+                var result = await service.ConfirmAsync(command);
+
+                Assert.Equal(
+                    ConfirmPaymentOutcome.NotFound,
+                    result.Outcome);
+                Assert.Null(result.PaymentId);
+                Assert.Null(result.AppointmentId);
+                Assert.False(result.RequiresCompensation);
+
+                Assert.Equal(
+                    0,
+                    await context.Payments.CountAsync());
+                Assert.Equal(
+                    0,
+                    await context.PaymentAttempts.CountAsync());
+                Assert.Equal(
+                    0,
+                    await context.AppointmentHistoryEntries.CountAsync());
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentConfirmationService.Operation));
+            }
+
+            // Verifica diretamente no tenant proprietário que nada mudou.
+            await using (var context = CreateContext(owner.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var payment = await context.Payments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == paymentId);
+
+                var attempt = await context.PaymentAttempts
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == attemptId);
+
+                Assert.Equal(
+                    AppointmentStatus.Pending,
+                    appointment.Status);
+                Assert.Equal(CreatedAt, appointment.UpdatedAt);
+
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+                Assert.Equal(preparedAt, payment.UpdatedAt);
+                Assert.Null(payment.ConfirmedAt);
+                Assert.Null(payment.ConfirmedPaymentAttemptId);
+
+                Assert.Equal(
+                    PaymentAttemptStatus.Pending,
+                    attempt.Status);
+                Assert.Equal(preparedAt, attempt.UpdatedAt);
+                Assert.Null(attempt.ConfirmedAt);
+                Assert.Equal("MERCADO_PAGO", attempt.Provider);
+                Assert.Equal(
+                    providerOrderId,
+                    attempt.ProviderPaymentId);
+
+                Assert.Equal(
+                    0,
+                    await context.AppointmentHistoryEntries.CountAsync(
+                        entity => entity.AppointmentId == appointmentId));
+
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentConfirmationService.Operation));
+            }
+
+            // A tentativa indevida não impede a confirmação legítima.
+            await using (var context = CreateContext(owner.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(
+                        CreatedAt.AddMinutes(4)));
+
+                var result = await service.ConfirmAsync(command);
+
+                Assert.Equal(
+                    ConfirmPaymentOutcome.Confirmed,
+                    result.Outcome);
+                Assert.Equal(paymentId, result.PaymentId);
+                Assert.Equal(appointmentId, result.AppointmentId);
+                Assert.False(result.RequiresCompensation);
+            }
+        }
+        finally
+        {
+            try
+            {
+                await CleanupAsync(owner.TenantId);
+            }
+            finally
+            {
+                await CleanupAsync(other.TenantId);
+            }
+        }
+    }
+
+    [Fact]
     public async Task PaymentConfirmation_WithFailureBeforeCommit_ShouldRollbackAndAllowRetry()
     {
         var data = new TestData();
@@ -6494,6 +7115,436 @@ public sealed class AppointmentPersistenceTests
     #endregion
 
     #region Theories
+
+    [Theory]
+    [InlineData("amount")]
+    [InlineData("currency")]
+    [InlineData("provider")]
+    [InlineData("order")]
+    [InlineData("future-approval")]
+    [InlineData("missing-approval")]
+    public async Task PaymentConfirmation_WithInvalidFinancialData_ShouldPreservePendingState(
+        string field)
+    {
+        var data = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+
+        var providerOrderId = $"ORDTST{Guid.NewGuid():N}";
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+
+        var preparedAt = CreatedAt.AddMinutes(1);
+        var processedAt = CreatedAt.AddMinutes(3);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    CreatedAt.AddDays(3));
+
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+
+                var payment = new Payment(
+                    paymentId,
+                    appointment,
+                    preparedAt);
+
+                context.Payments.Add(payment);
+                await context.SaveChangesAsync();
+
+                var attempt = new PaymentAttempt(
+                    attemptId,
+                    payment,
+                    PaymentMethod.CreditCard,
+                    preparedAt,
+                    appointment.ReservationExpiresAt!.Value);
+
+                attempt.RegisterProviderPayment(
+                    "MERCADO_PAGO",
+                    providerOrderId,
+                    preparedAt);
+
+                context.PaymentAttempts.Add(attempt);
+                await context.SaveChangesAsync();
+            }
+
+            var validCommand = new ConfirmPaymentCommand(
+                attemptId,
+                "MERCADO_PAGO",
+                providerOrderId,
+                providerPaymentId,
+                65m,
+                "BRL",
+                CreatedAt.AddMinutes(2));
+
+            var invalidCommand = field switch
+            {
+                "amount" => validCommand with
+                {
+                    Amount = 66m
+                },
+
+                "currency" => validCommand with
+                {
+                    Currency = "USD"
+                },
+
+                "provider" => validCommand with
+                {
+                    Provider = "OTHER_PROVIDER"
+                },
+
+                "order" => validCommand with
+                {
+                    ProviderOrderId = $"ORDTST{Guid.NewGuid():N}"
+                },
+
+                "future-approval" => validCommand with
+                {
+                    ApprovedAt = processedAt.AddMinutes(1)
+                },
+
+                "missing-approval" => validCommand with
+                {
+                    ApprovedAt = default
+                },
+
+                _ => throw new ArgumentOutOfRangeException(nameof(field))
+            };
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(processedAt));
+
+                var result = await service.ConfirmAsync(invalidCommand);
+
+                Assert.Equal(
+                    ConfirmPaymentOutcome.InvalidNotification,
+                    result.Outcome);
+                Assert.Null(result.PaymentId);
+                Assert.Null(result.AppointmentId);
+                Assert.False(result.RequiresCompensation);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var payment = await context.Payments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == paymentId);
+
+                var attempt = await context.PaymentAttempts
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == attemptId);
+
+                Assert.Equal(
+                    AppointmentStatus.Pending,
+                    appointment.Status);
+                Assert.Equal(CreatedAt, appointment.UpdatedAt);
+                Assert.Equal(
+                    CreatedAt.AddMinutes(10),
+                    appointment.ReservationExpiresAt);
+                Assert.Equal(65m, appointment.TotalPriceSnapshot);
+
+                Assert.Equal(PaymentStatus.Pending, payment.Status);
+                Assert.Equal(preparedAt, payment.UpdatedAt);
+                Assert.Equal(65m, payment.Amount);
+                Assert.Null(payment.ConfirmedAt);
+                Assert.Null(payment.ConfirmedPaymentAttemptId);
+
+                Assert.Equal(
+                    PaymentAttemptStatus.Pending,
+                    attempt.Status);
+                Assert.Equal(preparedAt, attempt.UpdatedAt);
+                Assert.Equal(65m, attempt.Amount);
+                Assert.Null(attempt.ConfirmedAt);
+                Assert.Equal("MERCADO_PAGO", attempt.Provider);
+                Assert.Equal(
+                    providerOrderId,
+                    attempt.ProviderPaymentId);
+
+                Assert.Equal(
+                    0,
+                    await context.AppointmentHistoryEntries.CountAsync(
+                        entity => entity.AppointmentId == appointmentId));
+
+                Assert.Equal(
+                    0,
+                    await context.IdempotencyRecords.CountAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentConfirmationService.Operation));
+            }
+
+            // O conteúdo inválido não consome a confirmação financeira.
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(
+                        processedAt.AddMinutes(1)));
+
+                var result = await service.ConfirmAsync(validCommand);
+
+                Assert.Equal(
+                    ConfirmPaymentOutcome.Confirmed,
+                    result.Outcome);
+                Assert.Equal(paymentId, result.PaymentId);
+                Assert.Equal(appointmentId, result.AppointmentId);
+                Assert.False(result.RequiresCompensation);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                Assert.Equal(
+                    1,
+                    await context.AppointmentHistoryEntries.CountAsync(
+                        entity => entity.AppointmentId == appointmentId));
+
+                Assert.Equal(
+                    1,
+                    await context.IdempotencyRecords.CountAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentConfirmationService.Operation));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
+    [Theory]
+    [InlineData("amount")]
+    [InlineData("order")]
+    [InlineData("attempt")]
+    [InlineData("approval-date")]
+    public async Task PaymentConfirmation_WithSamePaymentAndDifferentContent_ShouldConflict(
+        string field)
+    {
+        var data = new TestData();
+
+        var appointmentId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+
+        var providerOrderId = $"ORDTST{Guid.NewGuid():N}";
+        var providerPaymentId = Guid.NewGuid().ToString("N");
+
+        var preparedAt = CreatedAt.AddMinutes(1);
+        var approvedAt = CreatedAt.AddMinutes(2);
+        var processedAt = CreatedAt.AddMinutes(3);
+
+        try
+        {
+            await SeedAsync(data);
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(
+                    data,
+                    appointmentId,
+                    CreatedAt.AddDays(3));
+
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+
+                var payment = new Payment(
+                    paymentId,
+                    appointment,
+                    preparedAt);
+
+                context.Payments.Add(payment);
+                await context.SaveChangesAsync();
+
+                var attempt = new PaymentAttempt(
+                    attemptId,
+                    payment,
+                    PaymentMethod.CreditCard,
+                    preparedAt,
+                    appointment.ReservationExpiresAt!.Value);
+
+                attempt.RegisterProviderPayment(
+                    "MERCADO_PAGO",
+                    providerOrderId,
+                    preparedAt);
+
+                context.PaymentAttempts.Add(attempt);
+                await context.SaveChangesAsync();
+            }
+
+            var originalCommand = new ConfirmPaymentCommand(
+                attemptId,
+                "MERCADO_PAGO",
+                providerOrderId,
+                providerPaymentId,
+                65m,
+                "BRL",
+                approvedAt);
+
+            ConfirmPaymentResult originalResult;
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(processedAt));
+
+                originalResult = await service.ConfirmAsync(
+                    originalCommand);
+
+                Assert.Equal(
+                    ConfirmPaymentOutcome.Confirmed,
+                    originalResult.Outcome);
+            }
+
+            var changedCommand = field switch
+            {
+                "amount" => originalCommand with
+                {
+                    Amount = 66m
+                },
+
+                "order" => originalCommand with
+                {
+                    ProviderOrderId = $"ORDTST{Guid.NewGuid():N}"
+                },
+
+                "attempt" => originalCommand with
+                {
+                    PaymentAttemptId = Guid.NewGuid()
+                },
+
+                "approval-date" => originalCommand with
+                {
+                    ApprovedAt = approvedAt.AddSeconds(1)
+                },
+
+                _ => throw new ArgumentOutOfRangeException(nameof(field))
+            };
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(
+                        processedAt.AddMinutes(1)));
+
+                var result = await service.ConfirmAsync(changedCommand);
+
+                Assert.Equal(
+                    ConfirmPaymentOutcome.IdempotencyConflict,
+                    result.Outcome);
+                Assert.Null(result.PaymentId);
+                Assert.Null(result.AppointmentId);
+                Assert.False(result.RequiresCompensation);
+            }
+
+            // A tentativa de alterar o conteúdo não prejudica
+            // o replay legítimo da confirmação original.
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var service = new PaymentConfirmationService(
+                    context,
+                    new FixedTimeProvider(
+                        CreatedAt.AddMinutes(20)));
+
+                var replay = await service.ConfirmAsync(originalCommand);
+
+                Assert.Equal(originalResult, replay);
+            }
+
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = await context.Appointments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == appointmentId);
+
+                var payment = await context.Payments
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == paymentId);
+
+                var attempt = await context.PaymentAttempts
+                    .AsNoTracking()
+                    .SingleAsync(entity => entity.Id == attemptId);
+
+                Assert.Equal(
+                    AppointmentStatus.Confirmed,
+                    appointment.Status);
+                Assert.Equal(processedAt, appointment.UpdatedAt);
+
+                Assert.Equal(PaymentStatus.Confirmed, payment.Status);
+                Assert.Equal(
+                    attemptId,
+                    payment.ConfirmedPaymentAttemptId);
+                Assert.Equal(processedAt, payment.ConfirmedAt);
+                Assert.Equal(65m, payment.Amount);
+
+                Assert.Equal(
+                    PaymentAttemptStatus.Confirmed,
+                    attempt.Status);
+                Assert.Equal(processedAt, attempt.ConfirmedAt);
+                Assert.Equal(
+                    providerOrderId,
+                    attempt.ProviderPaymentId);
+                Assert.Equal(65m, attempt.Amount);
+
+                Assert.Equal(
+                    1,
+                    await context.AppointmentHistoryEntries.CountAsync(
+                        entity => entity.AppointmentId == appointmentId));
+
+                var receipt = await context.IdempotencyRecords
+                    .AsNoTracking()
+                    .SingleAsync(
+                        entity =>
+                            entity.Operation ==
+                                PaymentConfirmationService.Operation);
+
+                using var document =
+                    System.Text.Json.JsonDocument.Parse(
+                        receipt.ResponseJson);
+
+                var stored = document.RootElement
+                    .GetProperty("Confirmation");
+
+                Assert.Equal(
+                    approvedAt,
+                    stored.GetProperty("ApprovedAt")
+                        .GetDateTimeOffset());
+                Assert.Equal(
+                    providerOrderId,
+                    stored.GetProperty("ProviderOrderId")
+                        .GetString());
+                Assert.Equal(
+                    attemptId,
+                    stored.GetProperty("PaymentAttemptId")
+                        .GetGuid());
+                Assert.Equal(
+                    65m,
+                    stored.GetProperty("Amount")
+                        .GetDecimal());
+            }
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
 
     [Theory]
     [InlineData(-10, false)]

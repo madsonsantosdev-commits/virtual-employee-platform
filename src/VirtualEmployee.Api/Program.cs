@@ -150,6 +150,13 @@ if (paymentsEnabled)
 {
     app.MapPaymentAttemptsEndpoints();
 }
+if (paymentsEnabled &&
+    builder.Configuration.GetValue<bool>("Payments:MercadoPago:Enabled", false) &&
+    builder.Configuration.GetValue<bool>("Payments:MercadoPago:WebhooksEnabled", false))
+{
+    app.MapMercadoPagoWebhooksEndpoints();
+}
+
 app.Run();
 
 public partial class Program;
