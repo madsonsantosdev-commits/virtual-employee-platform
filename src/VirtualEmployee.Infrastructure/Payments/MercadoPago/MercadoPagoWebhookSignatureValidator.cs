@@ -81,13 +81,39 @@ public static class MercadoPagoWebhookSignatureValidator
             return false;
         }
 
+        var key = Encoding.UTF8.GetBytes(secret);
+
+        var originalMatches = Matches(
+            key,
+            receivedBytes,
+            dataId!,
+            requestId!,
+            timestamp);
+
+        var normalizedMatches = Matches(
+            key,
+            receivedBytes,
+            dataId!.ToLowerInvariant(),
+            requestId!,
+            timestamp);
+
+        return originalMatches | normalizedMatches;
+    }
+
+    private static bool Matches(
+        byte[] key,
+        byte[] receivedBytes,
+        string dataId,
+        string requestId,
+        string timestamp)
+    {
         var manifest =
-            $"id:{dataId!.ToLowerInvariant()};" +
+            $"id:{dataId};" +
             $"request-id:{requestId};" +
             $"ts:{timestamp};";
 
         var expectedBytes = HMACSHA256.HashData(
-            Encoding.UTF8.GetBytes(secret),
+            key,
             Encoding.UTF8.GetBytes(manifest));
 
         return CryptographicOperations.FixedTimeEquals(

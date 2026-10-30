@@ -118,6 +118,22 @@ if (paymentsEnabled)
 
 var app = builder.Build();
 
+if (builder.Configuration.GetValue<bool>("WebhookTunnel:Enabled", false))
+{
+    app.Use(async (context, next) =>
+    {
+        if (!HttpMethods.IsPost(context.Request.Method) ||
+            !context.Request.Path.StartsWithSegments(
+                "/webhooks/mercado-pago"))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        await next(context);
+    });
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();

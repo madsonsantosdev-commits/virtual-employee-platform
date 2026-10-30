@@ -1,6 +1,7 @@
 # Contratos da API v1
 
 > Status: 🔒 FROZEN v1 — contratos aprovados para implementação
+
 > Data: 2026-09-17
 
 Base: `/api/v1`. JSON, UUID, ISO-8601. `TenantId` vem exclusivamente do contexto autenticado/confiável e não é aceito do cliente como autoridade. Requisições propagam `X-Correlation-Id`.
@@ -8,32 +9,50 @@ Base: `/api/v1`. JSON, UUID, ISO-8601. `TenantId` vem exclusivamente do contexto
 ## 0. Convenções globais
 
 ### Normalização e validação
+
 A API aceita entradas amigáveis, normaliza apenas o que for tecnicamente seguro, valida estrutura e regras antes de persistir e não corrige silenciosamente dados semanticamente inválidos.
 
 Fluxo: `Request -> Normalização segura -> Validação estrutural -> Validação de domínio -> Application/Domain -> Persistência`.
 
 - nomes/descrições: trim e normalização de espaços, preservando apresentação;
+
 - e-mail: trim, validação e representação apropriada para comparação;
+
 - telefone: representação canônica, preferencialmente E.164;
+
 - CPF/CNPJ: remover máscara, validar e aplicar a estratégia de proteção/fingerprint definida na arquitetura;
+
 - códigos canônicos de catálogo: gerados/normalizados pelo backend;
+
 - preço: decimal positivo e precisão monetária apropriada;
+
 - duração: inteiro positivo em minutos;
+
 - UUID: formato válido, existência e pertencimento ao contexto permitido;
+
 - instantes: ISO-8601 e persistência `timestamptz`;
+
 - horários recorrentes: hora local interpretada no timezone da `Location`;
+
 - enums: somente valores conhecidos pela versão da API.
 
 Normalização técnica pertence à fronteira de aplicação; invariantes de negócio permanecem no Domain/Application. PostgreSQL continua protegendo invariantes críticas.
 
 ### Idempotência
+
 Operações críticas usam `Idempotency-Key` obrigatório: criar Appointment, reagendar, cancelar, criar nova PaymentAttempt, solicitar Refund e criar ScheduleBlock. GETs não exigem chave.
 
 A identidade idempotente considera conceitualmente `TenantId + Operation + IdempotencyKey`, associada a hash do request e resultado. Mesma chave + mesmo payload retorna o mesmo resultado sem repetir o efeito. Mesma chave + payload diferente retorna `409 IDEMPOTENCY_CONFLICT`.
 
-Idempotência da API não substitui proteção de concorrência do banco. Webhooks usam identidade própria do provider (`Provider + ProviderEventId`). Operações em gateways também propagam chave idempotente própria quando suportado.
+Idempotência da API não substitui proteção de concorrência do banco.
+Na implementação Mercado Pago, a confirmação financeira é deduplicada por
+TenantId + Provider + ProviderPaymentId, em idempotency_records.
+Deduplicação durável por identidade da notificação permanece prevista;
+não há inbox separado nesta entrega. Operações em gateways também propagam
+chave idempotente própria quando suportado.
 
 ### Problem Details e HTTP Status
+
 Erros seguem RFC 9457 Problem Details, estendido com `code`, `correlationId` e, quando aplicável, `errors`.
 
 ```json
@@ -52,9 +71,11 @@ Convenção: `400` request estruturalmente inválido; `401` não autenticado; `4
 Tentativas de acessar recurso de outro Tenant não revelam existência e são tratadas como `404 RESOURCE_NOT_FOUND`. Respostas de erro nunca expõem stack trace, SQL, segredos ou detalhes sensíveis de providers; diagnóstico interno é correlacionado via `correlationId`/App Insights. `code` é o contrato estável para clientes; mensagens podem evoluir/localizar.
 
 ## 1. Business Types e Business
+
 `GET /business-types?search=bar&limit=20`
 
 `POST /business-types`
+
 ```json
 {"name":"Podologia"}
 ```
@@ -62,6 +83,7 @@ Tentativas de acessar recurso de outro Tenant não revelam existência e são tr
 `BusinessType` é catálogo global reutilizável. O cliente não define o `code`; o backend normaliza/gera o código canônico, verifica duplicidade e permite ao Tenant continuar o onboarding. Novos tipos dinâmicos ficam sujeitos a curadoria antes de serem expostos como opção geral para outros Tenants, evitando poluição do catálogo.
 
 Exemplo de resposta:
+
 ```json
 {"id":"<uuid>","code":"PODOLOGY","name":"Podologia","isActive":true}
 ```
@@ -84,19 +106,24 @@ Response:
   "slotIntervalMinutes": 15,
   "isActive": true
 }
+```
 
 ## 2. Locations
+
 `GET /locations?active=true`
+
 A implementação inicial de `GET /locations` retorna as Locations visíveis no contexto tenant-scoped atual. `TenantId` não é exposto no response.
 
 A leitura utiliza o `TenantContext` e o Global Query Filter do EF Core. O `TenantId` autoritativo deve vir de contexto autenticado/confiável.
 
 Durante o desenvolvimento local, `X-Tenant-Id` é utilizado temporariamente para inicializar o `TenantContext`. Esse mecanismo existe somente em `Development`, não representa autenticação e não deve ser utilizado como autoridade de Tenant em produção.
 
-`GET /locations/{locationId}`
+`GET /locations/{*locationId*}`
+
 Implementado. Retorna a Location quando ela pertence ao tenant atual. Location inexistente ou pertencente a outro tenant retorna `404 Not Found`, sem revelar a existência de recursos cross-tenant. A consulta utiliza o `TenantContext` e o Global Query Filter do EF Core.
 
 `POST /locations`
+
 Implementado. Cria uma nova Location vinculada a um Business pertencente ao tenant atual.
 
 O `TenantId` não é aceito no payload. Ele é obtido do `TenantContext`, cuja autoridade em produção deverá vir do contexto autenticado/confiável. Durante o desenvolvimento local, o header temporário `X-Tenant-Id` inicializa esse contexto.
@@ -117,8 +144,11 @@ Request:
 `phone` e `address` são opcionais. `businessId`, `name`, `countryCode` e `timezone` são obrigatórios.
 
 Responses:
+
 - `201 Created`: Location criada. A resposta contém a Location e o header `Location` aponta para `/api/v1/locations/{locationId}`.
+
 - `400 Bad Request`: request estruturalmente inválido.
+
 - `404 Not Found`: Business inexistente ou pertencente a outro tenant. Os dois casos são indistinguíveis externamente para não revelar recursos cross-tenant.
 
 A verificação do Business utiliza o `TenantContext` e o Global Query Filter do EF Core. O backend gera o `LocationId`, define o `TenantId` e controla `IsActive`, `CreatedAt` e `UpdatedAt`.
@@ -140,14 +170,16 @@ Request:
   "timezone": "America/Sao_Paulo",
   "isActive": true
 }
-
 ```
 
 `name`, `countryCode`, `timezone` e `isActive` compõem os dados atualizáveis obrigatórios da operação. `phone` e `address` são opcionais. O Domain normaliza os dados operacionais antes da persistência.
 
 Responses:
+
 - `200 OK`: Location atualizada e retornada.
+
 - `400 Bad Request`: request estruturalmente inválido.
+
 - `404 Not Found`: Location inexistente ou pertencente a outro tenant. Os dois casos são indistinguíveis externamente para não revelar recursos cross-tenant.
 
 A atualização busca a Location através do `TenantContext` e do Global Query Filter do EF Core. `BusinessId` permanece imutável nesta operação. `UpdatedAt` é controlado pelo backend e atualizado quando a alteração é persistida.
@@ -220,39 +252,55 @@ Request:
 ```
 
 A operação possui semântica de replace completo:
+
 - Services existentes que não estiverem em `serviceIds` são removidos da associação;
+
 - Services já associados e novamente informados são preservados;
+
 - novos Services são associados;
+
 - enviar `serviceIds: []` remove todas as associações;
+
 - repetir o mesmo conjunto produz o mesmo estado final.
 
 Todos os Services devem existir no tenant atual e pertencer ao mesmo Business da Location.
 
 Responses:
+
 - `200 OK`: conjunto de Services substituído com sucesso;
+
 - `400 Bad Request`: request inválido ou `serviceIds` duplicados;
+
 - `404 Not Found`: Location ou Service inexistente no contexto do tenant atual;
+
 - `409 Conflict`: Service pertence a outro Business dentro do mesmo tenant.
 
 `LocationService` representa somente a disponibilidade do Service na unidade. A existência do vínculo significa que o Service está disponível; sua remoção significa que não está disponível.
 
 No MVP, `LocationService`:
+
 - não possui `IsActive`;
+
 - não possui override de preço;
+
 - não possui override de duração.
 
 Preço e duração continuam sendo definidos pelo `Service`.
 
 ## 4. Professionals, Locations e Services
+
 `GET /professionals?active=true&locationId=<uuid>&serviceIds=<id1>&serviceIds=<id2>`
+
 `POST /professionals`, `PUT /professionals/{professionalId}`.
 
 Professional pertence ao Business.
 
 `PUT /professionals/{professionalId}/locations`
+
 ```json
 {"locationIds":["<moema-id>","<tatuape-id>"]}
 ```
+
 ### ProfessionalLocations — implementação validada em 06/10/2026
 
 As rotas implementadas usam o prefixo `/api/v1`.
@@ -260,9 +308,13 @@ As rotas implementadas usam o prefixo `/api/v1`.
 `GET /professionals/{professionalId}/locations`
 
 Retorna `200 OK` com uma lista de `LocationResponse`, ordenada por nome e ID.
+
 Inclui apenas vínculos ativos. O campo `isActive` da resposta indica o estado
+
 da própria Location; uma Location inativa com vínculo ativo também é retornada.
+
 Professional existente sem vínculos ativos retorna `[]`.
+
 Professional inexistente ou pertencente a outro tenant retorna `404 Not Found`.
 
 `PUT /professionals/{professionalId}/locations`
@@ -270,13 +322,19 @@ Professional inexistente ou pertencente a outro tenant retorna `404 Not Found`.
 Recebe `locationIds` e substitui o conjunto de vínculos ativos:
 
 - Cria os vínculos ainda inexistentes.
+
 - Reativa os vínculos selecionados que estavam inativos.
+
 - Desativa os vínculos não selecionados, preservando os registros.
+
 - Preserva `createdAt` dos vínculos existentes.
+
 - Altera `updatedAt` somente quando o estado do vínculo muda.
+
 - Uma lista vazia desativa todos os vínculos do Professional.
 
 Todas as Locations devem pertencer ao mesmo Business do Professional.
+
 As validações ocorrem antes de alterar os vínculos.
 
 | Resultado | HTTP |
@@ -287,6 +345,7 @@ As validações ocorrem antes de alterar os vínculos.
 | Location de outro Business do mesmo tenant | 409 |
 
 O header `X-Tenant-Id` é temporário para desenvolvimento.
+
 A gestão dos vínculos não substitui a consulta de elegibilidade nem a futura busca de disponibilidade de Scheduling.
 
 ### ProfessionalServices — validados em 08/10/2026
@@ -296,10 +355,15 @@ As rotas usam o prefixo `/api/v1`.
 `GET /professionals/{professionalId}/services`
 
 Retorna `200` com uma lista de `ServiceResponse`, ordenada por nome e ID,
+
 incluindo os componentes dos COMBOs na ordem definida.
+
 Inclui apenas vínculos ativos; Services inativos com vínculo ativo também
+
 são retornados. `isActive` indica o estado do próprio Service.
+
 Professional sem vínculos ativos retorna `[]`.
+
 Professional inexistente ou de outro tenant retorna `404`.
 
 `PUT /professionals/{professionalId}/services`
@@ -307,9 +371,13 @@ Professional inexistente ou de outro tenant retorna `404`.
 Corpo: `{"serviceIds":["<corte-id>","<barba-id>"]}`.
 
 Cria vínculos inexistentes, reativa os selecionados e desativa os não selecionados.
+
 Preserva os registros e `createdAt`; altera `updatedAt` apenas quando o estado muda.
+
 Uma lista vazia desativa todos os vínculos.
+
 Todos os Services devem pertencer ao mesmo Business do Professional.
+
 As validações ocorrem antes de alterar os vínculos.
 
 | Resultado | HTTP |
@@ -322,16 +390,25 @@ As validações ocorrem antes de alterar os vínculos.
 ### Filtros de Professionals — validados em 08/10/2026
 
 - `active` é opcional; quando ausente, inclui profissionais ativos e inativos.
+
 - `locationId` exige Location ativa, do mesmo Business, com vínculo ProfessionalLocation ativo.
+
 - Todos os Services devem estar ativos, pertencer ao mesmo Business e possuir vínculo ProfessionalService ativo.
+
 - Com `locationId`, todos os Services também devem estar vinculados à Location.
+
 - Envie vários Services repetindo o parâmetro `serviceIds`.
+
 - O resultado é ordenado por nome e ID.
+
 - Recursos inexistentes, de outro tenant ou sem elegibilidade retornam `200` com `[]`.
+
 - GUIDs inválidos ou vazios, Services duplicados e `active` inválido retornam `400`.
 
 COMBO exige vínculo explícito; seus componentes não conferem elegibilidade automaticamente.
+
 Use `active=true` para retornar apenas profissionais ativos.
+
 A disponibilidade de horários ainda depende de Scheduling.
 
 `ProfessionalLocation` define onde trabalha; `ProfessionalService` define o que executa. Quando vários serviceIds forem informados, retornar somente profissionais da Location habilitados para TODOS os Services. Para COMBO, elegibilidade é explícita em `ProfessionalService`; não é inferida pelos componentes.
@@ -339,9 +416,11 @@ A disponibilidade de horários ainda depende de Scheduling.
 ## 5. Availability Rules
 
 Implementação validada em 09/10/2026. As rotas usam o prefixo `/api/v1`.
+
 O header `X-Tenant-Id` é temporário para desenvolvimento.
 
 AvailabilityRule define janelas semanais de um Professional em uma Location.
+
 Os horários são locais, interpretados conforme a timezone da Location.
 
 ### Consulta
@@ -349,6 +428,7 @@ Os horários são locais, interpretados conforme a timezone da Location.
 `GET /locations/{locationId}/professionals/{professionalId}/availability-rules`
 
 Retorna `200` com as regras ativas, ordenadas por dia da semana,
+
 início, fim e ID. Sem regras ativas, retorna `[]`.
 
 Exemplo de resposta:
@@ -365,11 +445,15 @@ Exemplo de resposta:
 ```
 
 Location e Professional devem existir no tenant atual, pertencer ao mesmo
+
 Business e possuir vínculo ProfessionalLocation.
+
 Caso contrário, a consulta retorna `404`.
 
 A consulta administrativa permite ler regras mesmo quando Location,
+
 Professional ou ProfessionalLocation estão inativos.
+
 Isso não significa disponibilidade para agendamento.
 
 ### Substituição
@@ -386,21 +470,35 @@ Isso não significa disponibilidade para agendamento.
 ```
 
 - `rules` é obrigatório; uma lista vazia desativa todas as regras do par.
+
 - Cada regra exige `dayOfWeek`, `startTime` e `endTime`.
+
 - `dayOfWeek` usa números de 0 (domingo) a 6 (sábado).
+
 - Domingo e início à meia-noite (`00:00`) são aceitos.
+
 - O início deve ser anterior ao fim, dentro do mesmo dia.
+
 - Janelas que atravessam a meia-noite não são aceitas nesta entrega.
+
 - São permitidas várias janelas por dia, sem sobreposição.
+
 - Janelas adjacentes são aceitas; janelas duplicadas são rejeitadas.
+
 - Location, Professional e ProfessionalLocation devem estar ativos.
+
 - Location e Professional devem pertencer ao mesmo Business.
+
 - As validações ocorrem antes de alterar a agenda.
 
 A substituição cria janelas inexistentes, reativa as selecionadas e
+
 desativa as omitidas, preservando os registros.
+
 A mesma combinação de dia, início e fim preserva o ID e `createdAt`.
+
 `updatedAt` muda somente quando o estado da regra muda.
+
 Alterar os horários desativa a janela anterior e cria ou reativa outra.
 
 | Resultado do PUT | HTTP |
@@ -414,13 +512,15 @@ Alterar os horários desativa a janela anterior e cria ou reativa outra.
 GUIDs vazios nos parâmetros de rota retornam `400` no GET e no PUT.
 
 Esta entrega gerencia regras semanais. A busca de slots, os bloqueios
-e os conflitos com agendamentos serão implementados nas próximas etapas.
 
+e os conflitos com agendamentos serão implementados nas próximas etapas.
 
 ## 6. Schedule Blocks
 
 Implementação incremental validada em 14/10/2026.
+
 As rotas usam o prefixo `/api/v1`.
+
 O header `X-Tenant-Id` é temporário para desenvolvimento.
 
 ### Criação
@@ -439,34 +539,53 @@ Requer o header `Idempotency-Key`.
 ```
 
 LocationId, StartsAt e EndsAt são obrigatórios.
+
 ProfessionalId ausente ou null bloqueia toda a unidade.
+
 Quando preenchido, bloqueia somente o profissional naquela unidade.
 
 O início deve preceder o fim. Bloqueios podem atravessar dias.
+
 Os instantes são normalizados para UTC.
+
 A sobreposição usa intervalos [StartsAt, EndsAt): encostar no limite
+
 não constitui conflito.
 
 Location e Business devem estar ativos.
+
 Quando informado, Professional deve estar ativo, pertencer ao mesmo
+
 Business da Location e possuir ProfessionalLocation ativo.
 
 Retorna `201` com Id, LocationId, ProfessionalId, StartsAt, EndsAt,
+
 IsActive, CreatedAt e UpdatedAt.
 
 ### Idempotência
 
 - Identidade: TenantId + operação CreateScheduleBlock + chave.
+
 - Chave obrigatória, com até 200 caracteres, sem espaços ou caracteres de controle.
+
 - A chave é preservada e diferencia maiúsculas de minúsculas.
+
 - Mesma chave e conteúdo retornam `201` com a resposta original.
+
 - Offsets diferentes que representam os mesmos instantes são equivalentes.
+
 - Mesma chave e conteúdo diferente retornam `409`,
+
   com `code: IDEMPOTENCY_CONFLICT`.
+
 - Bloqueio e resultado idempotente são gravados na mesma transação.
+
 - Requisições concorrentes com a mesma chave não duplicam o bloqueio.
+
 - Após desativação, replay não reativa o bloqueio:
+
   devolve a resposta original da criação, inclusive seu IsActive original.
+
 - Falhas de validação não persistem bloqueio nem registro idempotente.
 
 ### Consulta
@@ -474,14 +593,19 @@ IsActive, CreatedAt e UpdatedAt.
 `GET /schedule-blocks?locationId=<uuid>&from=<instant>&to=<instant>&professionalId=<uuid>`
 
 LocationId, from e to são obrigatórios; from deve preceder to.
+
 Retorna `200` com bloqueios ativos que se sobrepõem ao período,
+
 ordenados por StartsAt e Id. Sem resultados, retorna `[]`.
 
 Sem ProfessionalId, inclui todos os escopos da unidade.
+
 Com ProfessionalId, inclui os bloqueios desse profissional e os
+
 bloqueios da unidade inteira.
 
 A consulta permite Location inativa para leitura administrativa.
+
 Location inexistente ou de outro tenant retorna `404`.
 
 ### Desativação
@@ -489,9 +613,13 @@ Location inexistente ou de outro tenant retorna `404`.
 `DELETE /schedule-blocks/{blockId}`
 
 Retorna `204` para bloqueio existente, inclusive já inativo.
+
 Preserva o registro e CreatedAt; altera UpdatedAt somente na
+
 primeira desativação.
+
 Bloqueio inexistente ou de outro tenant retorna `404`.
+
 GUID vazio retorna `400`.
 
 A chave idempotente da criação permanece preservada.
@@ -509,34 +637,47 @@ A chave idempotente da criação permanece preservada.
 ### Integração com slots e limite da entrega
 
 A busca de slots descarta candidatos cujo intervalo completo se
+
 sobreponha a bloqueios ativos aplicáveis.
+
 Bloqueios da unidade afetam todos os profissionais; bloqueios
+
 específicos afetam somente o profissional indicado.
+
 A grade original de inícios é preservada.
 
 `POST /schedule-blocks/impact` permanece previsto e ainda não implementado.
-A avaliação de impacto depende de Appointments.
-Criar um bloqueio não move nem cancela agendamentos automaticamente.
 
+A avaliação de impacto depende de Appointments.
+
+Criar um bloqueio não move nem cancela agendamentos automaticamente.
 
 ## 7. Customers
 
 Cliente final pertencente a um Business e ao tenant atual.
+
 Telefone/WhatsApp é identificador operacional principal, mas não PK.
 
 Implementado em 15/10/2026 com nome opcional, telefone obrigatório,
+
 e-mail opcional e datas de criação e atualização em UTC.
 
 A Application normaliza o telefone para `+` seguido de dígitos ASCII,
+
 sem inferir país. A validação é estrutural e não confirma existência
+
 do número nem disponibilidade no WhatsApp.
+
 Nome e e-mail em branco são armazenados como null.
 
 A criação exige Business ativo do tenant atual.
+
 Consultas e escritas respeitam o isolamento entre tenants.
+
 Telefone não possui restrição de unicidade nesta entrega.
 
 A API expõe criação, listagem e consulta por ID.
+
 Evitar enriquecer Customer com dados pessoais sem finalidade definida.
 
 ### Criação
@@ -548,29 +689,42 @@ Evitar enriquecer Customer com dados pessoais sem finalidade definida.
   "businessId": "<business-id>",
   "phone": "+55 (11) 99999-0001",
   "name": "Maria Silva",
-  "email": "maria@example.com"
+  "email": "maria\@example.com"
 }
 ```
 
 O Business deve existir no tenant atual e estar ativo.
 
 Regras de telefone:
+
 - Exige prefixo internacional explícito com `+`.
+
 - Aceita de 1 a 15 dígitos ASCII, com primeiro dígito diferente de zero.
+
 - Remove espaços nas extremidades e ignora espaços comuns, parênteses,
+
   hífens e pontos na parte após o `+`.
+
 - Não infere país nem acrescenta código de país.
+
 - Rejeita letras, ramais e demais caracteres.
+
 - A validação é estrutural; não confirma existência do número,
+
   validade do plano de numeração ou disponibilidade no WhatsApp.
 
 Nome e e-mail têm espaços nas extremidades removidos.
+
 Valores ausentes, null ou em branco são armazenados como null.
+
 Quando informado, o e-mail deve representar um endereço simples,
+
 sem nome de apresentação, lista de destinatários ou caracteres de controle.
+
 Não há verificação de existência da caixa postal.
 
 Retorna `201` com o Customer criado e o header
+
 `Location: /api/v1/customers/{id}`.
 
 ```json
@@ -579,11 +733,12 @@ Retorna `201` com o Customer criado e o header
   "businessId": "<business-id>",
   "name": "Maria Silva",
   "phone": "+5511999990001",
-  "email": "maria@example.com"
+  "email": "maria\@example.com"
 }
 ```
 
 Telefone não é PK e não possui restrição de unicidade nesta entrega.
+
 Repetir uma criação válida pode gerar outro Customer.
 
 | Resultado do POST | HTTP |
@@ -598,7 +753,9 @@ Repetir uma criação válida pode gerar outro Customer.
 `GET /api/v1/customers`
 
 Retorna `200` com os Customers do tenant atual, ordenados por nome e ID.
+
 A listagem pode incluir Customers de diferentes Businesses desse tenant.
+
 Sem registros, retorna `[]`.
 
 ### Consulta por ID
@@ -606,22 +763,27 @@ Sem registros, retorna `[]`.
 `GET /api/v1/customers/{customerId}`
 
 Retorna `200` com o mesmo formato de Customer apresentado na criação.
+
 Customer inexistente ou de outro tenant retorna `404`.
+
 GUID vazio retorna `400`.
 
 ### Limite desta entrega
 
 Inclui criação, listagem e consulta por ID.
+
 Atualização e exclusão de Customers não estão expostas pela API.
 
 ## 8. Booking Quote
 
 Implementação validada em 16/10/2026.
+
 O header `X-Tenant-Id` é temporário para desenvolvimento.
 
 `POST /api/v1/booking/quote`
 
 Calcula preço e duração dos serviços selecionados na unidade.
+
 A cotação é informativa, não é persistida e não reserva horário.
 
 ### Entrada
@@ -634,14 +796,19 @@ A cotação é informativa, não é persistida e não reserva horário.
 ```
 
 - LocationId e pelo menos um ServiceId são obrigatórios.
+
 - IDs vazios, malformados ou duplicados são rejeitados.
+
 - Location e Business devem estar ativos no tenant atual.
+
 - Todos os Services devem estar ativos, pertencer ao Business da
+
   Location e ser oferecidos nela via LocationService.
 
 ### Resposta
 
 Retorna `200` com os itens na ordem dos ServiceIds solicitados
+
 e os totais calculados no backend.
 
 ```json
@@ -669,14 +836,23 @@ e os totais calculados no backend.
 ### Regras de cálculo
 
 - Preço e duração vêm dos Services, sem override por Location.
+
 - Os totais são a soma dos valores dos serviços selecionados.
+
 - COMBO usa preço e duração próprios, sem expandir seus componentes.
+
 - Oferecer os componentes na unidade não oferece o COMBO automaticamente:
+
   ele exige seu próprio vínculo LocationService.
+
 - Não há substituição automática de serviços individuais por COMBO.
+
 - Preço total zero é aceito.
+
 - Overflow de preço ou duração total acima de int.MaxValue é rejeitado.
+
 - Cada consulta usa os valores atuais do catálogo.
+
 - A cotação não avalia profissional, agenda, bloqueios ou ocupação.
 
 | Resultado | HTTP |
@@ -689,6 +865,7 @@ e os totais calculados no backend.
 | Totais inválidos ou acima dos limites suportados | 409 |
 
 CreateAppointment deverá revalidar os recursos e recalcular os valores.
+
 A cotação não garante preço futuro nem disponibilidade para agendamento.
 
 ## 9. Available Slots
@@ -711,13 +888,17 @@ O header `X-Tenant-Id` é temporário para desenvolvimento.
 ```
 
 - LocationId, date e pelo menos um ServiceId são obrigatórios.
+
 - IDs vazios e ServiceIds duplicados são rejeitados.
+
 - ProfessionalId é opcional; ausente ou null busca todos os elegíveis.
+
 - Date representa a data local na timezone da Location.
 
 ### Resposta
 
 Retorna `200` com timezone, duração total e slots ordenados por
+
 StartsAt e ProfessionalId.
 
 ```json
@@ -737,28 +918,47 @@ StartsAt e ProfessionalId.
 ```
 
 StartsAt e EndsAt são instantes UTC.
+
 Sem profissionais elegíveis ou janelas disponíveis, retorna `slots: []`.
+
 Datas passadas também retornam lista vazia.
 
 ### Regras implementadas
 
 - Location e Business devem estar ativos no tenant atual.
+
 - Todos os Services devem estar ativos, pertencer ao Business da Location
+
   e ser oferecidos nela via LocationService.
+
 - Professional deve estar ativo, com ProfessionalLocation ativo e
+
   ProfessionalService ativo para todos os Services solicitados.
+
 - COMBO exige habilitação explícita e usa sua própria duração,
+
   sem somar novamente os componentes.
+
 - A duração total é a soma das durações dos Services selecionados.
+
 - Apenas AvailabilityRules ativas do dia e da unidade são consideradas.
+
 - Janelas adjacentes ou sobrepostas são unidas para formar intervalos contínuos.
+
 - Descansos entre janelas são preservados.
+
 - Os inícios avançam conforme Business.SlotIntervalMinutes,
+
   a partir do início de cada janela contínua.
+
 - O atendimento completo deve caber na janela.
+
 - Inícios iguais ou anteriores ao instante da consulta são excluídos.
+
 - Horários locais com início ou fim inexistente ou ambíguo por mudança
+
   de timezone são descartados.
+
 - Candidatos cuja duração em UTC difere da duração local são descartados.
 
 | Resultado | HTTP |
@@ -772,45 +972,63 @@ Datas passadas também retornam lista vazia.
 | Timezone configurada na Location não resolvida pelo servidor | 500 |
 
 Professional informado sem elegibilidade, inexistente ou de outro tenant
+
 não produz slots; a busca retorna `200` com lista vazia, desde que
+
 Location e Services sejam válidos.
 
 ### Limite desta entrega
 
 A busca considera elegibilidade, agenda semanal, ScheduleBlocks ativos
+
 e Appointments nos estados que ocupam agenda.
+
 A ocupação considera o profissional em todas as unidades do tenant.
+
 Slots não são persistidos e não constituem reserva nem lock.
 
 O fluxo de disponibilidade implementado é:
+
 LocationService -> ProfessionalLocation -> ProfessionalService ->
+
 AvailabilityRule -> ScheduleBlock -> Appointments.
 
 ## 10. Appointments
 
-### Implementação incremental — atualizada em 21/10/2026
+### Implementação incremental — atualizada em 30/10/2026
 
 Criação e consulta por ID foram validadas em 16/10/2026.
+
 Listagem paginada foi validada em 19/10/2026.
 
 Rotas implementadas:
+
 - `POST /api/v1/appointments`
+
 - `GET /api/v1/appointments`
+
 - `GET /api/v1/appointments/{appointmentId}`
+
 - `POST /api/v1/appointments/{appointmentId}/cancel`
+
 - `POST /api/v1/appointments/{appointmentId}/reschedule`
+
 - `GET /api/v1/appointments/{appointmentId}/history`
 
 O header `X-Tenant-Id` é temporário para desenvolvimento.
+
 Cancelamento idempotente foi validado em 19/10/2026.
+
 Reagendamento idempotente foi validado em 20/10/2026.
-Confirmação por pagamento permanece pendente.
+
+Confirmação por pagamento integral está implementada; consulte a seção 11.
 
 #### Histórico de Appointments — implementação em 21/10/2026
 
 `GET /api/v1/appointments/{appointmentId}/history`
 
 Retorna o histórico do agendamento no tenant atual.
+
 Não exige Idempotency-Key e não altera o agendamento nem materializa expiração.
 
 | Parâmetro | Regra |
@@ -849,34 +1067,53 @@ Resposta:
 }
 ```
 
-Tipos públicos: CREATED, CANCELLED, RESCHEDULED e EXPIRED.
+Tipos públicos: CREATED, CANCELLED, RESCHEDULED, EXPIRED e PAYMENT_CONFIRMED.
+
 Os status dos snapshots usam os nomes públicos dos estados de Appointment.
+
 Datas são retornadas em UTC.
 
+PAYMENT_CONFIRMED registra exclusivamente a transição operacional PENDING para CONFIRMED,
+sem alterar os demais snapshots. Pagamento tardio não cria esse evento.
+
 CREATED possui before nulo. As demais operações possuem estados
+
 anterior e novo. CANCELLED inclui o motivo normalizado.
+
 Campos opcionais nulos podem ser omitidos conforme a configuração JSON.
 
 A ordenação é crescente por OccurredAt e depois Id.
+
 O ID fornece desempate estável; não representa sequência causal
+
 entre operações com o mesmo timestamp.
 
 Itens e contagem respeitam o tenant e o AppointmentId.
+
 Agendamento inexistente ou de outro tenant retorna 404.
+
 Agendamento existente sem histórico retorna 200 com items vazio
+
 e totalCount zero. Não há geração retroativa de eventos.
 
 Criação, cancelamento e reagendamento persistem histórico junto
+
 à alteração na mesma transação. Expiração em lote atualiza os
+
 agendamentos e insere seus históricos atomicamente.
 
 Replay, operações sem mudança efetiva e tentativas revertidas
+
 não acrescentam histórico. Uma tentativa de cancelar ou reagendar
+
 PENDING vencido pode persistir EXPIRED e seu histórico, retornando
+
 o conflito RESERVATION_EXPIRED da operação solicitada.
 
 A consulta não exige que os recursos referenciados continuem ativos.
+
 Contagem e página são lidas em consultas separadas; novos registros
+
 concorrentes podem ser observados entre essas leituras.
 
 | Resultado | HTTP |
@@ -886,8 +1123,8 @@ concorrentes podem ser observados entre essas leituras.
 | Agendamento inexistente ou de outro tenant | 404 |
 
 O histórico persistido não implica publicação de eventos para consumidores.
-Essa integração permanece pendente.
 
+Essa integração permanece pendente.
 
 #### Listagem paginada
 
@@ -907,14 +1144,21 @@ Todos os filtros são opcionais e combinados com AND.
 | pageSize | Inteiro entre 1 e 100; padrão 50 |
 
 Estados aceitos: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`,
+
 `RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`,
+
 `COMPLETED`, `NO_SHOW` e `EXPIRED`.
+
 Valores numéricos, vazios ou com outra capitalização são rejeitados.
 
 Datas são normalizadas para UTC.
+
 O filtro de período usa sobreposição:
+
 `StartsAt < to && from < EndsAt`.
+
 Agendamentos que terminam exatamente em from ou começam exatamente
+
 em to ficam fora do resultado.
 
 Exemplo:
@@ -933,20 +1177,29 @@ Resposta sem registros:
 ```
 
 Cada elemento de items usa o mesmo formato da consulta por ID,
+
 incluindo estado atual, auditoria e snapshots comerciais.
+
 Os itens comerciais de cada agendamento são ordenados por ServiceId.
 
 Os agendamentos são ordenados por StartsAt crescente e depois por Id.
+
 TotalCount considera todos os registros após os filtros, antes da paginação.
+
 Página além do resultado retorna items vazio, preservando TotalCount.
 
 Itens e contagem consideram somente o tenant atual.
+
 Filtros com IDs inexistentes ou de outro tenant retornam lista vazia.
+
 A consulta não exige que os recursos históricos estejam ativos.
+
 Sem filtro de status, todos os estados podem ser retornados.
+
 A leitura não altera estados nem materializa expiração.
 
 Contagem e página são lidas em consultas separadas; alterações concorrentes
+
 podem ser observadas entre essas leituras.
 
 | Resultado | HTTP |
@@ -958,29 +1211,45 @@ podem ser observadas entre essas leituras.
 #### Criação e idempotência
 
 A criação exige `Idempotency-Key`, com até 200 caracteres,
+
 sem espaços ou caracteres de controle.
 
 CustomerId, LocationId, ProfessionalId, StartsAt e pelo menos
+
 um ServiceId são obrigatórios. IDs vazios ou duplicados são rejeitados.
+
 StartsAt deve representar um instante com precisão máxima de microssegundos.
 
 O backend valida:
+
 - Location e Business ativos;
+
 - Customer pertencente ao Business da Location;
+
 - Professional ativo e do mesmo Business;
+
 - ProfessionalLocation existente e ativo;
+
 - todos os Services ativos, do mesmo Business e oferecidos na unidade;
+
 - ProfessionalService ativo para todos os serviços, inclusive COMBO;
+
 - início futuro, pertencente à grade da agenda;
+
 - intervalo completo disponível, respeitando timezone e bloqueios;
+
 - ausência de Appointment ocupante do profissional em qualquer unidade
+
   do tenant.
 
 Appointment, itens e resposta idempotente são persistidos atomicamente.
+
 Preço e duração são calculados no backend e preservados em snapshots.
+
 COMBO usa seus próprios valores, sem expandir componentes.
 
 Criação e replay retornam `201`, com o header
+
 `Location: /api/v1/appointments/{id}`.
 
 Exemplo de resposta:
@@ -1012,19 +1281,27 @@ Exemplo de resposta:
 ```
 
 Mesma chave e conteúdo equivalente retornam a resposta original.
+
 Offsets diferentes para o mesmo instante são equivalentes.
+
 A ordem de ServiceIds faz parte do conteúdo da requisição.
+
 Mesma chave com conteúdo diferente retorna `409 IDEMPOTENCY_CONFLICT`.
 
 Replay não revalida o catálogo nem reativa reservas expiradas.
+
 Pode retornar PENDING na resposta original mesmo quando o estado atual
+
 já é EXPIRED; consulte o recurso por ID para obter o estado atual.
 
 #### Consulta por ID
 
 Retorna `200` com o estado e os snapshots persistidos.
+
 Os itens são ordenados por ServiceId.
+
 Appointment inexistente ou de outro tenant retorna `404`.
+
 GUID vazio retorna `400`.
 
 #### Resultados da criação
@@ -1044,24 +1321,35 @@ Os códigos de conflito são retornados no campo `code` de Problem Details.
 #### Expiração implementada
 
 A configuração usa a seção `Scheduling:Reservations`:
+
 - `LifetimeMinutes`: padrão 10, inteiro positivo;
+
 - `ExpirationWorkerEnabled`: padrão false;
+
 - `ExpirationIntervalSeconds`: padrão 30, inteiro positivo.
 
 A expiração da reserva é limitada ao início do atendimento.
+
 O worker exige ativação explícita e executa ciclos em escopos separados
+
 por tenant, alterando somente PENDING com prazo vencido para EXPIRED.
+
 A repetição preserva UpdatedAt dos registros já expirados.
 
 A agenda é liberada quando a mudança para EXPIRED é persistida.
+
 Enquanto permanecer PENDING, o registro continua ocupando o intervalo,
+
 mesmo após o prazo.
+
 A confirmação por pagamento ainda não está implementada nesta entrega.
 
 `GET /api/v1/appointments?locationId=<uuid>`
+
 `GET /api/v1/appointments/{appointmentId}`
 
 `POST /appointments` requer `Idempotency-Key`.
+
 ```json
 {
   "customerId":"<uuid>",
@@ -1077,6 +1365,7 @@ Create não aceita preço, duração, `endsAt` ou status autoritativos. Backend 
 Resposta de criação usa `201 Created`, retorna `Location` do recurso e os valores derivados/snapshots, incluindo `status=PENDING`, `totalPrice`, `totalDurationMinutes`, `reservationExpiresAt` e items.
 
 ### Pagamento integral obrigatório e expiração
+
 No MVP não existe sinal, adiantamento, pagamento parcial nem reservar para pagar depois. Todo Appointment criado para reserva comercial inicia `PENDING`, ocupa agenda e somente se torna `CONFIRMED` após pagamento integral confirmado pelo provider.
 
 `Payment.Amount == Appointment.TotalPriceSnapshot` para pagamento de serviço. O tempo de reserva é configurável; não é hardcoded no contrato. Ao atingir `reservationExpiresAt` sem pagamento confirmado, worker materializa `EXPIRED`, liberando o slot.
@@ -1086,6 +1375,7 @@ Fluxo: `PENDING -> Payment -> PaymentAttempt -> webhook confirmado -> Payment CO
 `CONFIRMED_BY_CLIENT` representa confirmação posterior de presença pelo cliente, processada pelo backend após interpretação do canal; IA não altera estado diretamente.
 
 ### Double-booking
+
 `409 SLOT_UNAVAILABLE`. Tentativa perdedora não persiste Appointment. A proteção considera o Professional globalmente dentro do Tenant, evitando reserva simultânea em duas Locations. Idempotência não substitui a exclusion constraint do PostgreSQL.
 
 ### Reagendamento — implementação em 20/10/2026
@@ -1093,6 +1383,7 @@ Fluxo: `PENDING -> Payment -> PaymentAttempt -> webhook confirmado -> Payment CO
 `POST /api/v1/appointments/{appointmentId}/reschedule`
 
 Exige `Idempotency-Key` não vazia, com até 200 caracteres,
+
 sem espaços ou caracteres de controle.
 
 Entrada:
@@ -1106,61 +1397,95 @@ Entrada:
 ```
 
 Os três campos são obrigatórios, inclusive quando unidade ou profissional
+
 permanecem os mesmos. Os IDs devem ser GUIDs não vazios.
+
 StartsAt é normalizado para UTC e deve ter precisão de microssegundos.
 
 O backend revalida recursos ativos, Business, serviços oferecidos na
+
 unidade, vínculo e elegibilidade do profissional, agenda semanal,
+
 grade de início, timezone, bloqueios e conflitos com outros agendamentos.
+
 O intervalo do próprio Appointment é excluído da consulta de conflitos.
+
 A ocupação do profissional considera todas as unidades do tenant.
 
 Podem ser reagendados PENDING, CONFIRMED, CONFIRMED_BY_CLIENT
+
 e RESCHEDULE_REQUESTED, desde que o atendimento original ainda não
+
 tenha começado. O novo início deve estar no futuro.
+
 PENDING também exige prazo de reserva vigente.
 
 Preserva AppointmentId, TenantId, BusinessId, CustomerId, itens,
+
 snapshots comerciais, CreatedAt e estado operacional.
+
 Não altera a composição dos serviços nem recalcula preço e duração
+
 pelo catálogo atual. EndsAt é derivado da duração persistida.
 
 A unidade de destino deve pertencer ao Business original.
+
 Se uma evolução futura exigir ajuste financeiro, o MVP usará
+
 cancelamento e novo booking, sem cobrança complementar ou refund parcial.
 
 Para PENDING, ReservationExpiresAt nunca é estendido.
+
 Quando o novo início antecede o prazo vigente, a expiração é reduzida
+
 para esse início.
 
 Retorna 200 com AppointmentResponse, no mesmo formato da consulta por ID,
+
 incluindo novo intervalo, unidade, profissional e snapshots preservados.
+
 Não cria estado permanente RESCHEDULED.
 
 A alteração e a resposta idempotente são persistidas atomicamente.
+
 Após o commit, o intervalo anterior deixa de ocupar agenda e o novo
+
 passa a ocupá-la, conforme o estado do Appointment.
+
 Falhas de reagendamento preservam o intervalo original, exceto quando
+
 a tentativa materializa a expiração de uma reserva vencida.
 
 Idempotência:
 
 - Escopo: TenantId + Operation RescheduleAppointment + IdempotencyKey.
+
 - Hash considera AppointmentId, LocationId, ProfessionalId e início em UTC.
+
 - Mesma chave e conteúdo retornam a resposta original.
+
 - Offsets que representam o mesmo instante são equivalentes.
+
 - Mesma chave com conteúdo diferente retorna IDEMPOTENCY_CONFLICT.
+
 - Replay não reaplica a alteração nem reativa reservas expiradas ou canceladas.
+
 - Uma solicitação sem mudança efetiva preserva UpdatedAt e registra
+
   a resposta idempotente após revalidar as condições da operação.
 
 PENDING vencido é materializado como EXPIRED e retorna
+
 RESERVATION_EXPIRED, sem registrar sucesso idempotente de reagendamento.
+
 Um registro já EXPIRED também retorna esse código quando o relógio
+
 da operação é compatível com sua última atualização.
 
 Atualizações concorrentes usam os valores originais dos tokens
+
 configurados no EF Core. A exclusion constraint do PostgreSQL
+
 continua sendo a proteção contra sobreposição de horários.
 
 | Resultado | HTTP | Código |
@@ -1177,8 +1502,11 @@ continua sendo a proteção contra sobreposição de horários.
 | Timezone configurada inválida | 500 | — |
 
 As consultas do agendamento retornam o estado atual; o replay retorna
+
 a resposta original daquela operação.
+
 O histórico persistido está implementado desde 21/10/2026.
+
 Publicação de eventos e reagendamento assistido permanecem pendentes.
 
 ### Cancelamento — implementação em 19/10/2026
@@ -1186,6 +1514,7 @@ Publicação de eventos e reagendamento assistido permanecem pendentes.
 `POST /api/v1/appointments/{appointmentId}/cancel`
 
 Exige `Idempotency-Key` com até 200 caracteres, sem espaços
+
 ou caracteres de controle.
 
 Entrada:
@@ -1198,11 +1527,17 @@ Entrada:
 ```
 
 - AppointmentId deve ser um GUID não vazio.
+
 - cancelledBy aceita exatamente CLIENT ou BUSINESS.
+
 - reason é obrigatório e recebe Trim antes da validação de tamanho.
+
 - O motivo normalizado deve conter entre 1 e 500 caracteres.
+
 - O tenant é resolvido pelo mecanismo de contexto atual.
+
 - cancelledBy informa a origem operacional; não representa autenticação
+
   nem autorização do solicitante. Essas proteções permanecem pendentes.
 
 Retorna 200 com a auditoria do cancelamento:
@@ -1218,37 +1553,59 @@ Retorna 200 com a auditoria do cancelamento:
 ```
 
 BUSINESS resulta em CANCELLED_BY_BUSINESS.
+
 Datas são persistidas em UTC, com precisão de microssegundos.
 
 Podem ser cancelados os estados PENDING, CONFIRMED,
+
 CONFIRMED_BY_CLIENT e RESCHEDULE_REQUESTED.
+
 PENDING exige que o prazo da reserva ainda não tenha vencido.
+
 COMPLETED, NO_SHOW e cancelamento pela outra origem não permitem
+
 a operação. EXPIRED retorna RESERVATION_EXPIRED.
 
 A transação persiste a alteração do Appointment e a resposta idempotente
+
 atomicamente. O intervalo deixa de ocupar agenda após o commit.
+
 Itens, snapshots comerciais e prazo original da reserva são preservados.
+
 O cancelamento não depende de recursos do catálogo continuarem ativos.
 
 Idempotência:
+
 - Escopo: TenantId + Operation CancelAppointment + IdempotencyKey.
+
 - Hash considera AppointmentId, origem e motivo normalizado.
+
 - Mesma chave e conteúdo retornam a resposta original.
+
 - Mesma chave com conteúdo diferente retorna IDEMPOTENCY_CONFLICT.
+
 - Nova chave para a mesma origem e motivo preserva a auditoria original
+
   e registra a resposta para a nova chave.
+
 - Nova chave com outra origem ou motivo em agendamento já cancelado
+
   retorna INVALID_APPOINTMENT_STATE.
 
 Ao tentar cancelar PENDING vencido, o backend materializa EXPIRED
+
 e retorna RESERVATION_EXPIRED, sem registrar resposta idempotente
+
 de cancelamento. Um registro já EXPIRED também retorna esse conflito.
 
 Atualizações concorrentes são protegidas pelo token de Status.
+
 Quando outra operação vence a disputa, o cancelamento retorna
+
 CONCURRENCY_CONFLICT e sua transação é revertida.
+
 O cliente pode consultar o estado atual e repetir a solicitação
+
 com a mesma chave.
 
 | Resultado | HTTP | Código |
@@ -1262,41 +1619,52 @@ com a mesma chave.
 | Disputa de atualização | 409 | CONCURRENCY_CONFLICT |
 
 A resposta de cancelamento contém motivo e data.
+
 As consultas gerais de Appointments retornam o status atualizado;
+
 seu DTO atual não inclui os campos de auditoria do cancelamento.
 
 Esta entrega não solicita nem confirma refund.
-Política financeira, confirmação por pagamento e estornos permanecem
-para a integração de Payments e Refunds.
 
+Política financeira, confirmação por pagamento e estornos permanecem
+
+para a integração de Payments e Refunds.
 
 Estados operacionais previstos: `PENDING`, `CONFIRMED`, `CONFIRMED_BY_CLIENT`, `RESCHEDULE_REQUESTED`, `CANCELLED_BY_CLIENT`, `CANCELLED_BY_BUSINESS`, `COMPLETED`, `NO_SHOW`, `EXPIRED`. Reschedule não cria estado permanente `RESCHEDULED`; mantém histórico/evento e retorna ao estado operacional apropriado.
 
 ## 11. Payments e PaymentAttempts
 
-### Implementação incremental — 27/10/2026
+### Implementação incremental — 30/10/2026
 
 Payment representa a obrigação financeira integral do Appointment.
+
 PaymentAttempt representa cada tentativa concreta de pagamento.
+
 Um Payment pode possuir várias tentativas.
 
-Domínio, persistência, orquestração idempotente e endpoint HTTP estão
-implementados e validados com gateway simulado exclusivamente nos testes.
+Domínio, persistência, orquestração idempotente, endpoint HTTP e adaptador
+Mercado Pago Checkout Pro via Orders API estão implementados.
+A verificação financeira e a confirmação operacional via webhook estão
+cobertas por testes automatizados. A validação manual consultou um pagamento
+aprovado e processou uma notificação do simulador do provedor para uma reserva
+vencida, preservando EXPIRED e registrando a necessidade de compensação.
 
-Adaptador real do gateway, webhooks financeiros, confirmação operacional
-do Appointment e refunds permanecem pendentes.
+Refunds, OAuth por estabelecimento e reconciliação automática permanecem pendentes.
 
 ### Habilitação
 
 A rota fica desabilitada por padrão.
 
 Sua publicação exige `Payments:Enabled=true` e uma implementação de
+
 `IPaymentGateway` registrada. Nenhum gateway fictício é registrado
+
 na execução normal da API.
 
 Com Payments desabilitado, a rota retorna 404.
 
 O header `X-Tenant-Id` continua temporário para desenvolvimento.
+
 Autenticação e autorização de produção permanecem pendentes.
 
 ### Criar tentativa
@@ -1304,6 +1672,7 @@ Autenticação e autorização de produção permanecem pendentes.
 `POST /api/v1/appointments/{appointmentId}/payment-attempts`
 
 Exige `Idempotency-Key` não vazia, com até 200 caracteres, sem espaços
+
 ou caracteres de controle.
 
 Entrada:
@@ -1315,16 +1684,25 @@ Entrada:
 ```
 
 - AppointmentId deve ser um GUID não vazio.
+
 - paymentMethod aceita exatamente PIX, CREDIT_CARD ou DEBIT_CARD.
+
 - Valores vazios, numéricos em texto ou com outra capitalização são rejeitados.
+
 - O cliente não determina valor, tenant ou identificadores financeiros.
+
 - O backend exige Appointment PENDING e reserva vigente.
+
 - O valor integral vem de Appointment.TotalPriceSnapshot.
+
 - O backend obtém ou cria o único Payment de serviço do Appointment.
+
 - Payment confirmado ou estornado impede nova tentativa.
+
 - A verificação de Payment já liquidado precede a rejeição do estado operacional.
 
 Sem sinal, pagamento parcial ou boleto.
+
 Dados brutos de cartão não transitam pela API, IA ou WhatsApp.
 
 ### Resposta
@@ -1344,81 +1722,109 @@ Criação concluída retorna 201:
 ```
 
 checkoutUrl é opcional; a projeção aceita URL HTTPS absoluta sem
-credenciais embutidas. O adaptador real ainda deverá validar as
-referências fornecidas pelo provedor.
+credenciais embutidas. O adaptador Mercado Pago valida a referência da ordem,
+valor, moeda e URL HTTPS de checkout no domínio esperado do provedor.
 
 expiresAt considera o menor prazo entre tentativa, reserva e referência
+
 retornada pelo gateway. Criar uma tentativa não estende a reserva.
 
-A resposta não confirma recebimento financeiro nem altera o Appointment
-para CONFIRMED. Não há endpoint público de confirmação financeira
-nesta entrega.
+A resposta de criação não confirma recebimento financeiro nem altera o
+Appointment para CONFIRMED. A confirmação usa a rota autenticada de webhook
+descrita abaixo; não há endpoint de confirmação financeira controlado pelo cliente.
 
 ### Persistência e idempotência
 
 O escopo da chave é TenantId + operação + IdempotencyKey.
+
 O hash do pedido considera AppointmentId e PaymentMethod.
 
 A execução possui três etapas:
 
 1. Preparação transacional de Payment, PaymentAttempt e intenção.
+
 2. Chamada ao gateway fora da transação do banco.
+
 3. Conclusão transacional da tentativa e da resposta final.
 
 idempotency_records armazena duas operações internas:
+
 - CreatePaymentAttemptIntent: parâmetros originais da chamada externa;
+
 - CreatePaymentAttempt: resultado final para replay.
 
-A chave externa deriva de TenantId e PaymentAttemptId.
-Retries da mesma tentativa preservam chave, valor, método e prazo
-originais. O adaptador real deve preservar essa idempotência no provedor.
+A abstração interna possui chave derivada de TenantId e PaymentAttemptId.
+No POST /v1/orders, o adaptador Mercado Pago envia PaymentAttemptId em formato
+GUID D no header X-Idempotency-Key. Retries da mesma tentativa preservam chave,
+valor, método e prazo originais. PreparedAt persiste a base temporal usada
+para montar expiration_time, mantendo o corpo determinístico.
 
 Mesma chave e conteúdo recuperam a intenção existente ou devolvem
+
 o resultado final. Mesma chave com conteúdo diferente retorna
+
 409 IDEMPOTENCY_CONFLICT.
 
 Replay concluído não chama o gateway novamente nem reaplica alterações.
+
 Um sucesso anterior continua sendo retornado como 201 com seu corpo
+
 original, mesmo se o estado operacional mudar posteriormente.
 
 Chamadas concorrentes com a mesma chave compartilham a tentativa.
+
 Chaves diferentes para o mesmo Appointment não criam outra tentativa
+
 enquanto houver uma tentativa CREATED sem resultado externo conhecido.
 
 ### Resultado incerto e rejeição
 
 Timeout, falha de comunicação ou resultado Unknown retornam
+
 502 PAYMENT_PROVIDER_ERROR sem marcar a tentativa como FAILED
+
 e sem registrar resposta final.
 
 Enquanto a reserva estiver vigente, o cliente deve repetir a solicitação
+
 com a mesma chave. A recuperação reutiliza a tentativa e os parâmetros
+
 persistidos. Uma nova chave não substitui uma operação ainda incerta.
 
 Uma rejeição definitiva do gateway marca a tentativa como FAILED
+
 e grava o resultado final. A mesma chave repete essa falha sem nova
+
 chamada externa. Uma nova escolha consciente, com nova chave e reserva
+
 vigente, pode criar outra tentativa no mesmo Payment.
 
 A API usa PAYMENT_PROVIDER_ERROR nos dois casos. O cliente não deve
+
 gerar automaticamente novas chaves para contornar esse erro.
 
 ### Expiração e resposta tardia
 
 Para uma reserva PENDING sem Payment liquidado, no instante exato da
+
 expiração ou após ele, uma nova preparação retorna
+
 409 RESERVATION_EXPIRED sem criar registros financeiros.
 
 A preparação não materializa EXPIRED no Appointment.
+
 Essa transição permanece sob responsabilidade dos fluxos de expiração.
 
 Uma resposta externa recebida após o prazo preserva a referência
+
 do provedor. A tentativa pode ser materializada como EXPIRED;
+
 o Appointment não é confirmado nem reativado.
 
 Uma intenção sem resultado final não autoriza iniciar nova chamada
-de criação após o prazo. Reconciliação com provedor e tratamento de
-confirmações financeiras tardias ainda dependem da integração real.
+de criação após o prazo. Confirmações financeiras tardias podem ser processadas
+pelo webhook sem reativar o Appointment; reconciliação automática e execução
+da compensação permanecem pendentes.
 
 ### Resultados HTTP
 
@@ -1440,35 +1846,186 @@ confirmações financeiras tardias ainda dependem da integração real.
 Payment: PENDING, PROCESSING, CONFIRMED, FAILED, CANCELLED, REFUNDED.
 
 PaymentAttempt: CREATED, PENDING, PROCESSING, CONFIRMED, FAILED,
+
 EXPIRED, CANCELLED.
 
 Os estados previstos não significam que todos os fluxos correspondentes
-já estejam publicados pela API. Refunds e confirmação financeira externa
-continuam pendentes.
+já estejam publicados pela API. Confirmação financeira externa está implementada;
+Refunds e tratamento completo dos demais eventos financeiros permanecem pendentes.
 
-### Webhook e confirmação financeira — previsto
+### Adaptador Mercado Pago e configuração
 
-Webhook deverá validar autenticidade conforme o provedor e ser
-deduplicado por Provider + ProviderEventId.
+O adaptador exige Payments:Enabled=true e Payments:MercadoPago:Enabled=true.
+Nenhum gateway fictício é registrado na execução normal. O adaptador atual
+aceita CREDIT_CARD e DEBIT_CARD. PIX é aceito pelo contrato genérico da API,
+mas é rejeitado pelo adaptador Mercado Pago nesta entrega, sem chamada externa.
+Exemplos PIX acima representam o contrato genérico, não validação de PIX no provedor.
 
-Somente evento/API confiável do gateway poderá liquidar o Payment.
-Redirect do navegador não confirma pagamento.
+Cada item de Payments:MercadoPago:Accounts vincula TenantId e BusinessId a
+AccessToken, CollectorId e ApplicationId. Não existe fallback de credencial
+entre estabelecimentos. Public Key não é necessária para a criação de checkout
+hospedado realizada exclusivamente pelo backend.
 
-O processamento deverá atualizar PaymentAttempt, Payment e Appointment
-atomicamente quando a transição operacional for válida.
+No retorno da criação, a ordem permanece uma referência externa; redirect do
+navegador não confirma pagamento. A confirmação exige as consultas descritas abaixo.
 
-Se uma confirmação financeira chegar após Appointment EXPIRED,
-a verdade financeira deverá ser registrada sem reativar a agenda,
-com refund compensatório integral.
+### Webhook e confirmação financeira — implementação em 30/10/2026
 
-Cobranças excedentes também exigirão compensação, preservando a
-tentativa que originou a primeira liquidação do Payment.
+`POST /webhooks/mercado-pago/{webhookId:guid}?data.id={orderId}&type=order`
 
-Esses fluxos não estão implementados nesta entrega.
+A rota fica fora de /api/v1 porque é uma integração de entrada do provedor.
+Não exige Idempotency-Key nem X-Tenant-Id. Um X-Tenant-Id enviado à rota não
+seleciona o tenant. A conta configurada e a assinatura determinam o contexto confiável.
 
+#### Publicação e autenticação
+
+A rota só é publicada quando estas três flags são true:
+
+- Payments:Enabled;
+- Payments:MercadoPago:Enabled;
+- Payments:MercadoPago:WebhooksEnabled.
+
+WebhooksEnabled é false por padrão. Cada conta deve conter WebhookId não vazio
+e único, WebhookSecret, CollectorId e ApplicationId válidos, além dos campos
+já exigidos pelo gateway. WebhookId localiza a conta; não substitui autenticação.
+WebhookSecret é a assinatura secreta do painel, distinta do Access Token.
+
+A requisição deve conter exatamente um data.id na query e um valor em cada
+header x-signature e x-request-id. O formato aceito da assinatura é:
+
+```text
+x-signature: ts={timestamp},v1={hmac-sha256-hexadecimal}
+x-request-id: {request-id}
+```
+
+O manifest é composto por:
+
+```text
+id:{data.id};request-id:{x-request-id};ts:{ts};
+```
+
+A API calcula HMAC-SHA256 com o segredo da conta e compara o hash em tempo
+constante. São verificadas a representação original do ID e a representação
+normalizada para minúsculas. A simulação manual do provedor assinou o ID original
+ORDTST em maiúsculas; essa compatibilidade está coberta por testes de regressão.
+
+O timestamp deve conter somente dígitos, com até 20 caracteres. Ainda não há
+janela de tolerância temporal. A idempotência financeira protege o reprocessamento;
+não representa implementação de controle temporal da assinatura.
+IDs de recurso e requisição aceitam letras ASCII, dígitos e hífen, até 200 caracteres.
+Assinaturas malformadas, campos ts/v1 repetidos ou campos desconhecidos são rejeitados.
+
+O body da notificação não é usado como prova financeira. Nesta implementação,
+seus campos action, type, valores e referências não comandam a confirmação.
+A autorização se vincula ao data.id assinado da query e às consultas autenticadas.
+O parâmetro type=order identifica o tópico no provedor; não há classificação
+local completa dos tipos e ações da notificação nesta entrega.
+
+#### Verificação externa
+
+Após autenticar a assinatura, a API inicializa o tenant da conta e procura a
+PaymentAttempt local associada a MERCADO_PAGO + orderId, verificando o Business.
+Uma notificação anterior à persistência dessa associação retorna 503 para nova tentativa.
+As consultas externas não ocorrem dentro da transação de confirmação.
+
+1. GET https://api.mercadopago.com/v1/orders/{orderId} com o Access Token da conta.
+2. Validação de ID, type=online, status=processed, status_detail=accredited,
+   user_id=CollectorId, integration_data.application_id=ApplicationId,
+   external_reference=PaymentAttemptId, BRL e valores integrais esperados.
+3. A ordem deve possuir exatamente uma transação. Seu método deve corresponder
+   ao método persistido na tentativa; status, amount e paid_amount são validados.
+4. transactions.payments[0].reference_id identifica o pagamento financeiro numérico.
+   O ID PAY... da transação não substitui reference_id; a referência local da tentativa
+   continua armazenando o ID ORD... da ordem.
+5. GET https://api.mercadopago.com/v1/payments/{reference_id} com o mesmo Access Token.
+6. Validação de ID numérico, collector_id, external_reference, transaction_amount,
+   currency_id=BRL, status=approved, status_detail=accredited,
+   transaction_amount_refunded=0 e date_approved com offset explícito.
+
+Somente respostas HTTP 200 são utilizadas para verificação. A data de aprovação
+financeira vem de date_approved e é normalizada para UTC; não é substituída por
+last_updated_date da ordem.
+
+#### Persistência, prazo e compensação
+
+A operação interna ConfirmPayment utiliza uma chave derivada de Provider e
+ProviderPaymentId, sob o tenant atual. O hash abrange os dados normalizados do
+comando. A transação serializa a confirmação e o agendamento por advisory locks,
+altera os estados financeiros e operacionais cabíveis, grava o histórico e
+persiste o comando verificado e seu resultado em idempotency_records.
+
+Replay do mesmo pagamento e conteúdo retorna o resultado original sem reaplicar
+alterações. O mesmo pagamento com conteúdo divergente retorna conflito de idempotência.
+Não há inbox separado nem deduplicação por ID de entrega da notificação.
+
+Para PENDING com reserva vigente no processamento local, a confirmação financeira
+pode alterar o Appointment para CONFIRMED e gravar PAYMENT_CONFIRMED no histórico.
+No instante exato do vencimento ou depois dele, registra-se a verdade financeira,
+materializando EXPIRED quando necessário, sem reativar ou ocupar novamente a agenda.
+Isso também vale quando date_approved antecede o prazo, mas o processamento local é tardio.
+
+O resultado persistido contém Outcome, PaymentId, AppointmentId e RequiresCompensation.
+Os resultados ReservationExpired, AppointmentNotConfirmable e AdditionalPayment
+exigem compensação. Uma nova liquidação não substitui a tentativa que originou
+a primeira liquidação do Payment.
+
+RequiresCompensation=true registra a necessidade financeira; não cria nem executa
+Refund automaticamente. Publicação de eventos, fila de compensação e reconciliação
+automática permanecem pendentes.
+
+#### Respostas HTTP da rota
+
+As respostas abaixo possuem corpo vazio; o resultado financeiro fica persistido
+internamente. Erros não seguem um Problem Details específico nesta rota incremental.
+
+| Resultado | HTTP |
+| --- | --- |
+| Confirmação persistida ou replay, inclusive com necessidade de compensação | 200 |
+| Headers/query ausentes, duplicados ou inválidos; conta desconhecida; assinatura inválida | 401 |
+| Rota não publicada por configuração, ou WebhookId fora do formato GUID | 404 |
+| Conteúdo divergente para o mesmo pagamento financeiro | 409 |
+| Método local incompatível ou comando financeiro rejeitado pelo serviço | 422 |
+| Falha HTTP/transporte, prazo local excedido, disputa de concorrência ou associação local ainda ausente | 503 |
+
+O orçamento de processamento é de 18 segundos, vinculado ao cancelamento da
+requisição. O 200 ocorre após commit ou replay. Uma resposta perdida após commit
+pode ser recuperada pelo reenvio idempotente. Falhas internas não tratadas podem
+retornar 500, sem confirmação de recebimento bem-sucedido.
+
+Nesta versão, o verificador retorna um resultado sem confirmação tanto para
+recursos ainda não aprovados quanto para respostas incompatíveis; a rota responde
+503 nesses casos. A classificação definitiva dos eventos permanece pendente.
+Uma requisição abortada pelo cliente pode terminar sem resposta HTTP.
+
+#### Validação local e limites
+
+Suíte completa em Release em 30/10/2026: 1738 testes aprovados, sem falhas ou ignorados.
+A validação manual recebeu HTTP 200 em aproximadamente 9 segundos por túnel HTTPS,
+consultou ordem e pagamento e confirmou Payment e PaymentAttempt, preservando o
+Appointment EXPIRED. O resultado manteve RequiresCompensation=true e a aprovação
+original do provedor. O reenvio preservou um registro de confirmação, o histórico
+e confirmed_at sem duplicação.
+
+A confirmação operacional dentro do prazo foi validada por testes automatizados;
+a validação manual desse cenário permanece pendente. As contas e o painel foram
+usados como teste, mas o pagamento consultado apresentou live_mode=true;
+essa divergência requer esclarecimento antes de produção. A API ainda não aplica
+uma política de ambiente baseada nesse campo.
+
+OAuth por estabelecimento, PIX, ordens com múltiplas transações, inbox durável,
+reconciliação automática, janela temporal da assinatura, refunds e execução de
+compensações permanecem pendentes. Autenticação e autorização dos endpoints de
+negócio em produção também permanecem pendentes.
+
+Para exposição temporária de desenvolvimento, WebhookTunnel:Enabled=true permite
+somente POSTs sob /webhooks/mercado-pago e retorna 404 nas demais rotas, inclusive
+Swagger e /api. Esse modo é desabilitado por padrão e não substitui autenticação.
+Encerre o túnel ao terminar e mantenha webhooks desabilitados fora da sessão de teste.
 
 ## 12. Refunds
+
 `POST /payments/{paymentId}/refunds` requer `Idempotency-Key`.
+
 ```json
 {"reason":"CUSTOMER_CANCELLATION"}
 ```
@@ -1486,21 +2043,29 @@ Retries usam a mesma Idempotency-Key e, quando disponível, idempotência do pro
 Pagamento confirmado tardiamente após Appointment `EXPIRED` dispara este mesmo mecanismo como Refund compensatório integral; o Appointment permanece expirado.
 
 ## 13. Analytics
+
 Endpoints financeiros aceitam `locationId` opcional para visão por unidade:
+
 `GET /analytics/financial-summary?locationId=<uuid>`
+
 `GET /analytics/revenue-by-professional?locationId=<uuid>`
+
 `GET /analytics/revenue-by-service?locationId=<uuid>`
+
 `GET /analytics/forecast?locationId=<uuid>`
 
 ## 14. SaaS Billing
+
 Billing separado de Customer Payments. Subscription associa unidades faturáveis explicitamente via SubscriptionUnit/Location.
 
 Mensal: RECURRING_CARD ou PIX. Anual: RECURRING_CARD. Sem boleto.
 
 ## 15. Usage
+
 `GET /usage/summary?locationId=<uuid>` quando o consumo puder ser atribuído a uma unidade. Custos globais continuam tenant-scoped.
 
 ## 16. WhatsApp / Conversation
+
 `POST /integrations/whatsapp/webhook`.
 
 ```text
@@ -1510,6 +2075,7 @@ WhatsApp Adapter -> Messaging -> Conversation Engine -> AI Gateway -> Applicatio
 LLM não acessa EF Core/DB diretamente e não confirma pagamento/refund.
 
 ## 17. Códigos de domínio
+
 ```text
 VALIDATION_ERROR
 UNAUTHORIZED
@@ -1538,6 +2104,7 @@ INTERNAL_ERROR
 ```
 
 ## 18. Primeira fatia vertical
+
 ```text
 GET Locations
 GET/POST Services
@@ -1554,13 +2121,17 @@ POST /appointments/{id}/cancel
 ```
 
 Segunda fatia: Payment + PaymentAttempts + webhook + Refunds.
+
 Terceira: WhatsApp/AI/Analytics/Billing/Usage.
 
 ScheduleBlocks foi antecipado e implementado incrementalmente em 14/10/2026,
+
 incluindo criação idempotente, consulta, desativação e integração com slots.
+
 A avaliação de impacto sobre Appointments permanece pendente.
 
 ## 19. Freeze v1
+
 API Contracts v1 congelado em 2026-09-17 após aprovação dos contratos críticos de Appointment, Payment/PaymentAttempt e Refund e revisão de consistência com o ERD v1 congelado. Não foi identificada necessidade de alteração estrutural do ERD.
 
 Novas ideias não críticas entram no backlog. Mudanças incompatíveis posteriores exigem decisão explícita e evolução/versionamento do contrato; não reabrir informalmente a baseline v1.

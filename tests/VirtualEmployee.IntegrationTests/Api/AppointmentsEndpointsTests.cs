@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using VirtualEmployee.Application.Appointments;
@@ -4401,6 +4402,20 @@ public sealed class AppointmentsEndpointsTests
                     "Payments:Enabled",
                     paymentsEnabled ? "true" : "false");
 
+                // Override local User Secrets and environment flags for this factory.
+                builder.ConfigureAppConfiguration((_, configuration) =>
+                {
+                    configuration.AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            ["Payments:Enabled"] = paymentsEnabled ? "true" : "false",
+                            ["Payments:MercadoPago:Enabled"] = "false",
+                            ["Payments:MercadoPago:WebhooksEnabled"] = "false",
+                            ["WebhookTunnel:Enabled"] = "false",
+                            ["Scheduling:Reservations:ExpirationWorkerEnabled"] = "false"
+                        });
+                });
+
                 builder.ConfigureTestServices(services =>
                 {
                     services.RemoveAll<DbContextOptions<AppDbContext>>();
@@ -4468,32 +4483,7 @@ public sealed class AppointmentsEndpointsTests
 
     private WebApplicationFactory<Program> CreateFactory()
     {
-        return new WebApplicationFactory<Program>()
-            .WithWebHostBuilder(builder =>
-            {
-                builder.UseEnvironment("Development");
-
-                builder.UseSetting(
-                    "ConnectionStrings:Database",
-                    _fixture.ConnectionString);
-
-                builder.UseSetting(
-                    "Scheduling:Reservations:LifetimeMinutes",
-                    "10");
-
-                builder.ConfigureTestServices(services =>
-                {
-                    services.RemoveAll<DbContextOptions<AppDbContext>>();
-                    services.RemoveAll<AppDbContext>();
-                    services.RemoveAll<TimeProvider>();
-
-                    services.AddDbContext<AppDbContext>(options =>
-                        options.UseNpgsql(_fixture.ConnectionString));
-
-                    services.AddSingleton<TimeProvider>(
-                        new FixedTimeProvider());
-                });
-            });
+        return CreateFactory(gateway: null, paymentsEnabled: false);
     }
 
     private AppDbContext CreateContext(Guid tenantId)
