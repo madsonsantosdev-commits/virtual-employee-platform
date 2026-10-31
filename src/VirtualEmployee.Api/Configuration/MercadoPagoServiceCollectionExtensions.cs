@@ -87,6 +87,7 @@ public static class MercadoPagoServiceCollectionExtensions
 
         if (options.WebhooksEnabled)
         {
+            services.AddScoped<MercadoPagoAttemptExpirationService>();
             services.AddScoped<MercadoPagoWebhookAuthenticator>();
             services.AddScoped<IPaymentConfirmationService, PaymentConfirmationService>();
         }

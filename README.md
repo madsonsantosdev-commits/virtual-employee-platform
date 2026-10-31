@@ -203,7 +203,7 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - Validação manual de reserva vencida: Payment e PaymentAttempt CONFIRMED; Appointment preservado como EXPIRED.
 - Resultado persistido com RequiresCompensation=true e data de aprovação original do provedor.
 - Reenvio preservou um único registro de confirmação, as contagens do histórico e confirmed_at.
-- Confirmação com reserva vigente e demais regras operacionais cobertas por testes automatizados; validação manual desse cenário permanece pendente.
+- Confirmação com reserva vigente validada manualmente em 31/10/2026; reenvio preservou estado e data, com uma única confirmação no histórico. Ver [evidências e pendências](docs/development/mercado-pago-validation-2026-10-31.md).
 - Factories de Appointments isoladas das flags locais de Payments, Mercado Pago, webhooks e túnel.
 - Autenticação de produção, OAuth, reconciliação automática e execução de refunds permanecem pendentes.
 
@@ -222,8 +222,7 @@ A base de Payments, a orquestração de tentativas e o endpoint HTTP estão
 integrados à `main`.
 
 O adaptador Mercado Pago, a verificação financeira, o webhook e a confirmação
-por pagamento estão implementados na branch `feature/mercado-pago`.
-A integração dessa entrega à `main` permanece pendente.
+por pagamento estão integrados à `main` pelo PR #31, commit `315775c`.
 
 A rota de tentativas exige `Payments:Enabled=true` e uma implementação
 de IPaymentGateway registrada. Nenhum gateway fictício é registrado

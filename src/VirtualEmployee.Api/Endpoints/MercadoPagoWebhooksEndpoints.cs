@@ -115,11 +115,16 @@ public static class MercadoPagoWebhooksEndpoints
                 expectedType,
                 cancellationToken);
 
-            // Includes resources that are not yet financially approved.
-            // Until that state is classified separately, preserve retries.
             if (command is null)
             {
-                return RetryLater();
+                // Classify expiration from an authenticated provider query,
+                // never from the action or status in the notification body.
+                var expiration = context.RequestServices
+                    .GetRequiredService<MercadoPagoAttemptExpirationService>();
+                return await expiration.TryExpireAsync(
+                    account.BusinessId, attemptReference.Id, orderId, cancellationToken)
+                    ? Results.Ok()
+                    : RetryLater();
             }
 
             var result = await confirmation.ConfirmAsync(

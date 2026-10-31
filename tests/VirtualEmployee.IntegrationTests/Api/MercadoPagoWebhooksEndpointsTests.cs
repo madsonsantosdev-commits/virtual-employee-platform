@@ -122,9 +122,167 @@ public sealed class MercadoPagoWebhooksEndpointsTests
         }
     }
 
+    [Theory]
+    [InlineData(10)]
+    [InlineData(11)]
+    public async Task Webhook_WithExpiredOrder_ShouldExpireOnlyAttemptAndReplay(int minute)
+    {
+        var data = new TestData();
+        var state = new ProviderState(data);
+        state.OrderOverride = ExpiredOrder(state.OrderJson);
+        try
+        {
+            await SeedAsync(data);
+            using var factory = CreateFactory(data, state, now: CreatedAt.AddMinutes(minute));
+            using var client = CreateClient(factory);
+            for (var i = 0; i < 2; i++)
+            {
+                using var request = CreateRequest(data);
+                // Body claims approval, but only the provider query is authoritative.
+                request.Content = new StringContent("{\"action\":\"order.processed\"}",
+                    Encoding.UTF8, "application/json");
+                using var response = await client.SendAsync(request);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+            await using var context = CreateContext(data.TenantId);
+            var attempt = await context.PaymentAttempts.SingleAsync();
+            Assert.Equal(PaymentAttemptStatus.Expired, attempt.Status);
+            Assert.Equal(CreatedAt.AddMinutes(minute), attempt.UpdatedAt);
+            Assert.Null(attempt.ConfirmedAt);
+            Assert.Equal(PaymentStatus.Pending, (await context.Payments.SingleAsync()).Status);
+            Assert.Equal(AppointmentStatus.Pending, (await context.Appointments.SingleAsync()).Status);
+            Assert.Empty(await context.AppointmentHistoryEntries.ToListAsync());
+            Assert.Empty(await context.IdempotencyRecords.ToListAsync());
+        }
+        finally { await CleanupAsync(data.TenantId); }
+    }
+
+    [Fact]
+    public async Task Webhook_ExpiredSecondAttempt_ShouldPreserveSettledPayment()
+    {
+        var data = new TestData();
+        var state = new ProviderState(data);
+        var secondId = Guid.NewGuid();
+        const string secondOrder = "ORDTSTSECOND";
+        try
+        {
+            await SeedAsync(data);
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var payment = await context.Payments.SingleAsync();
+                var second = new PaymentAttempt(secondId, payment, PaymentMethod.CreditCard,
+                    CreatedAt.AddMinutes(1), CreatedAt.AddMinutes(10));
+                second.RegisterProviderPayment("MERCADO_PAGO", secondOrder, CreatedAt.AddMinutes(1));
+                context.PaymentAttempts.Add(second);
+                await context.SaveChangesAsync();
+            }
+            using (var factory = CreateFactory(data, state))
+            using (var client = CreateClient(factory))
+            using (var request = CreateRequest(data))
+            using (var response = await client.SendAsync(request))
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            var expired = JsonNode.Parse(ExpiredOrder(state.OrderJson))!.AsObject();
+            expired["id"] = secondOrder;
+            expired["external_reference"] = secondId.ToString("D");
+            state.OrderOverride = expired.ToJsonString();
+            using (var factory = CreateFactory(data, state, now: CreatedAt.AddMinutes(11)))
+            using (var client = CreateClient(factory))
+            {
+                for (var i = 0; i < 2; i++)
+                {
+                    using var request = CreateRequest(data, orderId: secondOrder);
+                    using var response = await client.SendAsync(request);
+                    Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                }
+            }
+            await using var check = CreateContext(data.TenantId);
+            var settled = await check.Payments.SingleAsync();
+            Assert.Equal(PaymentStatus.Confirmed, settled.Status);
+            Assert.Equal(data.AttemptId, settled.ConfirmedPaymentAttemptId);
+            Assert.Equal(CreatedAt.AddMinutes(3), settled.ConfirmedAt);
+            Assert.Equal(CreatedAt.AddMinutes(3), settled.UpdatedAt);
+            Assert.Equal(PaymentAttemptStatus.Confirmed,
+                (await check.PaymentAttempts.SingleAsync(x => x.Id == data.AttemptId)).Status);
+            Assert.Equal(PaymentAttemptStatus.Expired,
+                (await check.PaymentAttempts.SingleAsync(x => x.Id == secondId)).Status);
+            Assert.Equal(AppointmentStatus.Confirmed, (await check.Appointments.SingleAsync()).Status);
+            Assert.Single(await check.AppointmentHistoryEntries.ToListAsync());
+        }
+        finally { await CleanupAsync(data.TenantId); }
+    }
+
+    [Fact]
+    public async Task Webhook_StaleExpiration_ShouldPreserveConfirmedAttempt()
+    {
+        var data = new TestData();
+        var state = new ProviderState(data);
+        try
+        {
+            await SeedAsync(data);
+            using var factory = CreateFactory(data, state);
+            using var client = CreateClient(factory);
+            using var firstRequest = CreateRequest(data);
+            using var first = await client.SendAsync(firstRequest);
+            Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+            state.OrderOverride = ExpiredOrder(state.OrderJson);
+            using var request = CreateRequest(data);
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            await using var context = CreateContext(data.TenantId);
+            var attempt = await context.PaymentAttempts.SingleAsync();
+            Assert.Equal(PaymentAttemptStatus.Confirmed, attempt.Status);
+            Assert.Equal(CreatedAt.AddMinutes(3), attempt.ConfirmedAt);
+            Assert.Single(await context.AppointmentHistoryEntries.ToListAsync());
+        }
+        finally { await CleanupAsync(data.TenantId); }
+    }
+
     #endregion
 
     #region Theories
+
+    [Theory]
+    [InlineData("before-deadline")]
+    [InlineData("wrong-collector")]
+    [InlineData("wrong-application")]
+    [InlineData("wrong-reference")]
+    [InlineData("wrong-amount")]
+    [InlineData("wrong-currency")]
+    [InlineData("paid")]
+    [InlineData("transactions")]
+    [InlineData("unknown-reason")]
+    public async Task Webhook_UnverifiedExpiration_ShouldRetryWithoutChanges(string scenario)
+    {
+        var data = new TestData();
+        var state = new ProviderState(data);
+        var root = JsonNode.Parse(ExpiredOrder(state.OrderJson))!.AsObject();
+        switch (scenario)
+        {
+            case "wrong-collector": root["user_id"] = "1"; break;
+            case "wrong-application": root["integration_data"]!["application_id"] = "1"; break;
+            case "wrong-reference": root["external_reference"] = Guid.NewGuid().ToString("D"); break;
+            case "wrong-amount": root["total_amount"] = "66.00"; break;
+            case "wrong-currency": root["currency"] = "USD"; break;
+            case "paid": root["total_paid_amount"] = "65.00"; break;
+            case "transactions": root["transactions"] = new JsonObject
+                { ["payments"] = new JsonArray(new JsonObject { ["status"] = "processed" }) }; break;
+            case "unknown-reason": root["status_detail"] = "unknown"; break;
+        }
+        state.OrderOverride = root.ToJsonString();
+        try
+        {
+            await SeedAsync(data);
+            using var factory = CreateFactory(data, state,
+                now: CreatedAt.AddMinutes(scenario == "before-deadline" ? 3 : 11));
+            using var client = CreateClient(factory);
+            using var request = CreateRequest(data);
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            await AssertPendingAsync(data);
+        }
+        finally { await CleanupAsync(data.TenantId); }
+    }
 
     [Theory]
     [InlineData("missing-signature")]
@@ -393,12 +551,23 @@ public sealed class MercadoPagoWebhooksEndpointsTests
         public override DateTimeOffset GetUtcNow() => now;
     }
 
+    private static string ExpiredOrder(string json)
+    {
+        var root = JsonNode.Parse(json)!.AsObject();
+        root["status"] = "canceled";
+        root["status_detail"] = "expired";
+        root.Remove("transactions");
+        root.Remove("total_paid_amount");
+        return root.ToJsonString();
+    }
+
     private sealed class ProviderState(TestData data)
     {
         public List<string> Paths { get; } = [];
         public List<string?> Tokens { get; } = [];
         public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
-        public string OrderJson => new JsonObject
+        public string? OrderOverride { get; set; }
+        public string OrderJson => OrderOverride ?? new JsonObject
         {
             ["id"] = data.OrderId, ["type"] = "online", ["status"] = "processed",
             ["status_detail"] = "accredited", ["currency"] = "BRL",
