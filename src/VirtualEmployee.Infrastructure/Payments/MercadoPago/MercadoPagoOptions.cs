@@ -6,6 +6,8 @@ public sealed class MercadoPagoOptions
 
     public bool WebhooksEnabled { get; set; }
 
+    public bool ReconciliationEnabled { get; set; }
+
     public List<MercadoPagoAccountOptions> Accounts { get; set; } = [];
 }
 
