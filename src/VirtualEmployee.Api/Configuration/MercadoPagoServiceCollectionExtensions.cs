@@ -39,10 +39,14 @@ public static class MercadoPagoServiceCollectionExtensions
 
             _ = resolver.ResolveAccessToken(account.TenantId, account.BusinessId);
 
-            if (options.WebhooksEnabled)
+            if (options.WebhooksEnabled || options.ReconciliationEnabled)
             {
                 _ = resolver.ResolveForConfirmation(
                     account.TenantId, account.BusinessId);
+            }
+
+            if (options.WebhooksEnabled)
+            {
 
                 if (account.WebhookId == Guid.Empty ||
                     !webhookIds.Add(account.WebhookId) ||
@@ -85,11 +89,20 @@ public static class MercadoPagoServiceCollectionExtensions
         services.AddScoped<IPaymentGateway, MercadoPagoGateway>();
         services.AddScoped<MercadoPagoPaymentVerificationService>();
 
-        if (options.WebhooksEnabled)
+        if (options.WebhooksEnabled || options.ReconciliationEnabled)
         {
             services.AddScoped<MercadoPagoAttemptExpirationService>();
-            services.AddScoped<MercadoPagoWebhookAuthenticator>();
             services.AddScoped<IPaymentConfirmationService, PaymentConfirmationService>();
+        }
+
+        if (options.WebhooksEnabled)
+        {
+            services.AddScoped<MercadoPagoWebhookAuthenticator>();
+        }
+
+        if (options.ReconciliationEnabled)
+        {
+            services.AddHostedService<MercadoPagoReconciliationWorker>();
         }
 
         return services;
