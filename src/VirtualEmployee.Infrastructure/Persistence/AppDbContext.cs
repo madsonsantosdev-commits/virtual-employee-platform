@@ -40,6 +40,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Appointment> Appointments => Set<Appointment>();
     public DbSet<Payment> Payments => Set<Payment>();
+    public DbSet<Refund> Refunds => Set<Refund>();
 
     public DbSet<PaymentAttempt> PaymentAttempts =>
         Set<PaymentAttempt>();
@@ -58,6 +59,9 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Payment>()
             .HasQueryFilter(
                 payment => payment.TenantId == CurrentTenantId);
+
+        modelBuilder.Entity<Refund>()
+            .HasQueryFilter(refund => refund.TenantId == CurrentTenantId);
 
         modelBuilder.Entity<PaymentAttempt>()
             .HasQueryFilter(

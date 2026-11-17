@@ -499,6 +499,81 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualEmployee.Domain.Payments.Refund", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("PaymentAttemptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_attempt_id");
+
+                    b.Property<Guid>("PaymentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_id");
+
+                    b.Property<string>("ProviderRefundId")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("provider_refund_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Status")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .IsConcurrencyToken()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "PaymentId")
+                        .IsUnique()
+                        .HasFilter("status IN ('REFUND_REQUESTED', 'REFUND_PROCESSING', 'REFUNDED')");
+
+                    b.HasIndex("TenantId", "PaymentId", "Amount");
+
+                    b.HasIndex("TenantId", "PaymentId", "PaymentAttemptId");
+
+                    b.ToTable("refunds", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_refunds_amount", "amount > 0");
+
+                            t.HasCheckConstraint("CK_refunds_provider_reference", "(status = 'REFUNDED' AND provider_refund_id IS NOT NULL AND provider_refund_id <> '' AND provider_refund_id !~ '[[:space:][:cntrl:]]') OR (status <> 'REFUNDED' AND provider_refund_id IS NULL)");
+
+                            t.HasCheckConstraint("CK_refunds_reason", "reason IN ('CUSTOMER_CANCELLATION', 'BUSINESS_CANCELLATION', 'LATE_PAYMENT')");
+
+                            t.HasCheckConstraint("CK_refunds_status", "status IN ('REFUND_REQUESTED', 'REFUND_PROCESSING', 'REFUNDED', 'REFUND_FAILED')");
+
+                            t.HasCheckConstraint("CK_refunds_timestamps", "updated_at >= created_at");
+                        });
+                });
+
             modelBuilder.Entity("VirtualEmployee.Domain.Professionals.Professional", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1173,6 +1248,23 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("TenantId", "PaymentId", "Amount")
                         .HasPrincipalKey("TenantId", "Id", "Amount")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualEmployee.Domain.Payments.Refund", b =>
+                {
+                    b.HasOne("VirtualEmployee.Domain.Payments.Payment", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "PaymentId", "Amount")
+                        .HasPrincipalKey("TenantId", "Id", "Amount")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualEmployee.Domain.Payments.PaymentAttempt", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "PaymentId", "PaymentAttemptId")
+                        .HasPrincipalKey("TenantId", "PaymentId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
