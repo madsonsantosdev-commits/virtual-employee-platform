@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+using VirtualEmployee.Application.Payments.RequestRefund;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using VirtualEmployee.Domain.Businesses;
@@ -10936,6 +10938,71 @@ public sealed class AppointmentPersistenceTests
             return result;
         }
     }
+    [Fact]
+    public async Task RequestRefund_ConcurrentKeysAndReplay_ShouldPersistOneRefund()
+    {
+        var data = new TestData();
+        var now = CreatedAt.AddMinutes(2);
+        var paymentId = Guid.NewGuid();
+        await SeedAsync(data);
+
+        try
+        {
+            await using (var context = CreateContext(data.TenantId))
+            {
+                var appointment = CreateAppointment(data, Guid.NewGuid(), CreatedAt.AddHours(2));
+                context.Appointments.Add(appointment);
+                await context.SaveChangesAsync();
+
+                var payment = new Payment(paymentId, appointment, CreatedAt);
+                context.Payments.Add(payment);
+                await context.SaveChangesAsync();
+
+                var attempt = new PaymentAttempt(
+                    Guid.NewGuid(), payment, PaymentMethod.CreditCard, CreatedAt, CreatedAt.AddMinutes(5));
+                attempt.RegisterProviderPayment("gateway-test", Guid.NewGuid().ToString("N"), CreatedAt);
+                attempt.Confirm(payment.Amount, now);
+                context.PaymentAttempts.Add(attempt);
+                await context.SaveChangesAsync();
+
+                payment.Confirm(attempt, now);
+                appointment.Cancel(AppointmentStatus.CancelledByBusiness, "Closed", now);
+                await context.SaveChangesAsync();
+            }
+
+            var first = new RequestRefundCommand(paymentId, RefundReason.BusinessCancellation, "first");
+            var second = first with { IdempotencyKey = "second" };
+
+            async Task<RequestRefundResult> RequestAsync(RequestRefundCommand command)
+            {
+                await using var context = CreateContext(data.TenantId);
+                var service = new RequestRefundService(
+                    context, new ConfigurationBuilder().Build(), new FixedTimeProvider(now));
+                return await service.RequestAsync(command, CancellationToken.None);
+            }
+
+            var results = await Task.WhenAll(RequestAsync(first), RequestAsync(second));
+            var accepted = Assert.Single(results, result => result.Response is not null);
+            var conflict = Assert.Single(results, result => result.Error is not null);
+            Assert.Equal(RequestRefundError.InProgress, conflict.Error);
+
+            var acceptedCommand = results[0].Response is not null ? first : second;
+            Assert.Equal(accepted, await RequestAsync(acceptedCommand));
+            var differentRequest = await RequestAsync(acceptedCommand with { Reason = RefundReason.LatePayment });
+            Assert.Equal(RequestRefundError.IdempotencyConflict, differentRequest.Error);
+
+            await using var readContext = CreateContext(data.TenantId);
+            var persisted = await readContext.Refunds.SingleAsync();
+            Assert.Equal(accepted.Response!.RefundId, persisted.Id);
+            Assert.Equal(65m, persisted.Amount);
+            Assert.Equal(RefundStatus.Requested, persisted.Status);
+        }
+        finally
+        {
+            await CleanupAsync(data.TenantId);
+        }
+    }
+
     private AppDbContext CreateContext(
         Guid tenantId,
         Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor?
@@ -11080,6 +11147,7 @@ public sealed class AppointmentPersistenceTests
                     payment => payment.ConfirmedAt,
                     (DateTimeOffset?)null));
 
+        await context.Refunds.ExecuteDeleteAsync();
         await context.PaymentAttempts.ExecuteDeleteAsync();
         await context.Payments.ExecuteDeleteAsync();
         await context.AppointmentHistoryEntries.ExecuteDeleteAsync();
