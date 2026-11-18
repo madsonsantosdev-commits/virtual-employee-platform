@@ -4,5 +4,6 @@ public enum RefundReason
 {
     CustomerCancellation = 1,
     BusinessCancellation = 2,
-    LatePayment = 3
+    LatePayment = 3,
+    AdditionalPayment = 4
 }

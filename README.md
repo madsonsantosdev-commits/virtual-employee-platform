@@ -181,7 +181,9 @@ A autenticação e a autorização de produção ainda estão pendentes.
 
 - [x] Estorno integral por cancelamento do estabelecimento, com endpoint idempotente e worker assíncrono ([PR #34](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/34))
 
-- [ ] Tratamento completo dos eventos financeiros e compensação automática por pagamentos tardios ou excedentes
+- [x] Compensação automática do Mercado Pago quando a confirmação chega após a expiração da reserva ou uma tentativa adicional é aprovada
+- [ ] Validar em sandbox os dois cenários de compensação automática
+- [ ] Tratamento completo dos eventos financeiros
 
 - [ ] Integração WhatsApp
 
@@ -336,8 +338,11 @@ Habilite com `Payments:MercadoPago:ReconciliationEnabled=true`.
 
 O prazo operacional é verificado no processamento local. Pagamento aprovado
 antes do vencimento, mas processado após o prazo, não reativa a reserva.
-RequiresCompensation registra a necessidade de tratamento financeiro;
-não cria nem executa um estorno automaticamente.
+Para novas confirmações do Mercado Pago, reserva expirada ou cobrança adicional
+gera uma solicitação de estorno na mesma transação da confirmação. O worker
+processa a ordem da tentativa compensada. Em caso de cobrança adicional,
+o estorno preserva o estado do pagamento e do agendamento originais.
+Confirmações históricas não são enfileiradas retroativamente.
 
 A validação manual usou contas de teste e o simulador do painel. O pagamento
 consultado retornou live_mode=true, apesar da identificação como teste no painel;
@@ -355,8 +360,7 @@ a ordem e só marca estorno e pagamento como `REFUNDED` após confirmar o
 valor integral. Habilite o worker com `Payments:MercadoPago:RefundsEnabled=true`.
 
 Permanecem pendentes autenticação de produção, publicação de eventos, OAuth
-por estabelecimento, cobertura dos demais eventos financeiros e execução
-automática de compensações por pagamentos tardios ou excedentes.
+por estabelecimento e cobertura dos demais eventos financeiros.
 
 A avaliação de impacto dos bloqueios sobre Appointments e o fluxo
 de reagendamento assistido também permanecem pendentes.

@@ -1,3 +1,4 @@
+using VirtualEmployee.Infrastructure.Payments.MercadoPago;
 using Microsoft.Extensions.Configuration;
 using VirtualEmployee.Application.Payments.RequestRefund;
 using Microsoft.EntityFrameworkCore;
@@ -294,6 +295,22 @@ public sealed class AppointmentPersistenceTests
                     winnerAttemptId,
                     payment.ConfirmedPaymentAttemptId);
                 Assert.Equal(processedAt, payment.ConfirmedAt);
+
+                var compensation = await context.Refunds.SingleAsync();
+                Assert.Equal(RefundReason.AdditionalPayment, compensation.Reason);
+                Assert.Equal(RefundStatus.Requested, compensation.Status);
+                Assert.Equal(paymentId, compensation.PaymentId);
+                Assert.Equal(winnerAttemptId == firstAttemptId ? secondAttemptId : firstAttemptId,
+                    compensation.PaymentAttemptId);
+                Assert.Equal(65m, compensation.Amount);
+
+                var excessOrderId = winnerAttemptId == firstAttemptId ? secondOrderId : firstOrderId;
+                await ReconcileCompensationAsync(context, data, compensation, excessOrderId,
+                    processedAt.AddMinutes(1));
+
+                Assert.Equal(PaymentStatus.Confirmed,
+                    await context.Payments.Where(entity => entity.Id == paymentId)
+                        .Select(entity => entity.Status).SingleAsync());
 
                 Assert.Equal(
                     1,
@@ -7737,6 +7754,26 @@ public sealed class AppointmentPersistenceTests
                     .AsNoTracking()
                     .SingleAsync(entity => entity.Id == appointmentId);
 
+                var queued = await context.Refunds.ToListAsync();
+                if (expectedCompensation)
+                {
+                    var compensation = Assert.Single(queued);
+                    Assert.Equal(RefundReason.LatePayment, compensation.Reason);
+                    Assert.Equal(RefundStatus.Requested, compensation.Status);
+                    Assert.Equal(attemptId, compensation.PaymentAttemptId);
+                    Assert.Equal(65m, compensation.Amount);
+
+                    await ReconcileCompensationAsync(context, data, compensation, providerOrderId,
+                        processedAt.AddMinutes(2));
+                    Assert.Equal(PaymentStatus.Refunded,
+                        await context.Payments.Where(entity => entity.Id == paymentId)
+                            .Select(entity => entity.Status).SingleAsync());
+                }
+                else
+                {
+                    Assert.Empty(queued);
+                }
+
                 Assert.Equal(expectedStatus, appointment.Status);
                 Assert.Equal(processedAt, appointment.UpdatedAt);
             }
@@ -11000,6 +11037,57 @@ public sealed class AppointmentPersistenceTests
         finally
         {
             await CleanupAsync(data.TenantId);
+        }
+    }
+
+    private static async Task ReconcileCompensationAsync(
+        AppDbContext context, TestData data, Refund refund, string orderId, DateTimeOffset now)
+    {
+        using var client = new HttpClient(new RefundedOrderHandler(orderId, refund.PaymentAttemptId));
+        var accounts = new MercadoPagoAccountResolver(new MercadoPagoOptions
+        {
+            Accounts =
+            [
+                new()
+                {
+                    TenantId = data.TenantId,
+                    BusinessId = data.BusinessId,
+                    AccessToken = "test-token",
+                    CollectorId = 1,
+                    ApplicationId = 2
+                }
+            ]
+        });
+        var processor = new MercadoPagoRefundProcessor(
+            context, new MercadoPagoOrdersClient(client), accounts, new FixedTimeProvider(now));
+
+        Assert.True(await processor.ProcessAsync(data.BusinessId, refund.Id, CancellationToken.None));
+        Assert.False(await processor.ProcessAsync(data.BusinessId, refund.Id, CancellationToken.None));
+        var persisted = await context.Refunds.AsNoTracking().SingleAsync(entity => entity.Id == refund.Id);
+        Assert.Equal(RefundStatus.Refunded, persisted.Status);
+        Assert.Equal("REF-COMPENSATION", persisted.ProviderRefundId);
+    }
+
+    private sealed class RefundedOrderHandler(string orderId, Guid attemptId) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Assert.Equal("https://api.mercadopago.com/v1/orders/" + orderId, request.RequestUri?.AbsoluteUri);
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent($$"""
+                    {
+                      "id": "{{orderId}}",
+                      "external_reference": "{{attemptId:D}}",
+                      "status_detail": "refunded",
+                      "transactions": {
+                        "refunds": [{"id":"REF-COMPENSATION","status":"processed","amount":"65.00"}]
+                      }
+                    }
+                    """)
+            });
         }
     }
 

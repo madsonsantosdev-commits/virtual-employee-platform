@@ -59,7 +59,8 @@ public sealed class MercadoPagoRefundWorker(
             join payment in database.Payments on refund.PaymentId equals payment.Id
             join attempt in database.PaymentAttempts on refund.PaymentAttemptId equals attempt.Id
             where payment.BusinessId == account.BusinessId &&
-                payment.Status == PaymentStatus.Confirmed &&
+                (payment.Status == PaymentStatus.Confirmed ||
+                    (payment.Status == PaymentStatus.Refunded && refund.Reason == RefundReason.AdditionalPayment)) &&
                 attempt.Provider == "MERCADO_PAGO" &&
                 (refund.Status == RefundStatus.Requested || refund.Status == RefundStatus.Processing) &&
                 (cursor == Guid.Empty || refund.Id.CompareTo(cursor) > 0)

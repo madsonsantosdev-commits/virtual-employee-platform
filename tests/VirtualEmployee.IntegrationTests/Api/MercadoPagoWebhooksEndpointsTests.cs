@@ -516,6 +516,7 @@ public sealed class MercadoPagoWebhooksEndpointsTests
                 .SetProperty(x => x.Status, PaymentStatus.Pending)
                 .SetProperty(x => x.ConfirmedPaymentAttemptId, (Guid?)null)
                 .SetProperty(x => x.ConfirmedAt, (DateTimeOffset?)null));
+        await context.Refunds.ExecuteDeleteAsync();
         await context.PaymentAttempts.ExecuteDeleteAsync();
         await context.Payments.ExecuteDeleteAsync();
         await context.AppointmentHistoryEntries.ExecuteDeleteAsync();
