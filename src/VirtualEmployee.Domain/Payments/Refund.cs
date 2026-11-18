@@ -37,15 +37,18 @@ public sealed class Refund : ITenantScoped
             throw new ArgumentOutOfRangeException(nameof(reason));
         }
 
-        if (payment.Status != PaymentStatus.Confirmed ||
-            payment.ConfirmedPaymentAttemptId != attempt.Id ||
+        var isAdditional = reason == RefundReason.AdditionalPayment;
+        if ((payment.Status != PaymentStatus.Confirmed &&
+                !(isAdditional && payment.Status == PaymentStatus.Refunded)) ||
+            payment.ConfirmedPaymentAttemptId is null ||
+            (payment.ConfirmedPaymentAttemptId == attempt.Id) == isAdditional ||
             attempt.Status != PaymentAttemptStatus.Confirmed ||
             attempt.TenantId != payment.TenantId ||
             attempt.PaymentId != payment.Id ||
             attempt.Amount != payment.Amount)
         {
             throw new InvalidOperationException(
-                "A full refund requires the attempt that confirmed the payment.");
+                "The attempted charge is not eligible for this refund reason.");
         }
 
         if (now < payment.UpdatedAt || now < attempt.UpdatedAt)

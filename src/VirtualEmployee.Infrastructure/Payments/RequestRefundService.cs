@@ -54,7 +54,8 @@ public sealed class RequestRefundService(
             }
 
             var existing = await database.Refunds.AsNoTracking()
-                .Where(refund => refund.PaymentId == payment.Id && refund.Status != RefundStatus.Failed)
+                .Where(refund => refund.PaymentId == payment.Id &&
+                    refund.Reason != RefundReason.AdditionalPayment && refund.Status != RefundStatus.Failed)
                 .Select(refund => (RefundStatus?)refund.Status)
                 .SingleOrDefaultAsync(cancellationToken);
 
@@ -114,7 +115,7 @@ public sealed class RequestRefundService(
         catch (DbUpdateException error) when (error.InnerException is PostgresException
             {
                 SqlState: PostgresErrorCodes.UniqueViolation,
-                ConstraintName: "IX_refunds_tenant_id_payment_id"
+                ConstraintName: "IX_refunds_tenant_id_payment_id" or "IX_refunds_tenant_id_payment_attempt_id"
             })
         {
             return RequestRefundResult.Rejected(RequestRefundError.InProgress);

@@ -59,6 +59,7 @@ public sealed class PaymentConfirmationService
         PaymentAttempt? attempt = null;
         AppointmentHistoryEntry? history = null;
         IdempotencyRecord? record = null;
+        Refund? compensation = null;
 
         try
         {
@@ -210,6 +211,12 @@ public sealed class PaymentConfirmationService
             var alreadySettled = payment.Status is
                 PaymentStatus.Confirmed or PaymentStatus.Refunded;
 
+            if (attempt.Status == PaymentAttemptStatus.Confirmed)
+            {
+                // The original notification was handled by the replay check above.
+                return Failure(ConfirmPaymentOutcome.IdempotencyConflict);
+            }
+
             attempt.Confirm(command.Amount, now);
 
             ConfirmPaymentOutcome outcome;
@@ -273,6 +280,19 @@ public sealed class PaymentConfirmationService
                 }
             }
 
+            var compensationReason = outcome switch
+            {
+                ConfirmPaymentOutcome.ReservationExpired => RefundReason.LatePayment,
+                ConfirmPaymentOutcome.AdditionalPayment => (RefundReason?)RefundReason.AdditionalPayment,
+                _ => null
+            };
+
+            if (compensationReason is { } reason && command.Provider == "MERCADO_PAGO")
+            {
+                compensation = new Refund(Guid.NewGuid(), payment, attempt, reason, now);
+                _dbContext.Refunds.Add(compensation);
+            }
+
             var result = new ConfirmPaymentResult(
                 outcome,
                 payment.Id,
@@ -314,6 +334,7 @@ public sealed class PaymentConfirmationService
         }
         finally
         {
+            Detach(compensation);
             Detach(record);
             Detach(history);
             Detach(attempt);

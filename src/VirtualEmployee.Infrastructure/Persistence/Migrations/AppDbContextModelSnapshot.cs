@@ -552,9 +552,13 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "PaymentId")
+                    b.HasIndex("TenantId", "PaymentAttemptId")
                         .IsUnique()
                         .HasFilter("status IN ('REFUND_REQUESTED', 'REFUND_PROCESSING', 'REFUNDED')");
+
+                    b.HasIndex("TenantId", "PaymentId")
+                        .IsUnique()
+                        .HasFilter("reason <> 'ADDITIONAL_PAYMENT' AND status IN ('REFUND_REQUESTED', 'REFUND_PROCESSING', 'REFUNDED')");
 
                     b.HasIndex("TenantId", "PaymentId", "Amount");
 
@@ -566,7 +570,7 @@ namespace VirtualEmployee.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("CK_refunds_provider_reference", "(status = 'REFUNDED' AND provider_refund_id IS NOT NULL AND provider_refund_id <> '' AND provider_refund_id !~ '[[:space:][:cntrl:]]') OR (status <> 'REFUNDED' AND provider_refund_id IS NULL)");
 
-                            t.HasCheckConstraint("CK_refunds_reason", "reason IN ('CUSTOMER_CANCELLATION', 'BUSINESS_CANCELLATION', 'LATE_PAYMENT')");
+                            t.HasCheckConstraint("CK_refunds_reason", "reason IN ('CUSTOMER_CANCELLATION', 'BUSINESS_CANCELLATION', 'LATE_PAYMENT', 'ADDITIONAL_PAYMENT')");
 
                             t.HasCheckConstraint("CK_refunds_status", "status IN ('REFUND_REQUESTED', 'REFUND_PROCESSING', 'REFUNDED', 'REFUND_FAILED')");
 

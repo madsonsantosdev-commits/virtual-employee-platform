@@ -23,8 +23,13 @@ public sealed class MercadoPagoRefundProcessor(
 
         var payment = await database.Payments.SingleOrDefaultAsync(
             entity => entity.Id == refund.PaymentId && entity.BusinessId == businessId, cancellationToken);
-        if (payment is null || payment.Status != PaymentStatus.Confirmed ||
-            payment.ConfirmedPaymentAttemptId != refund.PaymentAttemptId || payment.Amount != refund.Amount)
+        var isAdditional = refund.Reason == RefundReason.AdditionalPayment;
+        if (payment is null ||
+            (payment.Status != PaymentStatus.Confirmed &&
+                !(isAdditional && payment.Status == PaymentStatus.Refunded)) ||
+            payment.ConfirmedPaymentAttemptId is null ||
+            (payment.ConfirmedPaymentAttemptId == refund.PaymentAttemptId) == isAdditional ||
+            payment.Amount != refund.Amount)
         {
             return false;
         }
@@ -78,7 +83,10 @@ public sealed class MercadoPagoRefundProcessor(
 
         var now = _clock.GetUtcNow();
         refund.Complete(reference, now);
-        payment.MarkRefunded(refund, now);
+        if (!isAdditional)
+        {
+            payment.MarkRefunded(refund, now);
+        }
         await database.SaveChangesAsync(cancellationToken);
         return true;
     }

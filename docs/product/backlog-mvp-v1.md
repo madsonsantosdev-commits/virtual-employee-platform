@@ -401,7 +401,8 @@ Atualizado em 18/11/2026.
 - [x] Reconciliação automática com aprovação sem webhook e expiração de tentativa confirmadas em sandbox ([PR #33](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/33)).
 - [x] Estorno integral por cancelamento do estabelecimento, com persistência no PostgreSQL, solicitação idempotente e worker assíncrono ([PR #34](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/34)).
 - [x] Validação do estorno em sandbox sem webhook: R$ 65,00, pagamento e estorno em `REFUNDED` e agendamento em `CANCELLED_BY_BUSINESS`. Suíte completa em Release: 1.773 testes aprovados.
-- [ ] Automatizar a compensação de pagamentos aprovados após a expiração da reserva ou recebidos em excesso.
+- [x] Enfileirar automaticamente o estorno integral quando a confirmação do Mercado Pago encontra a reserva expirada ou uma tentativa adicional aprovada. A cobrança adicional é estornada por tentativa, preservando o pagamento original.
+- [ ] Validar ponta a ponta em sandbox a compensação de reserva expirada e de cobrança adicional.
 - [ ] Completar a cobertura de eventos financeiros e a integração por estabelecimento com OAuth.
 
 ---

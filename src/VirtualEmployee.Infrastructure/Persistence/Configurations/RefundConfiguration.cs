@@ -17,7 +17,7 @@ public sealed class RefundConfiguration : IEntityTypeConfiguration<Refund>
                 "status IN ('REFUND_REQUESTED', 'REFUND_PROCESSING', 'REFUNDED', 'REFUND_FAILED')");
             table.HasCheckConstraint(
                 "CK_refunds_reason",
-                "reason IN ('CUSTOMER_CANCELLATION', 'BUSINESS_CANCELLATION', 'LATE_PAYMENT')");
+                "reason IN ('CUSTOMER_CANCELLATION', 'BUSINESS_CANCELLATION', 'LATE_PAYMENT', 'ADDITIONAL_PAYMENT')");
             table.HasCheckConstraint(
                 "CK_refunds_provider_reference",
                 "(status = 'REFUNDED' AND provider_refund_id IS NOT NULL AND " +
@@ -61,6 +61,11 @@ public sealed class RefundConfiguration : IEntityTypeConfiguration<Refund>
 
         builder.HasIndex(refund => new { refund.TenantId, refund.PaymentId })
             .IsUnique()
+            .HasFilter("reason <> 'ADDITIONAL_PAYMENT' AND " +
+                "status IN ('REFUND_REQUESTED', 'REFUND_PROCESSING', 'REFUNDED')");
+
+        builder.HasIndex(refund => new { refund.TenantId, refund.PaymentAttemptId })
+            .IsUnique()
             .HasFilter("status IN ('REFUND_REQUESTED', 'REFUND_PROCESSING', 'REFUNDED')");
     }
 
@@ -69,6 +74,7 @@ public sealed class RefundConfiguration : IEntityTypeConfiguration<Refund>
         RefundReason.CustomerCancellation => "CUSTOMER_CANCELLATION",
         RefundReason.BusinessCancellation => "BUSINESS_CANCELLATION",
         RefundReason.LatePayment => "LATE_PAYMENT",
+        RefundReason.AdditionalPayment => "ADDITIONAL_PAYMENT",
         _ => throw new ArgumentOutOfRangeException(nameof(reason))
     };
 
@@ -77,6 +83,7 @@ public sealed class RefundConfiguration : IEntityTypeConfiguration<Refund>
         "CUSTOMER_CANCELLATION" => RefundReason.CustomerCancellation,
         "BUSINESS_CANCELLATION" => RefundReason.BusinessCancellation,
         "LATE_PAYMENT" => RefundReason.LatePayment,
+        "ADDITIONAL_PAYMENT" => RefundReason.AdditionalPayment,
         _ => throw new ArgumentOutOfRangeException(nameof(value))
     };
 
