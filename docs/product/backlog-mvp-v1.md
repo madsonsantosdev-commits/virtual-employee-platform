@@ -393,6 +393,19 @@ Permitir que o Customer crie e proteja sua conta, tenha e-mail e WhatsApp verifi
 
 ---
 
+# EPIC 06 — Payments & Refunds
+
+Atualizado em 18/11/2026.
+
+- [x] Checkout Mercado Pago Orders, confirmação idempotente de pagamento integral e atualização do agendamento.
+- [x] Reconciliação automática com aprovação sem webhook e expiração de tentativa confirmadas em sandbox ([PR #33](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/33)).
+- [x] Estorno integral por cancelamento do estabelecimento, com persistência no PostgreSQL, solicitação idempotente e worker assíncrono ([PR #34](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/34)).
+- [x] Validação do estorno em sandbox sem webhook: R$ 65,00, pagamento e estorno em `REFUNDED` e agendamento em `CANCELLED_BY_BUSINESS`. Suíte completa em Release: 1.773 testes aprovados.
+- [ ] Automatizar a compensação de pagamentos aprovados após a expiração da reserva ou recebidos em excesso.
+- [ ] Completar a cobertura de eventos financeiros e a integração por estabelecimento com OAuth.
+
+---
+
 # 3. Ordem de implementação por Vertical Slice
 
 A ordem de EPIC não determina execução integral sequencial. O primeiro marco técnico atravessa Fundação, Identity/Tenant, Negócio, Catálogo e Scheduling:
@@ -428,6 +441,12 @@ Terceiro slice:
 
 `WhatsApp -> Conversation Engine -> AI Gateway -> backend tools -> Scheduling/Payments`
 
-## 4. Próximo detalhamento
+## 4. Atualização a cada entrega
+
+Ao concluir uma entrega, atualize o `README.md` e este backlog no mesmo PR.
+Registre as capacidades entregues, os cenários validados e as pendências.
+Inclua o resultado dos testes e o link do PR quando estiverem disponíveis.
+
+## 5. Próximo detalhamento
 
 Detalhar EPIC 03 — Negócio & Onboarding, EPIC 04 — Serviços & Profissionais e EPIC 05 — Scheduling, priorizando somente histórias necessárias ao primeiro vertical slice.

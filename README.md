@@ -177,9 +177,11 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - [x] Adaptador Mercado Pago Checkout Pro via Orders API, validado com contas de teste
 
 - [x] Webhook de Orders autenticado e confirmação financeira idempotente
-- [ ] Reconciliação automática e tratamento completo dos eventos financeiros
+- [x] Reconciliação automática do Mercado Pago para confirmar reservas e expirar tentativas pendentes ([PR #33](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/33))
 
-- [ ] Refunds e compensação financeira
+- [x] Estorno integral por cancelamento do estabelecimento, com endpoint idempotente e worker assíncrono ([PR #34](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/34))
+
+- [ ] Tratamento completo dos eventos financeiros e compensação automática por pagamentos tardios ou excedentes
 
 - [ ] Integração WhatsApp
 
@@ -191,9 +193,15 @@ A autenticação e a autorização de produção ainda estão pendentes.
 
 - [ ] SaaS Billing
 
-### Última validação local — 30/10/2026
+### Última validação local — 18/11/2026
 
-- Suíte completa em Release: 1738 testes passaram, sem falhas ou ignorados.
+- Suíte completa em Release: 1.773 testes passaram, com zero falhas e zero ignorados.
+- Reconciliação em sandbox: pagamento aprovado confirmou a reserva sem webhook e uma tentativa vencida passou para `EXPIRED` ([PR #33](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/33)).
+- Estorno integral de R$ 65,00 em sandbox sem webhook: estorno e pagamento chegaram a `REFUNDED`, o agendamento permaneceu `CANCELLED_BY_BUSINESS` e a referência do provedor foi persistida ([PR #34](https://github.com/madsonsantosdev-commits/virtual-employee-platform/pull/34)).
+
+### Validações anteriores do checkout e webhook — 30 e 31/10/2026
+
+- Suíte completa em Release em 30/10/2026: 1.738 testes passaram, sem falhas ou ignorados.
 - Criação real de checkout no Mercado Pago validada com HTTP 201 e replay com corpo idêntico.
 - Ordem aprovada consultada pela API do provedor, com valor integral de R$ 65,00 e moeda BRL.
 - Webhook do simulador do Mercado Pago recebido por túnel HTTPS e processado com HTTP 200.
@@ -205,7 +213,6 @@ A autenticação e a autorização de produção ainda estão pendentes.
 - Reenvio preservou um único registro de confirmação, as contagens do histórico e confirmed_at.
 - Confirmação com reserva vigente validada manualmente em 31/10/2026; reenvio preservou estado e data, com uma única confirmação no histórico. Ver [evidências e pendências](docs/development/mercado-pago-validation-2026-10-31.md).
 - Factories de Appointments isoladas das flags locais de Payments, Mercado Pago, webhooks e túnel.
-- Autenticação de produção, OAuth, reconciliação automática e execução de refunds permanecem pendentes.
 
 Professionals, ProfessionalLocations, ProfessionalServices, os filtros
 de elegibilidade, AvailabilityRules, busca de slots, ScheduleBlocks,
@@ -324,7 +331,8 @@ em um resultado sem confirmação, também tratado com 503 pela rota.
 O fluxo atual aceita cartão de crédito ou débito e uma única transação por ordem.
 PIX e ordens com múltiplas transações ainda exigem implementação e validação.
 Uma notificação anterior à associação local da ordem retorna 503 para nova tentativa.
-Não há reconciliação automática para entregas que deixem de ser reenviadas.
+O worker de reconciliação consulta o provedor sem depender do webhook.
+Habilite com `Payments:MercadoPago:ReconciliationEnabled=true`.
 
 O prazo operacional é verificado no processamento local. Pagamento aprovado
 antes do vencimento, mas processado após o prazo, não reativa a reserva.
@@ -340,11 +348,15 @@ sob `/webhooks/mercado-pago` e bloqueia as demais rotas, inclusive Swagger e API
 Mantenha esse modo ativo durante a exposição pública e encerre o túnel ao terminar.
 A URL temporária muda quando o túnel é recriado.
 
-Permanecem pendentes publicação de eventos, OAuth por estabelecimento,
-reconciliação automática e refunds, incluindo execução de compensações por
-pagamentos tardios ou excedentes.
+Em `Development`, `POST /api/v1/payments/{paymentId}/refunds` registra a
+solicitação integral de forma idempotente. Após cancelar pelo estabelecimento,
+envie uma solicitação com o motivo `BUSINESS_CANCELLATION`. O worker consulta
+a ordem e só marca estorno e pagamento como `REFUNDED` após confirmar o
+valor integral. Habilite o worker com `Payments:MercadoPago:RefundsEnabled=true`.
 
-O cancelamento atual não solicita nem confirma estorno.
+Permanecem pendentes autenticação de produção, publicação de eventos, OAuth
+por estabelecimento, cobertura dos demais eventos financeiros e execução
+automática de compensações por pagamentos tardios ou excedentes.
 
 A avaliação de impacto dos bloqueios sobre Appointments e o fluxo
 de reagendamento assistido também permanecem pendentes.
