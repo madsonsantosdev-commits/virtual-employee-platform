@@ -144,4 +144,26 @@ public sealed class Payment : ITenantScoped
 
         return true;
     }
+
+    public void MarkRefunded(Refund refund, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(refund);
+        if (Status != PaymentStatus.Confirmed ||
+            refund.Status != RefundStatus.Refunded ||
+            refund.TenantId != TenantId ||
+            refund.PaymentId != Id ||
+            refund.PaymentAttemptId != ConfirmedPaymentAttemptId ||
+            refund.Amount != Amount)
+        {
+            throw new InvalidOperationException("A completed full refund is required.");
+        }
+
+        if (now < UpdatedAt || now < refund.UpdatedAt)
+        {
+            throw new ArgumentOutOfRangeException(nameof(now));
+        }
+
+        Status = PaymentStatus.Refunded;
+        UpdatedAt = now.ToUniversalTime();
+    }
 }

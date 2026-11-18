@@ -89,6 +89,28 @@ public sealed class MercadoPagoOrdersClient
             cancellationToken);
     }
 
+    public async Task<HttpResponseMessage> RefundAsync(
+        string accessToken,
+        string orderId,
+        Guid refundId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateAccessToken(accessToken);
+        ValidateOrderId(orderId);
+        if (refundId == Guid.Empty)
+        {
+            throw new ArgumentException("Refund ID must not be empty.", nameof(refundId));
+        }
+
+        var uri = new Uri($"{CreateOrderUri.AbsoluteUri}/{Uri.EscapeDataString(orderId)}/refund");
+        using var request = new HttpRequestMessage(HttpMethod.Post, uri);
+        ConfigureHeaders(request, accessToken);
+        request.Headers.Add("X-Idempotency-Key", refundId.ToString("D"));
+
+        return await _httpClient.SendAsync(
+            request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+    }
+
     private static void ValidateAccessToken(string accessToken)
     {
         if (string.IsNullOrWhiteSpace(accessToken) ||

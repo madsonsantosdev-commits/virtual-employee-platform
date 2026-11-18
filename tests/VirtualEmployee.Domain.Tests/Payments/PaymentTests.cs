@@ -420,6 +420,60 @@ public sealed class PaymentTests
 
     #endregion
 
+    #region Refunds
+
+    [Fact]
+    public void Refund_UsesFullAmountAndConfirmedAttempt()
+    {
+        var payment = new Payment(Guid.NewGuid(), CreateAppointment(65.50m), CreatedAt);
+        var attempt = CreateConfirmedAttempt(payment);
+        var now = CreatedAt.AddMinutes(2);
+        payment.Confirm(attempt, now);
+
+        var refund = new Refund(Guid.NewGuid(), payment, attempt, RefundReason.LatePayment, now);
+
+        Assert.Equal(65.50m, refund.Amount);
+        Assert.Equal(payment.TenantId, refund.TenantId);
+        Assert.Equal(payment.Id, refund.PaymentId);
+        Assert.Equal(attempt.Id, refund.PaymentAttemptId);
+        Assert.Equal(RefundStatus.Requested, refund.Status);
+    }
+
+    [Fact]
+    public void Refund_RejectsAttemptThatDidNotConfirmPayment()
+    {
+        var payment = new Payment(Guid.NewGuid(), CreateAppointment(), CreatedAt);
+        var confirmingAttempt = CreateConfirmedAttempt(payment);
+        var otherAttempt = CreateConfirmedAttempt(payment);
+        var now = CreatedAt.AddMinutes(2);
+        payment.Confirm(confirmingAttempt, now);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            new Refund(Guid.NewGuid(), payment, otherAttempt, RefundReason.LatePayment, now));
+    }
+
+    [Fact]
+    public void Refund_CompletionRequiresProcessingAndPreservesSuccessfulReplay()
+    {
+        var payment = new Payment(Guid.NewGuid(), CreateAppointment(), CreatedAt);
+        var attempt = CreateConfirmedAttempt(payment);
+        var now = CreatedAt.AddMinutes(2);
+        payment.Confirm(attempt, now);
+        var refund = new Refund(Guid.NewGuid(), payment, attempt, RefundReason.BusinessCancellation, now);
+
+        Assert.Throws<InvalidOperationException>(() => refund.Complete("refund-1", now));
+        refund.MarkProcessing(now);
+        var completedAt = now.AddMinutes(1);
+
+        Assert.True(refund.Complete("refund-1", completedAt));
+        Assert.False(refund.Complete("refund-1", completedAt.AddMinutes(1)));
+        Assert.Throws<InvalidOperationException>(() => refund.Complete("refund-2", completedAt));
+        Assert.Equal(RefundStatus.Refunded, refund.Status);
+        Assert.Equal(completedAt, refund.UpdatedAt);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static PaymentAttempt CreateConfirmedAttempt(Payment payment)

@@ -11,7 +11,8 @@ public static class MercadoPagoProcessedOrderReader
         long expectedCollectorId,
         long expectedApplicationId,
         Guid expectedPaymentAttemptId,
-        decimal expectedAmount)
+        decimal expectedAmount,
+        bool requireNoRefunds = false)
     {
         ValidateExpectedValues(
             expectedOrderId,
@@ -91,6 +92,13 @@ public static class MercadoPagoProcessedOrderReader
                     out var payments) ||
                 payments.ValueKind != JsonValueKind.Array ||
                 payments.GetArrayLength() != 1)
+            {
+                return null;
+            }
+
+            if (requireNoRefunds &&
+                transactions.TryGetProperty("refunds", out var refunds) &&
+                (refunds.ValueKind != JsonValueKind.Array || refunds.GetArrayLength() != 0))
             {
                 return null;
             }
@@ -298,7 +306,7 @@ public static class MercadoPagoProcessedOrderReader
         return false;
     }
 
-    private static bool IsUnambiguousObject(JsonElement element)
+    internal static bool IsUnambiguousObject(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Object)
         {

@@ -39,7 +39,7 @@ public static class MercadoPagoServiceCollectionExtensions
 
             _ = resolver.ResolveAccessToken(account.TenantId, account.BusinessId);
 
-            if (options.WebhooksEnabled || options.ReconciliationEnabled)
+            if (options.WebhooksEnabled || options.ReconciliationEnabled || options.RefundsEnabled)
             {
                 _ = resolver.ResolveForConfirmation(
                     account.TenantId, account.BusinessId);
@@ -103,6 +103,12 @@ public static class MercadoPagoServiceCollectionExtensions
         if (options.ReconciliationEnabled)
         {
             services.AddHostedService<MercadoPagoReconciliationWorker>();
+        }
+
+        if (options.RefundsEnabled)
+        {
+            services.AddScoped<MercadoPagoRefundProcessor>();
+            services.AddHostedService<MercadoPagoRefundWorker>();
         }
 
         return services;

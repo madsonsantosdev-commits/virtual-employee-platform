@@ -8,6 +8,8 @@ public sealed class MercadoPagoOptions
 
     public bool ReconciliationEnabled { get; set; }
 
+    public bool RefundsEnabled { get; set; }
+
     public List<MercadoPagoAccountOptions> Accounts { get; set; } = [];
 }
 

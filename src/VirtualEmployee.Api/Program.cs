@@ -1,3 +1,4 @@
+using VirtualEmployee.Application.Payments.RequestRefund;
 using VirtualEmployee.Application.Locations.CreateLocation;
 using VirtualEmployee.Application.Locations.GetLocations;
 using VirtualEmployee.Application.Locations.UpdateLocation;
@@ -116,6 +117,12 @@ if (paymentsEnabled)
     }
 }
 
+if (paymentsEnabled && builder.Environment.IsDevelopment())
+{
+    builder.Services.AddScoped<IRequestRefundService, RequestRefundService>();
+    builder.Services.AddScoped<RequestRefundHandler>();
+}
+
 var app = builder.Build();
 
 if (builder.Configuration.GetValue<bool>("WebhookTunnel:Enabled", false))
@@ -165,6 +172,10 @@ app.MapAppointmentsEndpoints();
 if (paymentsEnabled)
 {
     app.MapPaymentAttemptsEndpoints();
+    if (app.Environment.IsDevelopment())
+    {
+        app.MapRefundEndpoints();
+    }
 }
 if (paymentsEnabled &&
     builder.Configuration.GetValue<bool>("Payments:MercadoPago:Enabled", false) &&
