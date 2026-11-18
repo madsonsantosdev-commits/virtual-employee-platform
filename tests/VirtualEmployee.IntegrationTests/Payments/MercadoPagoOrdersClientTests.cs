@@ -10,6 +10,27 @@ public sealed class MercadoPagoOrdersClientTests
     #region Facts
 
     [Fact]
+    public async Task RefundAsync_ShouldReuseRefundIdAndSendNoBody()
+    {
+        using var handler = new RecordingHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new MercadoPagoOrdersClient(httpClient);
+        var refundId = Guid.NewGuid();
+
+        using var first = await client.RefundAsync("test-token", "ORD-123", refundId);
+        using var retry = await client.RefundAsync("test-token", "ORD-123", refundId);
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal("https://api.mercadopago.com/v1/orders/ORD-123/refund", request.Url);
+            Assert.Equal(refundId.ToString("D"), request.IdempotencyKey);
+            Assert.Null(request.Body);
+        });
+    }
+
+    [Fact]
     public async Task CreateAsync_ShouldSendExpectedRequest()
     {
         var attemptId = Guid.NewGuid();
